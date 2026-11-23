@@ -25,8 +25,9 @@ public static unsafe class Syscalls
     static Mutex _reading;  // one program reads the keyboard at a time
 
     /// read(fd, buffer, length): fd 0 is the keyboard, cooked like a terminal — the program gets whole lines
-    /// (with the final '\n') once Enter is pressed, the user can correct them with Backspace, Ctrl+D on an
-    /// empty line is end of input (0 bytes) and Ctrl+C ends the program (exit code 130).
+    /// (with the final '\n') once Enter is pressed, the user can correct them with Backspace, and Ctrl+D on an
+    /// empty line is end of input (0 bytes). Ctrl+C never gets here: the keyboard driver kills the foreground
+    /// program, and the interrupted wait makes read return.
     @syscall(2)
     static long Read(int fd, byte* buffer, ulong length)
     {
@@ -39,37 +40,39 @@ public static unsafe class Syscalls
 
         long n = 0;
         lock (_reading) {
-            if (_position == _length)
-                ReadLine();
-            while ((ulong)n < length && _position < _length) {
-                buffer[n] = _line.Bytes[_position];
-                n++;
-                _position++;
+            if (_position == _length && !ReadLine())
+                return Process.ErrInterrupted;   // the program is being killed
+            n = _length - _position;
+            if ((ulong)n > length)
+                n = (long)length;
+            fixed (byte* bytes = _line.Bytes) {
+                unless (UserMemory.CopyTo(buffer, bytes + _position, (ulong)n))
+                    return Process.ErrBadAddress;
             }
+            _position += (int)n;
         }
         return n;
     }
 
-    static void ReadLine()
+    /// False when the reading program is killed meanwhile (the partial line is dropped).
+    static bool ReadLine()
     {
         _length = 0;
         _position = 0;
         int chars = 0;
         loop {
-            uint key = Keyboard.ReadKey();
+            uint key = Keyboard.ReadKeyInterruptible();
+            if (key == 0) {
+                _length = 0;
+                return false;
+            }
             if (key == '\n') {
                 Terminal.WriteChar((byte)'\n');
                 _line.Bytes[_length++] = (byte)'\n';
-                return;
+                return true;
             }
             if (key == 4 && chars == 0)
-                return;   // Ctrl+D: end of input
-            if (key == 3) {
-                Terminal.WriteLine(AnsiColor.BrightRed, "^C");
-                _length = 0;
-                _reading.Unlock();
-                Process.ExitCurrent(130);
-            }
+                return true;   // Ctrl+D: end of input (0 bytes)
             if (key == '\b') {
                 if (chars > 0) {
                     chars--;

@@ -65,7 +65,7 @@ sealed class TypeMapper(DiagnosticSink diag)
                 return Qualified(named);
         }
 
-        diag.Error("NEKO0201", $"type '{type.ToDisplayString()}' is not supported in kernel code", at?.GetLocation());
+        diag.Error("NEKO0201", $"type '{type.ToDisplayString()}' is not supported by nekoc (kernel and user programs)", at?.GetLocation());
         return "void";
     }
 

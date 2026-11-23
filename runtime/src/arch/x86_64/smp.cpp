@@ -112,6 +112,7 @@ extern "C" [[noreturn]] void neko_ap_main(limine_mp_info* info) {
     using namespace neko;
     auto* c = reinterpret_cast<smp::Cpu*>(info->extra_argument);
     vmm::load_on_this_cpu();
+    arch::enable_smep_smap();
     arch::gdt_init(c->index);  // reloads GS, so the GS base is set afterwards
     arch::idt_load();
     smp::set_gs_base(c);

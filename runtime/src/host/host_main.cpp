@@ -132,6 +132,9 @@ bool space_check(uint64_t*, uint64_t, uint64_t, bool) { return false; }
 namespace neko::arch {
 void enter_user(uint64_t, uint64_t, uint64_t, uint64_t) { neko::panic("user mode is not available in host mode"); }
 bool user_mode_available() { return false; }
+void enable_smep_smap() {}
+bool smep_enabled() { return false; }
+bool smap_enabled() { return false; }
 }  // namespace neko::arch
 
 namespace {
@@ -159,6 +162,7 @@ uint64_t neko_sched_new_stack(size_t size) {
 }
 
 void neko_sched_switch_to(neko::sched::Thread*) {}
+extern "C" uint64_t neko_user_copy(void*, const void*, uint64_t) { return ~0ull; }  // no user memory in host mode
 
 void neko_sched_idle() {
     if (!neko::sched::has_sleepers()) {

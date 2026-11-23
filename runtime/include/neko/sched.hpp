@@ -9,6 +9,7 @@
 
 namespace neko::sync {
 struct Mutex;
+struct Semaphore;
 
 // Bare test-and-set lock: no interrupt handling, not recursive. The caller manages IF.
 struct RawLock {
@@ -45,6 +46,9 @@ struct Thread {
     const char* blocked_on;     // what a Blocked thread waits for (for ps and deadlock reports)
     sync::Mutex* waiting_for;   // mutex a Blocked thread waits for (deadlock detection)
     proc::Process* process;     // user process this thread runs (nullptr: kernel thread)
+    volatile bool kill_pending; // the thread must end before it returns to ring 3 (kill, exit of a sibling)
+    bool interrupted;           // its interruptible wait was cancelled by interrupt()
+    sync::Semaphore* volatile waiting_sem;  // semaphore of an interruptible wait in progress
     Thread* next;         // run queue / wait queue link
     Thread* all_next;     // list of every thread
 };
@@ -73,6 +77,15 @@ const char* current_name();
 // held by the caller) is released only once the scheduler lock is taken, so no wake-up is lost.
 void block(const char* reason, sync::RawLock* guard);
 void wake(Thread* t);  // Blocked → Ready (callable from interrupt handlers and other CPUs)
+
+// Sets t->kill_pending and cuts short what it is waiting for: a sleep, or an interruptible semaphore
+// wait (Semaphore::wait_interruptible returns false). A thread running on another CPU is kicked so it
+// notices at once. Callable from interrupt handlers.
+void interrupt(Thread* t);
+bool killed();  // the current thread has kill_pending set
+
+// Calls fn(t, ctx) for every thread of `process` (scheduler lock held: fn must not block).
+void for_each_thread(proc::Process* process, void (*fn)(Thread*, void*), void* ctx);
 
 // Per-CPU startup: adopts the calling flow as this CPU's idle thread (APs), then run_idle().
 void cpu_online();
@@ -145,8 +158,11 @@ struct Semaphore {
     sched::Thread* head;
     sched::Thread* tail;
     void wait();
+    // Like wait(), but gives up (false) when the thread is killed — for waits on behalf of user programs.
+    bool wait_interruptible();
     bool try_wait();
     void signal();
+    void cancel(sched::Thread* t);  // internal: remove t from the wait queue (sched::interrupt)
     int64_t value() const { return count; }
 };
 

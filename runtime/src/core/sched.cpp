@@ -293,6 +293,10 @@ void sleep_ms(uint64_t ms) {
     cpu::InterruptGuard g;
     g_lock.acquire();
     Thread* t = smp::this_cpu()->current;
+    if (__atomic_load_n(&t->kill_pending, __ATOMIC_SEQ_CST)) {  // interrupt() would not find us asleep
+        g_lock.release();
+        return;
+    }
     t->state = State::Sleeping;
     t->wake_at = time::uptime_ms() + ms;
     t->blocked_on = "sleep";
@@ -330,6 +334,38 @@ void wake(Thread* t) {
     cpu::InterruptGuard g;
     g_lock.acquire();
     if (t->state == State::Blocked) make_ready(t);
+    g_lock.release();
+}
+
+bool killed() {
+    Thread* t = smp::this_cpu()->current;
+    return t && __atomic_load_n(&t->kill_pending, __ATOMIC_SEQ_CST);
+}
+
+void interrupt(Thread* t) {
+    __atomic_store_n(&t->kill_pending, true, __ATOMIC_SEQ_CST);
+    if (sync::Semaphore* s = __atomic_load_n(&t->waiting_sem, __ATOMIC_SEQ_CST)) s->cancel(t);
+    cpu::InterruptGuard g;
+    g_lock.acquire();
+    if (t->state == State::Sleeping) {
+        for (Thread** p = &g_sleepers; *p; p = &(*p)->next) {
+            if (*p == t) {
+                *p = t->next;
+                make_ready(t);
+                break;
+            }
+        }
+    }
+    uint32_t cpu = (t->state == State::Running && t->cpu != smp::cpu_index()) ? t->cpu : ~0u;
+    g_lock.release();
+    if (cpu != ~0u) smp::kick(cpu);  // it re-checks kill_pending on the way back to ring 3
+}
+
+void for_each_thread(proc::Process* process, void (*fn)(Thread*, void*), void* ctx) {
+    cpu::InterruptGuard g;
+    g_lock.acquire();
+    for (Thread* t = g_all; t; t = t->all_next)
+        if (t->process == process && t->state != State::Dead) fn(t, ctx);
     g_lock.release();
 }
 

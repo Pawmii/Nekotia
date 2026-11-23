@@ -2,6 +2,9 @@
 //   usertest [-v] ARGS…   system calls, arguments, heap, FPU, child processes → exit code 42 when all pass
 //   usertest child        exits with 7 (for spawn/wait)
 //   usertest pf | gp | ud | kernel   faults on purpose; the kernel must kill only this process
+//   usertest spin | sleep | read     never finishes on its own (for kill and Ctrl+C tests)
+//   usertest parent                  waits for a `usertest sleep` child forever
+//   usertest texit | tfault          a second thread calls exit(9) / dereferences null
 using Nekotia;
 using Nekotia.User;
 
@@ -36,6 +39,25 @@ public static unsafe class Program
                 Asm.Emit("ud2");                       // invalid opcode → #UD
                 return 1;
             }
+            if (Str.Equals(mode, "spin"))
+                while (true) { }
+            if (Str.Equals(mode, "sleep"))
+                while (true) { Process.Sleep(100000); }
+            if (Str.Equals(mode, "read"))
+            {
+                byte* line = stackalloc byte[16];
+                return (int)Console.ReadLine(line, 16);
+            }
+            if (Str.Equals(mode, "parent"))
+            {
+                long child = Process.Start("usertest", "sleep");
+                return (int)Process.Wait((uint)child);
+            }
+            if (Str.Equals(mode, "texit") || Str.Equals(mode, "tfault"))
+            {
+                Thread.Start(Str.Equals(mode, "texit") ? &ExitFromThread : &FaultInThread);
+                while (true) { Process.Sleep(100000); }
+            }
             _verbose = Str.Equals(mode, "-v");
         }
 
@@ -44,6 +66,7 @@ public static unsafe class Program
         BadPointers();
         HeapAndFpu();
         Children();
+        Threads();
 
         if (_verbose || _failed > 0)
             Console.WriteLine($"usertest: {_passed} passed, {_failed} failed");
@@ -97,6 +120,8 @@ public static unsafe class Program
         Check(Process.Syscall(2, 0, 0x400000, 16) == Process.ErrBadAddress, "read() refuses read-only memory (code)");
         Check(Process.Syscall(7, KernelAddress, 0) == Process.ErrBadAddress, "spawn() refuses a kernel string");
         Check(Process.Start("no-such-program") == Process.ErrNotFound, "spawn() of a missing program → ErrNotFound");
+        Check(Process.Syscall(10, 0, 0x1000) == Process.ErrBadAddress, "a page fault while the kernel copies out fails the call, not the kernel");
+        Check(Process.Syscall(10, 0, 0x400000) == Process.ErrBadAddress, "the kernel cannot write into read-only program memory");
     }
 
     static void HeapAndFpu()
@@ -131,5 +156,57 @@ public static unsafe class Program
         Check(Process.Wait((uint)child) == Process.ErrNotFound, "a child can be waited for only once");
         long other = Process.Wait(Process.Id());
         Check(other == Process.ErrNotChild, "wait() for a process that is not a child fails");
+    }
+
+    static void ExitFromThread(ulong arg)
+    {
+        Process.Sleep(5);
+        Process.Exit(9);
+    }
+
+    static void FaultInThread(ulong arg)
+    {
+        Process.Sleep(5);
+        *(int*)0 = 1;
+    }
+
+    // ---------------------------------------------------------------- threads
+
+    const int Workers = 4;
+    const int Rounds = 20000;
+
+    static long* _atomicCounter;
+    static long* _lockedCounter;
+    static SpinLock _lock;
+
+    static void Worker(ulong id)
+    {
+        for (int i = 0; i < Rounds; i++)
+        {
+            Atomic.Add(_atomicCounter, 1);
+            _lock.Lock();
+            *_lockedCounter = *_lockedCounter + 1;   // a plain read-modify-write, safe only under the lock
+            _lock.Unlock();
+        }
+        void* p = Memory.Alloc(100 + id);           // the heap is shared and locked
+        Memory.Free(p);
+    }
+
+    static void Threads()
+    {
+        _atomicCounter = Memory.New<long>();
+        _lockedCounter = Memory.New<long>();
+        ulong* handles = stackalloc ulong[Workers];
+        for (int i = 0; i < Workers; i++)
+            handles[i] = Thread.Start(&Worker, (ulong)i);
+        bool started = true;
+        for (int i = 0; i < Workers; i++)
+            started &= handles[i] != 0;
+        for (int i = 0; i < Workers; i++)
+            Thread.Join(handles[i]);
+        Check(started, "4 threads start");
+        Check(*_atomicCounter == Workers * Rounds && *_lockedCounter == Workers * Rounds,
+            "threads share memory: atomic and locked counters are exact");
+        Check(Thread.CurrentId() != 0, "thread_id");
     }
 }

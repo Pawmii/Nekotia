@@ -1,0 +1,16 @@
+{
+  // A Nekotia user program: nekoc → C++ → static ELF at /boot/bin/sh (see Makefile, runtime/user/).
+  "name": "sh",
+  "target": "user",
+  "sources": [
+    "../../sdk/Nekotia.Sdk/Attributes.cs",
+    "../../sdk/Nekotia.Sdk/Intrinsics.cs",
+    "../../sdk/Nekotia.Sdk/Debug.cs",
+    "../../sdk/Nekotia.Sdk/Maths.cs",
+    "../../sdk/Nekotia.User",
+    "."
+  ],
+  "output": "../../build/user/sh/gen",
+  "lineDirectives": true,
+  "defines": ["NEKOTIA", "NEKOTIA_USER"]
+}

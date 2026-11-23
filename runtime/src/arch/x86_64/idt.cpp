@@ -37,14 +37,22 @@ uint8_t ist_for(int vector) {
 }  // namespace
 
 extern "C" void* neko_isr_table[256];
+extern "C" char neko_user_copy_fault_start[], neko_user_copy_fault_end[], neko_user_copy_fixup[];
 
 // isr.S pushes exactly the layout of crash::CpuState.
 extern "C" void neko_isr_dispatch(crash::CpuState* f) {
     if (f->vector == 2 && crash::in_progress()) cpu::halt_forever();  // another CPU is drawing the stop screen
     // A fault in a user program ends that process, not the kernel (NMI, #DF and #MC are machine events).
     if (f->vector < 32 && (f->cs & 3) && f->vector != 2 && f->vector != 8 && f->vector != 18) proc::user_exception(f);
+    // A bad user pointer inside neko_user_copy: the copy fails instead of the kernel.
+    if (f->vector == 14 && f->rip >= reinterpret_cast<uint64_t>(neko_user_copy_fault_start) &&
+        f->rip <= reinterpret_cast<uint64_t>(neko_user_copy_fault_end) && cpu::read_cr2() < proc::kUserEnd) {
+        f->rip = reinterpret_cast<uint64_t>(neko_user_copy_fixup);
+        return;
+    }
     if (f->vector < 32) crash::cpu_exception(f);
     irq_dispatch(static_cast<uint8_t>(f->vector));
+    if (f->cs & 3) proc::check_killed();  // killed while it ran in ring 3 (timer tick or a kick IPI)
 }
 
 void idt_init() {

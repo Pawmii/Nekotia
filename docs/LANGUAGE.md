@@ -153,7 +153,9 @@ C#-обёртка в `sdk/Nekotia.Sdk/`.
 | Класс (`sdk/Nekotia.User`) | Что умеет |
 |---|---|
 | `Nekotia.User.Console` | `Write*`, `WriteLine` (с интерполяцией), `WriteError`, `Read`, `ReadLine`; цвета — `Ansi.*` |
-| `Nekotia.User.Process` | `Exit`, `Id`, `Yield`, `Sleep`, `Start(name, args)`, `Wait(pid)`, `GetInfo`, `ArgCount`/`Arg(i)`, `Syscall(n, …)` |
+| `Nekotia.User.Process` | `Exit`, `Id`, `Yield`, `Sleep`, `Start(name, args)`, `Wait(pid)`, `Kill(pid)`, `GetInfo`, `GetProgram`, `ArgCount`/`Arg(i)`, `Syscall(n, …)` |
+| `Nekotia.User.Thread` | `Start(&Entry, arg)` → handle, `Join`, `CurrentId`, `Exit`, `Yield` |
+| `Nekotia.User.SpinLock` / `Atomic` | `Lock`/`Unlock` (с `yield`); `Add`, `Load`, `Store`, `CompareExchange` над `long*` |
 | `Nekotia.User.Memory` | `Alloc`, `AllocZeroed`, `Free`, `New<T>`, `NewArray<T>`, `Delete<T>`, `UsedBytes`, `TotalBytes` |
 | `Nekotia.User.Time` | `UptimeMs` |
 
@@ -173,8 +175,8 @@ C#-обёртка в `sdk/Nekotia.Sdk/`.
 | `Nekotia.Mem.VirtualMemory` | `Map`, `Unmap`, `Protect`, `Translate`, `MapFresh`, `PageFlags` (Write/Execute/User/Uncached/WriteCombining) |
 | `Nekotia.Mem.Memory` | `Set`, `Copy`, `Move`, `Compare`, `Zero` |
 | `Nekotia.Threading.Thread` | `Start(name, &Entry, arg, priority)`, `Yield`, `Sleep`, `Exit`, `CurrentId`, `GetInfo` |
-| `Nekotia.Processes.Process` | `Start(name, args, detached)`, `Wait(pid)`, `Count`, `GetInfo`, `ProgramCount/Name/Size`, `ExitCurrent`, `ErrorText` |
-| `Nekotia.Processes.UserMemory` | `CanRead`, `CanWrite` — проверка указателей программы в `[Syscall]`-обработчиках |
+| `Nekotia.Processes.Process` | `Start(name, args, detached)`, `Wait(pid)`, `Kill(pid)`, `InterruptForeground`, `Foreground`, `Count`, `GetInfo`, `ProgramCount/Name/Size`, `ExitCurrent`, `ErrorText` |
+| `Nekotia.Processes.UserMemory` | `CopyTo`/`CopyFrom` — единственный способ трогать память программы (SMAP); `CanRead`/`CanWrite` — предварительная проверка |
 | `Nekotia.Threading.Mutex` / `Semaphore` / `SpinLock` | `Lock/Unlock/TryLock/SetName`; `Wait/Signal/TryWait` (Signal — и из IRQ) |
 | `Nekotia.Maths` | `Sqrt`, `Sin`, `Cos`, `Tan`, `Atan2`, `Exp`, `Log`, `Pow`, `Floor`, `Ceiling`, `Round`, `Abs`, `Pi` |
 | `Nekotia.Debug` | `Panic`, `Assert` — с файлом/строкой/методом вызывающего, экран смерти |

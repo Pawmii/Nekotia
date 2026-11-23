@@ -1,0 +1,16 @@
+{
+  // A Nekotia user program: nekoc → C++ → static ELF at /boot/bin/primes (see Makefile, runtime/user/).
+  "name": "primes",
+  "target": "user",
+  "sources": [
+    "../../sdk/Nekotia.Sdk/Attributes.cs",
+    "../../sdk/Nekotia.Sdk/Intrinsics.cs",
+    "../../sdk/Nekotia.Sdk/Debug.cs",
+    "../../sdk/Nekotia.Sdk/Maths.cs",
+    "../../sdk/Nekotia.User",
+    "."
+  ],
+  "output": "../../build/user/primes/gen",
+  "lineDirectives": true,
+  "defines": ["NEKOTIA", "NEKOTIA_USER"]
+}

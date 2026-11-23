@@ -13,6 +13,15 @@ public unsafe struct ProcessInfo
     [Native("name")] public fixed byte Name[24];
     [Native("memory_kib")] public ulong MemoryKib;
     [Native("uptime_ms")] public ulong UptimeMs;
+    [Native("threads")] public uint Threads;
+}
+
+/// <summary>A program in /boot/bin. Mirrors <c>neko::user::ProgramInfo</c>.</summary>
+[Native("::neko::user::ProgramInfo")]
+public unsafe struct ProgramInfo
+{
+    [Native("name")] public fixed byte Name[24];
+    [Native("size")] public ulong Size;
 }
 
 /// <summary>The running program and the processes it starts (system calls, see runtime/include/neko/process.hpp).</summary>
@@ -20,7 +29,10 @@ public static unsafe class Process
 {
     /// <summary>Negative results of Start/Wait.</summary>
     public const long ErrBadArgument = -1, ErrNotFound = -2, ErrNoMemory = -3, ErrBadAddress = -4,
-        ErrNoSyscall = -5, ErrBadExecutable = -6, ErrNotChild = -7;
+        ErrNoSyscall = -5, ErrBadExecutable = -6, ErrNotChild = -7, ErrInterrupted = -8, ErrLimit = -9;
+
+    /// <summary>Exit codes set by the kernel: Ctrl+C, kill; a CPU exception gives 128 + vector (142 = page fault).</summary>
+    public const long ExitInterrupted = 130, ExitKilled = 137;
 
     /// <summary>Ends the program with <paramref name="code"/> (what Main returning does too).</summary>
     [Native("::neko::user::exit")]
@@ -46,6 +58,14 @@ public static unsafe class Process
     /// <summary>Waits for a child to exit and returns its exit code (or a negative error).</summary>
     [Native("::neko::user::wait")]
     public static extern long Wait(uint pid);
+
+    /// <summary>Ends every thread of process <paramref name="pid"/> (exit code 137). 0 or ErrNotFound.</summary>
+    [Native("::neko::user::kill")]
+    public static extern long Kill(uint pid);
+
+    /// <summary>Program number <paramref name="index"/> in /boot/bin; false past the end.</summary>
+    [Native("::neko::user::program_info")]
+    public static extern bool GetProgram(uint index, out ProgramInfo info);
 
     /// <summary>Process number <paramref name="index"/> in the kernel's table; false past the end.</summary>
     [Native("::neko::user::process_info")]
@@ -92,4 +112,56 @@ public static unsafe class Memory
     public static T* NewArray<T>(ulong count) where T : unmanaged => (T*)AllocZeroed(count * (ulong)sizeof(T));
 
     public static void Delete<T>(T* value) where T : unmanaged => Free(value);
+}
+
+/// <summary>
+/// Threads of this program: they share its memory and run in parallel on every CPU. The program ends when Main
+/// returns or any thread calls Process.Exit; a fault in any thread ends all of them.
+/// </summary>
+public static unsafe class Thread
+{
+    /// <summary>Runs <paramref name="entry"/>(<paramref name="arg"/>) in a new thread with a 64 KiB stack; returns a handle for Join (0 on failure).</summary>
+    [Native("::neko::user::thread_start")]
+    public static extern ulong Start(delegate*<ulong, void> entry, ulong arg = 0);
+
+    /// <summary>Waits until the thread's entry method has returned and frees its stack.</summary>
+    [Native("::neko::user::thread_join")]
+    public static extern void Join(ulong handle);
+
+    /// <summary>Kernel id of the calling thread.</summary>
+    [Native("::neko::user::thread_id")]
+    public static extern uint CurrentId();
+
+    [Native("::neko::user::thread_exit")]
+    [NoReturn]
+    public static extern void Exit();
+
+    [Native("::neko::user::yield")]
+    public static extern void Yield();
+}
+
+/// <summary>Spin lock that yields while it waits. Keep it in a static field; in .neko files: <c>lock (_l) { }</c>.</summary>
+[Native("::neko::user::Lock")]
+public struct SpinLock
+{
+    [Native("lock")] public extern void Lock();
+    [Native("unlock")] public extern void Unlock();
+}
+
+/// <summary>Sequentially consistent atomic operations on 64-bit integers.</summary>
+public static unsafe class Atomic
+{
+    /// <summary>Adds and returns the new value.</summary>
+    [Native("::neko::user::atomic_add")]
+    public static extern long Add(long* location, long value);
+
+    [Native("::neko::user::atomic_load")]
+    public static extern long Load(long* location);
+
+    [Native("::neko::user::atomic_store")]
+    public static extern void Store(long* location, long value);
+
+    /// <summary>Sets *location to <paramref name="desired"/> if it equals <paramref name="expected"/>; true on success.</summary>
+    [Native("::neko::user::atomic_cas")]
+    public static extern bool CompareExchange(long* location, long expected, long desired);
 }

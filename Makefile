@@ -27,7 +27,7 @@ XORRISO    ?= xorriso
 LIMINE     ?= limine
 LIMINE_DIR ?= $(firstword $(wildcard /usr/share/limine third_party/limine-bin))
 OVMF       ?= $(firstword $(wildcard /usr/share/edk2/x64/OVMF.4m.fd /usr/share/edk2-ovmf/x64/OVMF.fd /usr/share/ovmf/x64/OVMF.fd /usr/share/OVMF/OVMF_CODE.fd))
-QEMU_FLAGS ?= -M q35 -m 256M -smp 4 -serial stdio -no-reboot -no-shutdown
+QEMU_FLAGS ?= -M q35 -cpu qemu64,+smep,+smap -m 256M -smp 4 -serial stdio -no-reboot -no-shutdown
 # make debug builds an -O0 kernel in build/debug for faithful C# line stepping in gdb
 HEAP_SIZE  ?= 4194304  # initial kernel heap; it grows on demand
 
@@ -216,7 +216,7 @@ $(BUILD)/nekotia-test.iso: $(BUILD)/nekotia.elf $(BUILD)/limine.conf $(USER_BINS
 	sed 's/^\( *cmdline:\).*/\1 test/' $(BUILD)/limine.conf > $(BUILD)/limine-test.conf
 	$(call make-iso,$(BUILD)/limine-test.conf,$@,$(BUILD)/iso_root_test)
 
-TEST_FLAGS ?= -M q35 -m 256M -smp 4 -display none -serial stdio -no-reboot \
+TEST_FLAGS ?= -M q35 -cpu qemu64,+smep,+smap -m 256M -smp 4 -display none -serial stdio -no-reboot \
               -device isa-debug-exit,iobase=0xf4,iosize=0x04
 TEST_TIMEOUT ?= 60
 

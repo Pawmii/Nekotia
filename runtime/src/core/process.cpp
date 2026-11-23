@@ -1,17 +1,21 @@
 // User processes: program modules, the ELF loader, the process table, exit/wait and the
 // system call table (see neko/process.hpp for the ABI and the address-space layout).
 //
-// Life of a process:
+// Life of a process (one or more threads sharing an address space):
 //   spawn  — find the module, check the ELF, build a fresh address space (image + stack with
 //            argc/argv), start a kernel thread bound to it (sched::spawn_for)
 //   start  — that thread loads a clean FPU state and drops to ring 3 (arch::enter_user)
 //   run    — system calls arrive through neko_syscall_dispatch; CPU exceptions in ring 3 end the
 //            process (user_exception) instead of stopping the kernel
-//   exit   — the thread ends; once it is off its CPU the scheduler calls thread_freed, which
-//            frees the address space and wakes the parent blocked in wait()
+//   exit   — exit(), kill, Ctrl+C or a fault fix the exit code and mark every thread kill_pending
+//            (sched::interrupt also cuts short sleeps and interruptible waits); each thread ends
+//            on its way back to ring 3 (check_killed). Once the last one is off its CPU,
+//            thread_freed frees the address space and wakes the parent blocked in wait()
 //   wait   — the parent collects the exit code and the Process record is freed
 #include <neko/process.hpp>
 #include <neko/runtime.hpp>
+
+extern "C" uint64_t neko_user_copy(void* dst, const void* src, uint64_t length);  // syscall.S: 0 or -1 on #PF
 
 namespace neko::proc {
 namespace {
@@ -127,6 +131,7 @@ void poke(uint64_t* pml4, uint64_t virt, const void* src, uint64_t length) {
 
 // Maps fresh zeroed pages for [start, end) (page-aligned); widens pages that are already there.
 bool map_pages(Process* p, uint64_t start, uint64_t end, vmm::PageFlags flags) {
+    sync::ScopedLock guard(p->lock);
     for (uint64_t v = start; v < end; v += kPage) {
         if (vmm::space_translate(p->pml4, v) != ~0ull) {
             vmm::space_add_flags(p->pml4, v, flags);
@@ -143,7 +148,13 @@ bool map_pages(Process* p, uint64_t start, uint64_t end, vmm::PageFlags flags) {
     return true;
 }
 
-bool load_image(Process* p, const uint8_t* data) {
+// Where a new thread enters ring 3 (heap-allocated, freed by the thread before it gets there).
+struct StartInfo {
+    Process* process;
+    uint64_t rip, rsp, arg0, arg1;
+};
+
+bool load_image(Process* p, const uint8_t* data, StartInfo& start) {
     auto* h = reinterpret_cast<const ElfHeader*>(data);
     auto* ph = reinterpret_cast<const ProgramHeader*>(data + h->phoff);
     for (uint16_t i = 0; i < h->phnum; ++i) {
@@ -157,12 +168,12 @@ bool load_image(Process* p, const uint8_t* data) {
         if (!map_pages(p, start, end, flags)) return false;
         poke(p->pml4, s.vaddr, data + s.offset, s.filesz);  // the rest (.bss) stays zero
     }
-    p->entry = h->entry;
+    start.rip = h->entry;
     return true;
 }
 
 // Stack: [argv[0] … argv[n-1] strings][padding][argv pointers, NULL] ← rsp (16-byte aligned).
-bool build_stack(Process* p, const char* name, const char* args) {
+bool build_stack(Process* p, const char* name, const char* args, StartInfo& start) {
     constexpr uint32_t kMaxArgs = 32;
     constexpr uint64_t kMaxArgBytes = 2048;
     if (!map_pages(p, kUserStackTop - kUserStackSize, kUserStackTop, vmm::PageFlags::Write)) return false;
@@ -197,9 +208,9 @@ bool build_stack(Process* p, const char* name, const char* args) {
     uint64_t argv_at = mem::align_down(strings_at - (argc + 1) * 8, 16);
     poke(p->pml4, argv_at, pointers, (argc + 1) * 8);
 
-    p->argc = argc;
-    p->argv = argv_at;
-    p->user_rsp = argv_at;
+    start.arg0 = argc;
+    start.arg1 = argv_at;
+    start.rsp = argv_at;
     p->alloc_next = kUserAllocBase;
     return true;
 }
@@ -207,18 +218,64 @@ bool build_stack(Process* p, const char* name, const char* args) {
 // ---------------------------------------------------------------- process thread
 
 alignas(16) uint8_t g_clean_fpu[512];
+uint32_t g_foreground = 0;  // pid owning the console (0 = kernel shell)
 
-// First code of a process thread (kernel mode, already on the process's page tables).
-void process_main(uint64_t arg) {
-    auto* p = reinterpret_cast<Process*>(arg);
+// First code of every user thread (kernel mode, already on the process's page tables).
+void thread_main(uint64_t arg) {
+    auto* s = reinterpret_cast<StartInfo*>(arg);
+    StartInfo start = *s;
+    heap::free(s);
+    check_killed();  // killed before it ever ran
     // Nothing of the kernel's FPU/SSE state may leak into the program.
     __asm__ volatile("fxrstor %0" : : "m"(g_clean_fpu));
-    arch::enter_user(p->entry, p->user_rsp, p->argc, p->argv);
+    arch::enter_user(start.rip, start.rsp, start.arg0, start.arg1);
+}
+
+void init_clean_fpu() {
+    static bool ready = false;
+    if (ready) return;
+    mem::set(g_clean_fpu, 0, sizeof(g_clean_fpu));
+    g_clean_fpu[0] = 0x7F;  // FCW 0x037F: x87 exceptions masked, extended precision
+    g_clean_fpu[1] = 0x03;
+    reinterpret_cast<uint32_t*>(g_clean_fpu)[6] = 0x1F80;  // MXCSR: SSE exceptions masked
+    ready = true;
+}
+
+// Starts one more thread of `p` (the counter p->threads is already incremented by the caller).
+uint32_t start_thread(Process* p, const StartInfo& start) {
+    auto* s = static_cast<StartInfo*>(heap::alloc(sizeof(StartInfo)));
+    if (!s) return 0;
+    *s = start;
+    uint32_t tid = sched::spawn_for(p, reinterpret_cast<const char*>(p->name), &thread_main, reinterpret_cast<uint64_t>(s));
+    if (!tid) heap::free(s);
+    return tid;
 }
 
 void release(Process* p) {
     vmm::space_destroy(p->pml4);
     heap::free(p);
+}
+
+// g_lock held. Fixes the exit code (first one wins) and ends every thread of p except the caller.
+void terminate_locked(Process* p, int64_t code) {
+    if (p->state == State::Exited) return;
+    if (!p->exiting) {
+        p->exiting = true;
+        p->exit_code = code;
+    }
+    // Collect first (the scheduler lock is held inside for_each_thread), then interrupt.
+    // The threads cannot be freed meanwhile: thread_freed needs g_lock, which we hold.
+    sched::Thread* list[kMaxThreads + 1];
+    struct Ctx {
+        sched::Thread** list;
+        uint32_t n;
+        sched::Thread* self;
+    } ctx{list, 0, sched::current()};
+    sched::for_each_thread(p, [](sched::Thread* t, void* c) {
+        auto* x = static_cast<Ctx*>(c);
+        if (t != x->self && x->n < kMaxThreads + 1) x->list[x->n++] = t;
+    }, &ctx);
+    for (uint32_t i = 0; i < ctx.n; ++i) sched::interrupt(list[i]);
 }
 
 }  // namespace
@@ -262,24 +319,19 @@ int64_t spawn(const char* name, const char* args, bool detached) {
         return kErrNoMemory;
     }
     p->pml4_phys = pmm::virt_to_phys(p->pml4);
-    if (!load_image(p, m->data) || !build_stack(p, m->name, args)) {
+    StartInfo start{p, 0, 0, 0, 0};
+    if (!load_image(p, m->data, start) || !build_stack(p, m->name, args, start)) {
         release(p);
         return kErrNoMemory;
     }
+    p->alloc_next = kUserAllocBase;
     copy_name(p->name, m->name);
     Process* parent = current();
     p->parent = parent ? parent->pid : 0;
     p->detached = detached;
     p->started_ms = time::uptime_ms();
-
-    static bool fpu_ready = false;
-    if (!fpu_ready) {
-        mem::set(g_clean_fpu, 0, sizeof(g_clean_fpu));
-        g_clean_fpu[0] = 0x7F;  // FCW 0x037F: x87 exceptions masked, extended precision
-        g_clean_fpu[1] = 0x03;
-        reinterpret_cast<uint32_t*>(g_clean_fpu)[6] = 0x1F80;  // MXCSR: SSE exceptions masked
-        fpu_ready = true;
-    }
+    p->threads = 1;
+    init_clean_fpu();
 
     {
         sync::ScopedLock guard(g_lock);
@@ -289,7 +341,7 @@ int64_t spawn(const char* name, const char* args, bool detached) {
         ++g_count;
     }
     uint32_t pid = p->pid;
-    uint32_t tid = sched::spawn_for(p, m->name, &process_main, reinterpret_cast<uint64_t>(p));
+    uint32_t tid = start_thread(p, start);
     if (!tid) {
         {
             sync::ScopedLock guard(g_lock);
@@ -306,41 +358,108 @@ int64_t wait(uint32_t pid) {
     Process* me = current();
     uint32_t caller = me ? me->pid : 0;
     Process* p;
+    bool took_console = false;
     {
         sync::ScopedLock guard(g_lock);
         p = find_locked(pid);
         if (!p) return kErrNotFound;
         if (p->parent != caller || p->detached || p->waited) return kErrNotChild;
         p->waited = true;
+        if (g_foreground == caller && p->state == State::Running) {  // the console goes to the child
+            g_foreground = pid;
+            took_console = true;
+        }
     }
-    p->exited.wait();
+    bool done = me ? p->exited.wait_interruptible() : (p->exited.wait(), true);
+    Process* to_free = nullptr;
+    int64_t code = kErrInterrupted;
     {
         sync::ScopedLock guard(g_lock);
-        unlink_locked(p);
+        if (took_console && g_foreground == pid) g_foreground = caller;
+        if (done) {
+            unlink_locked(p);
+            code = p->exit_code;
+            to_free = p;
+        } else if (p->state == State::Exited) {  // we are being killed; the child is gone too
+            unlink_locked(p);
+            to_free = p;
+        } else {  // we are being killed: nobody will collect the child now
+            p->waited = false;
+            p->detached = true;
+            p->parent = 0;
+        }
     }
-    int64_t code = p->exit_code;
-    heap::free(p);
+    if (to_free) heap::free(to_free);
     return code;
+}
+
+void check_killed() {
+    if (sched::killed()) sched::exit();
 }
 
 void exit_current(int64_t code) {
     Process* p = current();
     if (!p) panic("proc::exit_current called from a kernel thread");
-    p->exit_code = code;
+    {
+        sync::ScopedLock guard(g_lock);
+        terminate_locked(p, code);
+    }
     sched::exit();
 }
 
+int64_t kill(uint32_t pid, int64_t code) {
+    sync::ScopedLock guard(g_lock);
+    Process* p = find_locked(pid);
+    if (!p || p->state == State::Exited) return kErrNotFound;
+    terminate_locked(p, code);
+    if (p == current()) __atomic_store_n(&sched::current()->kill_pending, true, __ATOMIC_SEQ_CST);
+    return 0;
+}
+
+bool interrupt_foreground() {
+    uint32_t fg = __atomic_load_n(&g_foreground, __ATOMIC_ACQUIRE);
+    return fg != 0 && kill(fg, kExitInterrupted) == 0;
+}
+
+uint32_t foreground() { return g_foreground; }
+
 void thread_freed(sched::Thread* t) {
     Process* p = t->process;
+    {
+        sync::ScopedLock guard(g_lock);
+        if (--p->threads > 0) return;  // other threads still run
+    }
     vmm::space_destroy(p->pml4);
     p->pml4 = nullptr;
-    p->user_pages = 0;
     bool free_now;
     {
         sync::ScopedLock guard(g_lock);
         p->state = State::Exited;
+        if (!p->exiting) {  // the last thread ended without exit(): code 0
+            p->exiting = true;
+            p->exit_code = 0;
+        }
+        p->user_pages = 0;
         free_now = p->detached;
         if (free_now) unlink_locked(p);
+        // Children nobody will wait for any more: running ones are freed when they exit,
+        // finished ones right now (below).
+        for (Process* q = g_processes; q; q = q->next) {
+            if (q->parent != p->pid || q->waited) continue;
+            q->parent = 0;
+            q->detached = true;
+        }
+    }
+    for (;;) {  // reap orphans that had already exited
+        Process* z = nullptr;
+        {
+            sync::ScopedLock guard(g_lock);
+            for (Process* q = g_processes; q; q = q->next)
+                if (q->detached && q->state == State::Exited) z = q;
+            if (z) unlink_locked(z);
+        }
+        if (!z) break;
+        heap::free(z);
     }
     if (free_now) heap::free(p);
     else p->exited.signal();
@@ -360,6 +479,7 @@ bool info(uint32_t index, ProcessInfo& out) {
     mem::copy(out.name, p->name, sizeof(out.name));
     out.memory_kib = p->user_pages * (kPage / 1024);
     out.uptime_ms = time::uptime_ms() - p->started_ms;
+    out.threads = p->threads;
     return true;
 }
 
@@ -387,6 +507,8 @@ void user_exception(const crash::CpuState* f) {
     term::write(reinterpret_cast<const char*>(p->name));
     term::write(" (pid ");
     term::write_udec(p->pid);
+    term::write(", thread ");
+    term::write_udec(sched::current_id());
     term::write("): ");
     term::write(what);
     term::write("\x1b[0m\n       ");
@@ -405,7 +527,7 @@ void user_exception(const crash::CpuState* f) {
     exit_current(code);
 }
 
-// ---------------------------------------------------------------- system calls
+// ---------------------------------------------------------------- user memory
 
 bool register_syscall(uint32_t number, SyscallHandler handler) {
     if (number < kFirstFreeSyscall && number != uint32_t(Syscall::Read)) return false;  // runtime-owned
@@ -424,16 +546,33 @@ bool check_write(const void* address, uint64_t length) {
     return p && vmm::space_check(p->pml4, reinterpret_cast<uint64_t>(address), length, true);
 }
 
+namespace {
+bool user_range(const void* address, uint64_t length) {
+    auto a = reinterpret_cast<uint64_t>(address);
+    return current() && a + length >= a && a + length <= kUserEnd;
+}
+}  // namespace
+
+bool copy_from_user(void* dst, const void* user_src, uint64_t length) {
+    if (length == 0) return true;
+    return user_range(user_src, length) && neko_user_copy(dst, user_src, length) == 0;
+}
+
+bool copy_to_user(void* user_dst, const void* src, uint64_t length) {
+    if (length == 0) return true;
+    return user_range(user_dst, length) && neko_user_copy(user_dst, src, length) == 0;
+}
+
 int64_t copy_string(const void* user, char* out, uint64_t capacity) {
     auto* s = static_cast<const char*>(user);
     for (uint64_t i = 0; i < capacity; ++i) {
-        if ((i == 0 || ((reinterpret_cast<uint64_t>(s) + i) & (kPage - 1)) == 0) && !check_read(s + i, 1))
-            return kErrBadAddress;
-        out[i] = s[i];
+        if (!copy_from_user(&out[i], s + i, 1)) return kErrBadAddress;
         if (!out[i]) return int64_t(i);
     }
     return kErrBadArgument;  // too long
 }
+
+// ---------------------------------------------------------------- system calls
 
 namespace {
 
@@ -445,7 +584,7 @@ int64_t sys_write(uint64_t fd, uint64_t buffer, uint64_t length) {
     char chunk[257];
     for (uint64_t done = 0; done < length;) {
         uint64_t n = length - done < 256 ? length - done : 256;
-        mem::copy(chunk, src + done, n);
+        if (!copy_from_user(chunk, src + done, n)) return done ? int64_t(done) : kErrBadAddress;
         chunk[n] = 0;
         term::write(chunk);
         done += n;
@@ -464,19 +603,53 @@ int64_t sys_alloc(uint64_t bytes) {
     Process* p = current();
     if (bytes == 0 || bytes > kUserAllocLimit - kUserAllocBase) return kErrBadArgument;
     uint64_t size = mem::align_up(bytes, kPage);
-    if (p->alloc_next + size > kUserAllocLimit) return kErrNoMemory;
-    uint64_t at = p->alloc_next;
+    uint64_t at;
+    {
+        sync::ScopedLock guard(p->lock);  // threads of one process allocate concurrently
+        if (p->alloc_next + size > kUserAllocLimit) return kErrNoMemory;
+        at = p->alloc_next;
+        p->alloc_next += size;
+    }
     if (!map_pages(p, at, at + size, vmm::PageFlags::Write)) return kErrNoMemory;  // mapped pages are freed at exit
-    p->alloc_next += size;
     return int64_t(at);
 }
 
 int64_t sys_process_info(uint64_t index, uint64_t out) {
-    if (!check_write(reinterpret_cast<void*>(out), sizeof(ProcessInfo))) return kErrBadAddress;
     ProcessInfo i;
     if (!info(uint32_t(index), i)) return 0;
-    mem::copy(reinterpret_cast<void*>(out), &i, sizeof(i));
-    return 1;
+    return copy_to_user(reinterpret_cast<void*>(out), &i, sizeof(i)) ? 1 : kErrBadAddress;
+}
+
+struct ProgramInfo {
+    uint8_t name[24];
+    uint64_t size;
+};
+
+int64_t sys_program_info(uint64_t index, uint64_t out) {
+    if (index >= g_module_count) return 0;
+    ProgramInfo i;
+    copy_name(i.name, g_modules[index].name);
+    i.size = g_modules[index].size;
+    return copy_to_user(reinterpret_cast<void*>(out), &i, sizeof(i)) ? 1 : kErrBadAddress;
+}
+
+int64_t sys_thread_create(uint64_t rip, uint64_t stack_top, uint64_t arg) {
+    Process* p = current();
+    if (rip >= kUserEnd || stack_top >= kUserEnd || (stack_top & 15) != 0) return kErrBadArgument;
+    {
+        sync::ScopedLock guard(g_lock);
+        if (p->exiting) return kErrInterrupted;
+        if (p->threads >= kMaxThreads) return kErrLimit;
+        ++p->threads;
+    }
+    StartInfo start{p, rip, stack_top, arg, 0};
+    uint32_t tid = start_thread(p, start);
+    if (!tid) {
+        sync::ScopedLock guard(g_lock);
+        --p->threads;
+        return kErrNoMemory;
+    }
+    return tid;
 }
 
 }  // namespace
@@ -499,9 +672,15 @@ extern "C" void neko_syscall_dispatch(neko::proc::SyscallFrame* f) {
         case Syscall::Wait: r = f->rdi > 0xFFFFFFFFu ? kErrNotFound : wait(uint32_t(f->rdi)); break;
         case Syscall::Alloc: r = sys_alloc(f->rdi); break;
         case Syscall::ProcessInfo: r = sys_process_info(f->rdi, f->rsi); break;
+        case Syscall::Kill: r = f->rdi > 0xFFFFFFFFu ? kErrNotFound : kill(uint32_t(f->rdi)); break;
+        case Syscall::ThreadCreate: r = sys_thread_create(f->rdi, f->rsi, f->rdx); break;
+        case Syscall::ThreadExit: sched::exit();
+        case Syscall::ThreadId: r = sched::current_id(); break;
+        case Syscall::ProgramInfo: r = sys_program_info(f->rdi, f->rsi); break;
         default:
             if (f->rax < kMaxSyscalls && g_syscalls[f->rax]) r = g_syscalls[f->rax](f->rdi, f->rsi, f->rdx, f->r10, f->r8, f->r9);
             break;
     }
     f->rax = uint64_t(r);
+    check_killed();
 }

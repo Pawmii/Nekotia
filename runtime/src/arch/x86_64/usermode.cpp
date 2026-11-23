@@ -19,6 +19,10 @@ static_assert(offsetof(neko::smp::Cpu, kernel_rsp) == 8, "syscall.S reads gs:8")
 static_assert(offsetof(neko::smp::Cpu, user_rsp) == 16, "syscall.S writes gs:16");
 static_assert(sizeof(neko::proc::SyscallFrame) == 20 * 8, "syscall.S pushes 20 registers");
 
+extern "C" {
+uint8_t neko_smap_enabled = 0;  // read by neko_user_copy (syscall.S): stac/clac only when supported
+}
+
 namespace neko::arch {
 namespace {
 
@@ -45,6 +49,27 @@ void syscall_init_this_cpu() {
 }
 
 bool user_mode_available() { return g_available; }
+
+bool g_smep = false;
+bool g_smap = false;
+
+void enable_smep_smap() {
+    uint32_t a, b, c, d;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0), "c"(0));
+    if (a < 7) return;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(7), "c"(0));
+    uint64_t cr4;
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    if (b & (1u << 7)) cr4 |= 1ull << 20;   // SMEP: ring 0 never executes user pages
+    if (b & (1u << 20)) cr4 |= 1ull << 21;  // SMAP: ring 0 touches user pages only in neko_user_copy
+    __asm__ volatile("mov %0, %%cr4" : : "r"(cr4) : "memory");
+    g_smep = b & (1u << 7);
+    g_smap = b & (1u << 20);
+    neko_smap_enabled = g_smap ? 1 : 0;
+}
+
+bool smep_enabled() { return g_smep; }
+bool smap_enabled() { return g_smap; }
 
 void enter_user(uint64_t rip, uint64_t rsp, uint64_t arg0, uint64_t arg1) { neko_enter_user(rip, rsp, arg0, arg1); }
 

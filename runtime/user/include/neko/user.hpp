@@ -37,6 +37,22 @@ int64_t spawn(const uint8_t* name, const uint8_t* args);
 int64_t wait(uint32_t pid);
 int64_t syscall(uint64_t number, uint64_t a, uint64_t b, uint64_t c);  // for kernel [Syscall] handlers
 
+int64_t kill(uint32_t pid);  // ends it with exit code 137
+
+// ---- threads (share the address space; the process ends when Main returns or anyone calls exit)
+using ThreadEntry = void (*)(uint64_t arg);
+uint64_t thread_start(ThreadEntry entry, uint64_t arg);  // handle, 0 on failure (64 KiB stack from the heap)
+void thread_join(uint64_t handle);                        // waits for it, frees its stack
+uint32_t thread_id();
+NEKO_NORETURN void thread_exit();
+
+// Spin lock that yields the CPU while it waits.
+struct Lock {
+    volatile uint32_t value;
+    void lock();
+    void unlock();
+};
+
 int32_t argc();
 const uint8_t* arg(int32_t index);  // "" past the end
 
@@ -48,8 +64,15 @@ struct ProcessInfo {  // same layout as neko::proc::ProcessInfo
     uint8_t name[24];
     uint64_t memory_kib;
     uint64_t uptime_ms;
+    uint32_t threads;
 };
 bool process_info(uint32_t index, ProcessInfo& out);
+
+struct ProgramInfo {  // a program in /boot/bin
+    uint8_t name[24];
+    uint64_t size;
+};
+bool program_info(uint32_t index, ProgramInfo& out);
 
 // ---- console (fd 1 = stdout, 2 = stderr, 0 = keyboard)
 int64_t write(int32_t fd, const void* data, uint64_t length);
@@ -72,6 +95,14 @@ void* alloc_zeroed(uint64_t size);
 void free(void* block);
 uint64_t heap_used();
 uint64_t heap_total();
+
+// ---- atomics (sequentially consistent)
+inline int64_t atomic_add(int64_t* p, int64_t v) { return __atomic_add_fetch(p, v, __ATOMIC_SEQ_CST); }
+inline int64_t atomic_load(int64_t* p) { return __atomic_load_n(p, __ATOMIC_SEQ_CST); }
+inline void atomic_store(int64_t* p, int64_t v) { __atomic_store_n(p, v, __ATOMIC_SEQ_CST); }
+inline bool atomic_cas(int64_t* p, int64_t expected, int64_t desired) {
+    return __atomic_compare_exchange_n(p, &expected, desired, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+}
 
 }  // namespace neko::user
 

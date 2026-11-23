@@ -100,4 +100,36 @@ neko_enter_user:
     iretq
 .size neko_enter_user, . - neko_enter_user
 
+/* uint64_t neko_user_copy(void* dst, const void* src, uint64_t n) → 0, or -1 when a page fault hit
+   the copy (idt.cpp moves rip to the fixup). User pages are reachable only between stac and clac
+   when SMAP is on (neko_smap_enabled, set by usermode.cpp). */
+.global neko_user_copy
+.global neko_user_copy_fault_start
+.global neko_user_copy_fault_end
+.global neko_user_copy_fixup
+.type neko_user_copy, @function
+neko_user_copy:
+    movq %rdx, %rcx
+    cmpb $0, neko_smap_enabled(%rip)
+    je 1f
+    stac
+1:
+neko_user_copy_fault_start:
+    rep movsb
+neko_user_copy_fault_end:
+    cmpb $0, neko_smap_enabled(%rip)
+    je 2f
+    clac
+2:
+    xorl %eax, %eax
+    ret
+neko_user_copy_fixup:
+    cmpb $0, neko_smap_enabled(%rip)
+    je 3f
+    clac
+3:
+    movq $-1, %rax
+    ret
+.size neko_user_copy, . - neko_user_copy
+
 .section .note.GNU-stack, "", @progbits

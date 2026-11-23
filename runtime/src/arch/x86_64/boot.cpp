@@ -209,7 +209,11 @@ uint64_t g_kernel_stack_top = 0;
     neko::term::write(" of ");
     neko::term::write_udec(mp_request.response ? mp_request.response->cpu_count : 1);
     neko::term::write(" CPU(s) online\n");
-    neko::term::write("[neko] user mode: syscall/sysret, ");
+    neko::term::write("[neko] user mode: syscall/sysret, SMEP ");
+    neko::term::write(neko::arch::smep_enabled() ? "on" : "off");
+    neko::term::write(", SMAP ");
+    neko::term::write(neko::arch::smap_enabled() ? "on" : "off");
+    neko::term::write(", ");
     neko::term::write_udec(neko::proc::module_count());
     neko::term::write(" program(s) in /boot/bin\n");
 
@@ -241,6 +245,7 @@ extern "C" NEKO_NORETURN void kmain() {
     neko::arch::syscall_init_this_cpu();
     init_physical_memory();
     init_virtual_memory();
+    neko::arch::enable_smep_smap();
 
     uint64_t stack = neko::vmm::create_stack(kKernelStackSize);
     if (!stack) neko::panic("cannot allocate the kernel stack");

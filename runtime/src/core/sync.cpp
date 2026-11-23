@@ -184,6 +184,56 @@ void Semaphore::wait() {
     sched::block("semaphore", &guard);
 }
 
+bool Semaphore::wait_interruptible() {
+    cpu::InterruptGuard g;
+    Thread* me = sched::current();
+    if (!sched::running() || !me) {
+        wait();
+        return true;
+    }
+    guard.acquire();
+    if (count > 0) {
+        --count;
+        guard.release();
+        return true;
+    }
+    // Publish the wait before looking at kill_pending; interrupt() sets the flag before reading
+    // waiting_sem. One of the two always sees the other, so a kill is never missed.
+    me->interrupted = false;
+    __atomic_store_n(&me->waiting_sem, this, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&me->kill_pending, __ATOMIC_SEQ_CST)) {
+        me->waiting_sem = nullptr;
+        guard.release();
+        return false;
+    }
+    enqueue(head, tail, me);
+    sched::block("semaphore", &guard);
+    // Woken either by signal() (which handed us a unit) or by cancel().
+    __atomic_store_n(&me->waiting_sem, nullptr, __ATOMIC_SEQ_CST);
+    return !me->interrupted;
+}
+
+void Semaphore::cancel(Thread* t) {
+    cpu::InterruptGuard g;
+    guard.acquire();
+    bool removed = false;
+    for (Thread** p = &head; *p; p = &(*p)->next) {
+        if (*p == t) {
+            *p = t->next;
+            if (tail == t) {
+                tail = nullptr;
+                for (Thread* q = head; q; q = q->next) tail = q;
+            }
+            t->next = nullptr;
+            t->interrupted = true;
+            removed = true;
+            break;
+        }
+    }
+    guard.release();
+    if (removed) sched::wake(t);
+}
+
 bool Semaphore::try_wait() {
     cpu::InterruptGuard g;
     guard.acquire();

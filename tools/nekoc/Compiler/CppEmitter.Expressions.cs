@@ -14,7 +14,7 @@ sealed partial class CppEmitter
 
     string Unsupported(SyntaxNode node, string what, string? hint = null)
     {
-        _diag.Error("NEKO0300", $"{what} is not supported in kernel code" + (hint is null ? "" : $" — {hint}"), node);
+        _diag.Error("NEKO0300", $"{what} is not supported {(_config.IsUser ? "in user programs" : "in kernel code")}" + (hint is null ? "" : $" — {hint}"), node);
         return "0 /* unsupported */";
     }
 
@@ -98,7 +98,7 @@ sealed partial class CppEmitter
             case RefExpressionSyntax r:
                 return Expr(r.Expression);
             case InterpolatedStringExpressionSyntax:
-                return Unsupported(e, "string interpolation", "write the parts with Serial.Write / Serial.WriteDec");
+                return Unsupported(e, "string interpolation", "only as the only argument of Write/WriteLine (Terminal, Serial, Console); split colored output into Write(color) + WriteLine($\"…\")");
             case BaseExpressionSyntax:
                 return Unsupported(e, "base access");
             case ThrowExpressionSyntax:
@@ -604,7 +604,7 @@ sealed partial class CppEmitter
     {
         var type = target.ContainingType;
         if (target.Name is not ("Write" or "WriteLine"))
-            return Unsupported(inv, "string interpolation", "it is only supported as the argument of Write/WriteLine on Serial, Terminal or a type with the same Write* methods");
+            return Unsupported(inv, "string interpolation", "it is only supported as the only argument of Write/WriteLine on Serial, Terminal, Console or a type with the same Write* methods");
 
         IMethodSymbol? Find(string name, SpecialType? param)
         {

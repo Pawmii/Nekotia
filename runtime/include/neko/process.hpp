@@ -1,6 +1,6 @@
 // User processes (core/process.cpp, arch/x86_64/usermode.cpp, arch/x86_64/syscall.S).
 //
-// A process is one address space + one thread running in ring 3. Programs are static ELF64
+// A process is one address space + one or more threads running in ring 3. Programs are static ELF64
 // executables handed to the kernel as Limine modules (/boot/bin/* on the ISO) and built from C#
 // by nekoc with "target": "user" (see user/ and runtime/user/).
 //
@@ -36,6 +36,11 @@ enum class Syscall : uint32_t {
     Wait = 8,      // wait(pid)                           → its exit code (only for its parent)
     Alloc = 9,     // alloc(bytes)                        → address of fresh zeroed RW pages
     ProcessInfo = 10,  // process_info(index, ProcessInfo*) → 1, or 0 past the end
+    Kill = 11,         // kill(pid)                          → 0; the process ends with exit code 137
+    ThreadCreate = 12, // thread_create(rip, stack_top, arg) → thread id; starts at rip with rdi = arg
+    ThreadExit = 13,   // thread_exit()                      never returns; the last thread ends the process
+    ThreadId = 14,     // thread_id()                        → id of the calling thread
+    ProgramInfo = 15,  // program_info(index, ProgramInfo*)  → 1, or 0 past the end (/boot/bin listing)
 };
 constexpr uint32_t kMaxSyscalls = 64;
 constexpr uint32_t kFirstFreeSyscall = 32;  // numbers below are reserved for the runtime
@@ -49,10 +54,15 @@ enum Error : int64_t {
     kErrNoSyscall = -5,
     kErrBadExecutable = -6,
     kErrNotChild = -7,
+    kErrInterrupted = -8,  // the caller is being killed
+    kErrLimit = -9,        // too many threads
 };
 
 // Exit code of a process killed by a CPU exception: 128 + vector (like a Unix signal number).
 constexpr int64_t kKilledBase = 128;
+constexpr int64_t kExitInterrupted = 130;  // Ctrl+C
+constexpr int64_t kExitKilled = 137;       // kill
+constexpr uint32_t kMaxThreads = 64;       // per process
 
 constexpr uint64_t kUserImageBase = 0x400000;
 constexpr uint64_t kUserAllocBase = 0x0000100000000000ull;
@@ -75,9 +85,11 @@ struct Process {
     uint64_t pml4_phys;
     uint64_t alloc_next; // next address for the alloc syscall
     uint64_t user_pages; // pages mapped for it (image, stack, allocations)
-    uint32_t thread_id;
+    uint32_t thread_id;  // main thread
+    uint32_t threads;    // threads not yet freed; the last one tears the address space down
+    bool exiting;        // exit/kill/fault happened: exit_code is final, every thread is being ended
     uint64_t started_ms;
-    uint64_t entry, user_rsp, argc, argv;  // where the thread enters ring 3
+    sync::SpinLock lock; // alloc_next, user_pages
     sync::Semaphore exited;  // signalled once the address space is gone
     Process* next;
 };
@@ -99,7 +111,14 @@ inline int64_t spawn(const uint8_t* name, const uint8_t* args, bool detached = f
 int64_t wait(uint32_t pid);
 Process* current();  // nullptr in kernel threads
 inline uint32_t current_pid() { return current() ? current()->pid : 0; }
-NEKO_NORETURN void exit_current(int64_t code);
+NEKO_NORETURN void exit_current(int64_t code);  // ends the whole process (every thread)
+int64_t kill(uint32_t pid, int64_t code = kExitKilled);  // 0 or kErrNotFound; callable from IRQ handlers
+// Ctrl+C: ends the foreground process (the one the console's owner is waiting for) with code 130.
+// Returns false when the kernel shell itself is in the foreground. Callable from IRQ handlers.
+bool interrupt_foreground();
+uint32_t foreground();  // pid, 0 = kernel
+// Called before returning to ring 3: ends the current thread if it was killed.
+void check_killed();
 
 struct ProcessInfo {
     uint32_t pid;
@@ -109,6 +128,7 @@ struct ProcessInfo {
     uint8_t name[24];
     uint64_t memory_kib;  // user pages
     uint64_t uptime_ms;   // since it started
+    uint32_t threads;
 };
 uint32_t count();
 bool info(uint32_t index, ProcessInfo& out);
@@ -129,6 +149,10 @@ bool check_read(const void* address, uint64_t length);
 bool check_write(const void* address, uint64_t length);
 // Copies a NUL-terminated user string into `out` (at most `capacity` bytes incl. NUL). Length or Error.
 int64_t copy_string(const void* user, char* out, uint64_t capacity);
+// The only way the kernel touches user memory (SMAP is on where the CPU has it): range-checked,
+// and a page fault inside the copy returns false instead of stopping the kernel.
+bool copy_from_user(void* dst, const void* user_src, uint64_t length);
+bool copy_to_user(void* user_dst, const void* src, uint64_t length);
 
 // Register state saved by the syscall entry (syscall.S): the same order as crash::CpuState
 // without vector / error code.
@@ -145,6 +169,9 @@ namespace neko::arch {
 // Enters ring 3 at `rip` with stack `rsp`, rdi = arg0, rsi = arg1. Never returns.
 NEKO_NORETURN void enter_user(uint64_t rip, uint64_t rsp, uint64_t arg0, uint64_t arg1);
 bool user_mode_available();
+void enable_smep_smap();  // per CPU, once our page tables are active
+bool smep_enabled();
+bool smap_enabled();
 }
 
 // Address spaces (arch/x86_64/vmm.cpp; stubs in host mode).

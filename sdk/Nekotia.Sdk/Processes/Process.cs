@@ -17,6 +17,7 @@ public unsafe struct ProcessInfo
     /// <summary>User memory: image, stack and allocations.</summary>
     [Native("memory_kib")] public ulong MemoryKib;
     [Native("uptime_ms")] public ulong UptimeMs;
+    [Native("threads")] public uint Threads;
 }
 
 /// <summary>
@@ -28,6 +29,11 @@ public static unsafe class Process
     /// <summary>Error results of <see cref="Start"/> and <see cref="Wait"/> (mirrors <c>neko::proc::Error</c>).</summary>
     public const long ErrBadArgument = -1, ErrNotFound = -2, ErrNoMemory = -3, ErrBadAddress = -4,
         ErrNoSyscall = -5, ErrBadExecutable = -6, ErrNotChild = -7;
+
+    public const long ErrInterrupted = -8, ErrLimit = -9;
+
+    /// <summary>Exit codes: Ctrl+C, kill.</summary>
+    public const long ExitInterrupted = 130, ExitKilled = 137;
 
     /// <summary>A process killed by CPU exception <c>v</c> exits with <c>KilledBase + v</c> (142 = page fault).</summary>
     public const long KilledBase = 128;
@@ -42,6 +48,18 @@ public static unsafe class Process
     /// <summary>Blocks until process <paramref name="pid"/> exits; returns its exit code (or a negative error).</summary>
     [Native("::neko::proc::wait")]
     public static extern long Wait(uint pid);
+
+    /// <summary>Ends every thread of process <paramref name="pid"/>; it exits with <paramref name="code"/>. 0 or ErrNotFound.</summary>
+    [Native("::neko::proc::kill")]
+    public static extern long Kill(uint pid, long code = 137);
+
+    /// <summary>Ctrl+C: ends the program in the foreground of the console; false when the kernel shell is.</summary>
+    [Native("::neko::proc::interrupt_foreground")]
+    public static extern bool InterruptForeground();
+
+    /// <summary>Pid owning the console (whoever the shell is waiting for), 0 = the kernel.</summary>
+    [Native("::neko::proc::foreground")]
+    public static extern uint Foreground();
 
     [Native("::neko::proc::count")]
     public static extern uint Count();
@@ -84,6 +102,8 @@ public static unsafe class Process
         if (error == ErrNoSyscall) return "user mode is not available";
         if (error == ErrBadExecutable) return "not a valid static x86_64 ELF executable";
         if (error == ErrNotChild) return "not a child of the caller";
+        if (error == ErrInterrupted) return "interrupted";
+        if (error == ErrLimit) return "too many threads";
         return "unknown error";
     }
 }
@@ -97,4 +117,14 @@ public static unsafe class UserMemory
 
     [Native("::neko::proc::check_write")]
     public static extern bool CanWrite(void* address, ulong length);
+
+    /// <summary>
+    /// Copies kernel data into the program's memory — the only allowed way (with SMAP the CPU blocks any other
+    /// kernel access to user pages). False on a bad address; never stops the kernel.
+    /// </summary>
+    [Native("::neko::proc::copy_to_user")]
+    public static extern bool CopyTo(void* userDestination, void* source, ulong length);
+
+    [Native("::neko::proc::copy_from_user")]
+    public static extern bool CopyFrom(void* destination, void* userSource, ulong length);
 }

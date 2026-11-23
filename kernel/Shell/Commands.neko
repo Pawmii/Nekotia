@@ -12,7 +12,7 @@ namespace Nekotia.OS;
 public static unsafe class Commands
 {
     /// Space-separated, used by Tab completion.
-    public const string Names = "help clear info ps run progs spawn mem vm pages alloc uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
+    public const string Names = "help clear info ps run progs kill spawn mem vm pages alloc uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
 
     public static void Run(byte* cmd, byte* args)
     {
@@ -22,6 +22,7 @@ public static unsafe class Commands
         else if (Is(cmd, "ps")) Ps();
         else if (Is(cmd, "run")) RunProgram(args);
         else if (Is(cmd, "progs")) Programs();
+        else if (Is(cmd, "kill")) KillProcess(args);
         else if (Is(cmd, "spawn")) Spawn(args);
         else if (Is(cmd, "mem")) Mem();
         else if (Is(cmd, "vm")) Vm();
@@ -64,6 +65,7 @@ public static unsafe class Commands
         Line("ps", "threads and processes: state, priority, CPU time, context switches");
         Line("run PROG ARGS", "run a user program in ring 3 (or just type its name; `&` at the end: background)");
         Line("progs", "user programs in /boot/bin");
+        Line("kill PID", "end a user process (Ctrl+C ends the one in the foreground)");
         Line("spawn KIND", "start a demo thread: spinner primes burn counter");
         Line("mem", "memory, heap and page allocator statistics");
         Line("vm", "virtual memory layout and page tables");
@@ -158,7 +160,7 @@ public static unsafe class Commands
 
         if (Process.Count() == 0)
             return;
-        Terminal.WriteLine(AnsiColor.BrightCyan, "  PID  PARENT  NAME                 STATE    MEMORY     RUNNING FOR");
+        Terminal.WriteLine(AnsiColor.BrightCyan, "  PID  PARENT  NAME                 STATE    THREADS  MEMORY     RUNNING FOR");
         ProcessInfo p = default;
         for (uint i = 0; Process.GetInfo(i, out p); i++) {
             Terminal.Write($"  {p.Pid}");
@@ -171,6 +173,8 @@ public static unsafe class Commands
             Terminal.Write(p.Name);
             Pad((int)Str.Length(p.Name), 21);
             Terminal.Write(p.State == ProcessState.Running ? "running  " : "exited   ");
+            Terminal.Write($"{p.Threads}");
+            Pad(Digits(p.Threads), 9);
             Terminal.Write($"{p.MemoryKib} KiB");
             Pad(Digits(p.MemoryKib) + 4, 11);
             Terminal.WriteLine($"{p.UptimeMs} ms");
@@ -202,6 +206,23 @@ public static unsafe class Commands
             Terminal.WriteLine($"{Process.ProgramSize(i):size}");
         }
         Terminal.WriteLine($"{n} program(s) in /boot/bin — run one with `run NAME ARGS` or just `NAME ARGS`");
+    }
+
+    static void KillProcess(byte* args)
+    {
+        uint pid = 0;
+        int digits = 0;
+        while (*args >= '0' && *args <= '9' && digits < 9) {
+            pid = pid * 10 + (uint)(*args - '0');
+            args++;
+            digits++;
+        }
+        if (digits == 0 || *args != 0) {
+            Terminal.WriteLine("usage: kill PID   (pids: ps)");
+            return;
+        }
+        if (Process.Kill(pid) != 0)
+            Terminal.WriteLine($"kill: no process {pid}");
     }
 
     static void RunProgram(byte* args)

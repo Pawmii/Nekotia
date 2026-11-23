@@ -95,6 +95,8 @@ public struct Mutex
 public struct Semaphore
 {
     [Native("wait")] public extern void Wait();
+    /// <summary>Like Wait, but returns false when the calling thread is being killed (waits on behalf of user programs).</summary>
+    [Native("wait_interruptible")] public extern bool WaitInterruptible();
     [Native("try_wait")] public extern bool TryWait();
     [Native("signal")] public extern void Signal();
     [Native("value")] public extern long Value();

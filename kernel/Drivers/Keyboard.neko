@@ -3,6 +3,7 @@
 // Layouts: English (QWERTY) and Russian (ЙЦУКЕН), switched with Alt+Shift.
 using Nekotia;
 using Nekotia.Hal;
+using Nekotia.Processes;
 using Nekotia.Threading;
 
 namespace Nekotia.OS.Drivers;
@@ -83,6 +84,18 @@ public static unsafe class Keyboard
         }
     }
 
+    /// Like ReadKey, but returns 0 when the calling thread is being killed (reads on behalf of a user program).
+    public static uint ReadKeyInterruptible()
+    {
+        uint key = 0;
+        loop {
+            unless (_available.WaitInterruptible())
+                return 0;
+            if (TryReadKey(out key))
+                return key;
+        }
+    }
+
     public static void ToggleLayout() => _russian = !_russian;
 
     // ---------------------------------------------------------------- decoding (runs in the IRQ handler)
@@ -153,8 +166,15 @@ public static unsafe class Keyboard
             return;
 
         if (_ctrl) {
-            if (IsLatinKey(code))
-                Push((uint)(EnNormal[code] - 'a' + 1));   // Ctrl+letter → control code, in any layout
+            unless (IsLatinKey(code))
+                return;
+            uint control = (uint)(EnNormal[code] - 'a' + 1);   // Ctrl+letter → control code, in any layout
+            // Ctrl+C while a program owns the console ends it (exit code 130) instead of reaching anyone.
+            if (control == 3 && Process.InterruptForeground()) {
+                Terminal.WriteLine(AnsiColor.BrightRed, "^C");
+                return;
+            }
+            Push(control);
             return;
         }
 

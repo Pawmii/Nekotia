@@ -101,7 +101,7 @@ memory:     254 MiB usable of 255 MiB
 ### Командная строка ядра
 
 Кликните в окно QEMU и печатайте. Команды: `help`, `info`, `ps`, `run PROG ARGS` (или просто имя программы; `&` в конце —
-в фоне), `progs`, `spawn spinner|primes|burn|counter`, `mem`, `vm`, `pages`, `alloc MB`, `uptime`, `echo`, `sleep MS`, `irq`, `layout`,
+в фоне), `progs`, `kill PID`, `spawn spinner|primes|burn|counter`, `mem`, `vm`, `pages`, `alloc MB`, `uptime`, `echo`, `sleep MS`, `irq`, `layout`,
 `colors`, `neko` (котик на весь экран), `selftest`, `clear`, `panic`, `crash KIND` (проверка экрана смерти),
 `reboot`, `shutdown`. Клавиши: **Alt+Shift** — EN/RU, **↑/↓** — история, **Tab** — дополнение команды,
 **Ctrl+L** — очистить, **Ctrl+U** — стереть строку, **Ctrl+C** — отменить.
@@ -123,7 +123,16 @@ lower
 
 Программа — каталог `user/NAME` с `nekotia.json` (`"target": "user"`) и C#-кодом со `static int Main(int argc, byte** argv)`;
 API — `sdk/Nekotia.User` (`Console`, `Process`, `Memory`, `Time`). `make` сам найдёт новый каталог, соберёт ELF и положит
-его в `/boot/bin` на ISO. Сейчас есть `hello`, `guess` (читает клавиатуру) и `usertest` (проверки ABI для `make test`).
+его в `/boot/bin` на ISO. Программы: `sh` (shell в ring 3), `ls`, `ps`, `echo`, `kill`, `primes` (простые числа в N потоках —
+видно ускорение на нескольких CPU), `hello`, `guess` (читает клавиатуру), `usertest` (проверки ABI для `make test`).
+**Ctrl+C** завершает программу на переднем плане; `init=sh` в `cmdline` (`boot/limine.conf`) загружает сразу в `sh`.
+
+```
+neko en> sh
+sh$ primes 3000000 4
+216816 primes below 3000000
+1 thread: 805 ms, 4 threads: 211 ms — x3.82
+```
 
 ## Команды
 
@@ -187,8 +196,9 @@ kernel/                 ядро на C# (.cs и .neko) + Nekotia.Kernel.csproj 
 kernel/Drivers/         драйверы на C# (PS/2 клавиатура)
 kernel/Shell/           командная строка ядра
 sdk/Nekotia.Sdk/        C# API ядра: атрибуты, Asm, Terminal/Serial/Cpu/Port/Time/Irq/Power/SysInfo, Heap/Pages/Memory, Process
-sdk/Nekotia.User/       C# API программ: Console, Process, Memory, Time
-user/                   программы (C#, ring 3): hello, guess, usertest
+sdk/Nekotia.User/       C# API программ: Console, Process, Thread, SpinLock, Atomic, Memory, Time
+user/                   программы (C#, ring 3): sh, ls, ps, echo, kill, primes, hello, guess, usertest
+                        + Nekotia.User.Programs.csproj (только для IDE)
 runtime/user/           рантайм программ: crt0, системные вызовы, вывод, куча, linker.ld
 runtime/include/neko/   C++ заголовки, которые использует сгенерированный код
 runtime/src/core/       куча, buddy-аллокатор, консоль (PSF/UTF-8/ANSI), экран смерти, вывод, планировщик, процессы и ELF
@@ -213,7 +223,8 @@ nekotia.json            проект nekoc: исходники и каталог
 - **Фаза 4**: потоки, вытесняющий планировщик с приоритетами на нескольких CPU (SMP, QEMU `-smp 4`),
   Mutex/Semaphore/SpinLock, обнаружение deadlock, FPU/SSE (`float`/`double` в C#), `make test`.
 
-- **Фаза 5** (начало): ring 3, `syscall`/`sysret`, процессы со своими адресными пространствами, загрузчик ELF, `spawn`/`wait`/`exit`,
-  программы на C# (`"target": "user"`), системные вызовы на C# (`[Syscall(n)]`), изоляция падений.
+- **Фаза 5** (основное): ring 3, `syscall`/`sysret`, процессы со своими адресными пространствами и несколькими потоками,
+  загрузчик ELF, `spawn`/`wait`/`exit`/`kill`, Ctrl+C, SMEP/SMAP, программы на C# (`"target": "user"`), системные вызовы
+  на C# (`[Syscall(n)]`), изоляция падений, shell и утилиты в userspace.
 
-Дальше — `init` и shell в userspace, IPC; затем драйверы и файловые системы (фаза 6). См. [ROADMAP.md](ROADMAP.md).
+Дальше — драйверы и файловые системы (фаза 6): PCI, virtio-blk, VFS, initrd, FAT32. См. [ROADMAP.md](ROADMAP.md).

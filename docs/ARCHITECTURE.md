@@ -169,7 +169,7 @@ ANSI-последовательности (`ESC[…m`, `ESC[2J`, `ESC[H`, `ESC[K
 
 - **Общая верхняя половина**: `vmm::init` заранее создаёт все 256 записей PML4[256…511], поэтому новое пространство
   копирует их один раз, а любые последующие отображения ядра (куча, стеки, MMIO) сразу видны во всех процессах.
-- **Процесс = адресное пространство + один поток.** `proc::spawn` проверяет ELF (статический ET_EXEC x86_64, сегменты в
+- **Процесс = адресное пространство + потоки (до 64).** `proc::spawn` проверяет ELF (статический ET_EXEC x86_64, сегменты в
   пользовательской зоне, точка входа в исполняемом сегменте), отображает сегменты и стек через HHDM (пространство при
   этом не активно), кладёт argc/argv и запускает поток ядра `sched::spawn_for(process, …)`. Его первая функция загружает
   чистое состояние FPU и делает `iretq` в ring 3 (`neko_enter_user`, CS 0x23 / SS 0x1B, `swapgs`).
@@ -178,20 +178,33 @@ ANSI-последовательности (`ESC[…m`, `ESC[2J`, `ESC[H`, `ESC[K
 - **`syscall`**: STAR = 0x08/0x10 (sysret → 0x23/0x1B), SFMASK гасит IF/DF/TF/AC. `neko_syscall_entry` делает `swapgs`,
   переходит на стек ядра потока, строит `SyscallFrame` (как кадр прерывания без вектора), `fxsave`, `sti` и вызывает
   `neko_syscall_dispatch`. Номер — `rax`, аргументы — `rdi rsi rdx r10 r8 r9`, результат — `rax` (отрицательный = ошибка).
-  Встроенные вызовы (exit, write, getpid, yield, sleep, uptime, spawn, wait, alloc, process_info) — в C++;
+  Встроенные вызовы (exit, write, getpid, yield, sleep, uptime, spawn, wait, alloc, process_info, kill,
+  thread_create, thread_exit, thread_id, program_info) — в C++;
   остальные регистрирует C#-код ядра атрибутом `[Syscall(n)]` (так сделан `read` с клавиатуры: `kernel/Syscalls.neko`).
-  Указатели от программы проверяются обходом её таблиц страниц (`proc::check_read/check_write`, `UserMemory.CanRead`).
+  Ядро читает и пишет память программы только через `proc::copy_from_user/copy_to_user` (`neko_user_copy` в
+  `syscall.S`): проверка диапазона, `stac`/`clac` вокруг `rep movsb`, а #PF внутри копирования `idt.cpp` переводит на
+  метку-исправление — вызов возвращает `ErrBadAddress`, ядро не падает. Где CPU умеет, включены SMEP (ring 0 не исполняет
+  страницы программ) и SMAP (любой другой доступ к ним — #PF). `check_read/check_write` (`UserMemory.CanRead`) —
+  предварительная проверка по таблицам страниц, например чтобы `read` отказал до ожидания ввода.
 - **Прерывания из ring 3**: `isr.S` смотрит на CS в кадре и делает `swapgs` на входе и выходе. Исключение CPU в ring 3
   не вызывает экран смерти: `proc::user_exception` печатает .NET-имя исключения, адрес и `rip` и завершает процесс с
   кодом 128 + вектор (`#PF` → 142, `#GP` → 141, `#UD` → 134).
-- **Завершение**: `exit` → `sched::exit()`; когда поток снят с CPU, планировщик вызывает `proc::thread_freed` (вне своего
-  замка): освобождаются все страницы и таблицы нижней половины, и `Semaphore exited` будит родителя в `wait`, который
-  забирает код выхода и освобождает запись процесса. Фоновые (`detached`) процессы освобождаются сразу.
+- **Завершение**: `exit`, `kill`, Ctrl+C или падение фиксируют код выхода (первый побеждает) и ставят `kill_pending` всем
+  потокам процесса; `sched::interrupt` обрывает `sleep` и прерываемые ожидания (`Semaphore::wait_interruptible`:
+  флаг и `waiting_sem` публикуются в порядке, при котором пробуждение не теряется). Поток завершается на пути обратно в
+  ring 3: в конце `neko_syscall_dispatch` и после прерывания из ring 3 (поток на другом CPU будится IPI). Когда снят с
+  CPU последний поток, `proc::thread_freed` освобождает нижнюю половину, отдаёт сирот ядру (они освобождаются сами) и
+  будит родителя в `wait`. Фоновые (`detached`) процессы освобождаются сразу.
+- **Передний план**: `g_foreground` — pid владельца консоли. `wait` передаёт консоль ребёнку на время ожидания
+  (shell ядра → `sh` → программа), Ctrl+C в драйвере клавиатуры (`Process.InterruptForeground`) завершает его с кодом 130.
+- **Потоки программы**: `thread_create(rip, stack, arg)` — ещё один поток ядра того же процесса; рантайм выделяет стек
+  64 КиБ из кучи, `neko_user_thread_entry` (crt0.S) после возврата функции ставит `done` и вызывает `thread_exit`, уже не
+  касаясь стека, поэтому `Thread.Join` может сразу его освободить. Куча и буфер вывода защищены `Lock` (спин + `yield`).
 
 Рантайм программ (`runtime/user/`): `crt0.S` (`_start` → `neko_user_start`: `__init_array`, `Main`, `exit`), обёртки
 системных вызовов, буферизованный вывод (сброс на `\n`, перед `read` и при выходе), first-fit куча поверх `alloc`,
-`str::*`, а `throw`/`Debug.Assert` печатают сообщение и завершают программу с кодом 134. C#-API — `sdk/Nekotia.User`
-(`Console`, `Process`, `Memory`, `Time`); `Attributes.cs`, `Intrinsics.cs`, `Debug.cs`, `Maths.cs` общие с ядром.
+`str::*`, потоки и `Lock`, а `throw`/`Debug.Assert` печатают сообщение и завершают программу с кодом 134. C#-API —
+`sdk/Nekotia.User` (`Console`, `Process`, `Thread`, `SpinLock`, `Atomic`, `Memory`, `Time`); `Attributes.cs`, `Intrinsics.cs`, `Debug.cs`, `Maths.cs` общие с ядром.
 
 ### Исключения
 
