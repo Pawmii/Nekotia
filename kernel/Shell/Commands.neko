@@ -61,44 +61,100 @@ public static unsafe class Commands
 
     static bool Is(byte* cmd, string name) => Str.Equals(cmd, name);
 
+    const int HelpColumn = 20;   // where descriptions start
+
+    /// "  name   description", the description wrapped at word boundaries to the screen width and
+    /// starting on its own line when the name does not fit the column.
     static void Line(string name, string description)
     {
         Terminal.Write("  ");
         Terminal.Write(AnsiColor.BrightCyan, name);
-        for int i in (int)Str.Length(name)..12 { Terminal.WriteChar((byte)' '); }
-        Terminal.WriteLine(description);
+        int used = 2 + Utf8Chars(Str.Bytes(name), (int)Str.Length(name));
+        if (used >= HelpColumn) {   // at least one space before the description
+            Terminal.WriteLine();
+            used = 0;
+        }
+        Pad(used, HelpColumn);
+        int width = (int)Terminal.Columns() - HelpColumn - 1;
+        if (width < 20)
+            width = 20;
+        byte* text = Str.Bytes(description);
+        int column = 0;
+        while (*text != 0) {
+            byte* word = text;
+            int length = 0;
+            while (word[length] != 0 && word[length] != ' ')
+                length++;
+            int chars = Utf8Chars(word, length);
+            if (column > 0 && column + 1 + chars > width) {
+                Terminal.WriteLine();
+                Pad(0, HelpColumn);
+                column = 0;
+            } else if (column > 0) {
+                Terminal.WriteChar((byte)' ');
+                column++;
+            }
+            for int i in 0..length { Terminal.WriteChar(word[i]); }
+            column += chars;
+            text = word + length;
+            while (*text == ' ')
+                text++;
+        }
+        Terminal.WriteLine();
+    }
+
+    static int Utf8Chars(byte* s, int length)
+    {
+        int n = 0;
+        for int i in 0..length {
+            if ((s[i] & 0xC0) != 0x80)
+                n++;
+        }
+        return n;
+    }
+
+    static void Section(string title)
+    {
+        Terminal.WriteLine(AnsiColor.BrightWhite, title);
     }
 
     static void Help()
     {
-        Terminal.WriteLine("Commands:");
-        Line("info", "system information");
-        Line("ps", "threads and processes: state, priority, CPU time, context switches");
-        Line("lspci [-v]", "PCI devices (-v: BARs, IRQ, capabilities)");
-        Line("ls [PATH]", "list a directory (cd, pwd, cat FILE, mkdir DIR, rm PATH, mv FROM TO)");
+        Section("Files:");
+        Line("ls [PATH]", "list a directory");
+        Line("cd [DIR] / pwd", "change / show the working directory");
+        Line("cat FILE…", "print files");
         Line("write FILE TEXT", "replace FILE with TEXT and a newline");
+        Line("mkdir DIR…", "create directories");
+        Line("rm PATH…", "remove files and empty directories");
+        Line("mv FROM TO", "rename, or move into a directory");
         Line("df", "file system usage: nodes, open files, heap and initrd bytes");
-        Line("run PROG ARGS", "run a user program in ring 3 (or just type its name; `&` at the end: background)");
+        Section("Programs:");
         Line("progs", "user programs in /bin");
+        Line("run PROG ARGS", "run a user program in ring 3 (or just type its name or path; `&` at the end: background)");
         Line("kill PID", "end a user process (Ctrl+C ends the one in the foreground)");
-        Line("spawn KIND", "start a demo thread: spinner primes burn counter");
+        Line("ps", "threads and processes: state, priority, CPU time, context switches");
+        Line("spawn KIND", "start a demo kernel thread: spinner primes burn counter");
+        Section("System:");
+        Line("info", "system information");
+        Line("lspci [-v]", "PCI devices (-v: BARs, IRQ, capabilities)");
         Line("mem", "memory, heap and page allocator statistics");
         Line("vm", "virtual memory layout and page tables");
         Line("pages", "buddy allocator: free blocks per order");
         Line("alloc MB", "allocate MB on the heap (it grows), touch and free it");
-        Line("uptime", "time since boot");
-        Line("echo TEXT", "print TEXT");
-        Line("sleep MS", "sleep for MS milliseconds (LAPIC timer)");
         Line("irq", "interrupt counters");
+        Line("uptime", "time since boot");
+        Line("sleep MS", "sleep for MS milliseconds (LAPIC timer)");
+        Line("echo TEXT", "print TEXT");
         Line("layout", "switch keyboard layout EN/RU (also Alt+Shift)");
         Line("colors", "console palette");
         Line("neko", "draw the cat (any key to return)");
-        Line("selftest", "run the kernel self tests");
         Line("clear", "clear the screen (also Ctrl+L)");
+        Line("reboot / shutdown", "restart / power off (QEMU)");
+        Section("Testing:");
+        Line("selftest", "run the kernel self tests");
         Line("panic", "stop screen: KERNEL_PANIC");
         Line("crash KIND", "stop screen: null div throw custom assert pf gp ud bp double-free stack nx wp deadlock relock");
-        Line("reboot", "restart the machine");
-        Line("shutdown", "power off (QEMU)");
         Terminal.WriteLine("Keys: ↑/↓ history, Tab completion, Ctrl+U erase line, Ctrl+C cancel.");
     }
 
