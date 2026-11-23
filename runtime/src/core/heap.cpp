@@ -25,6 +25,7 @@ static_assert(sizeof(Block) % kAlignment == 0, "header must keep payloads aligne
 constexpr size_t kMinSplit = sizeof(Block) + kAlignment;
 
 Block* g_head = nullptr;
+Grower g_grower = nullptr;
 size_t g_total = 0;  // payload bytes in all blocks
 size_t g_used = 0;   // payload bytes in used blocks
 size_t g_blocks = 0;
@@ -89,10 +90,11 @@ void add_region(void* base, size_t size) {
     coalesce(b);
 }
 
-void* alloc(size_t size) {
-    if (size == 0) size = 1;
-    size = mem::align_up(size, kAlignment);
+void set_grower(Grower grower) { g_grower = grower; }
 
+namespace {
+
+void* first_fit(size_t size) {
     for (Block* b = g_head; b; b = b->next) {
         if (b->magic != kMagicFree || b->size < size) continue;
 
@@ -114,7 +116,18 @@ void* alloc(size_t size) {
         g_used += b->size;
         return payload(b);
     }
-    return nullptr;  // out of memory — ROADMAP phase 2: grow through the VMM
+    return nullptr;
+}
+
+}  // namespace
+
+void* alloc(size_t size) {
+    if (size == 0) size = 1;
+    size = mem::align_up(size, kAlignment);
+    if (void* p = first_fit(size)) return p;
+    // Out of space: ask the VMM for more (the new region merges with a free tail block).
+    if (g_grower && g_grower(size + 2 * sizeof(Block))) return first_fit(size);
+    return nullptr;
 }
 
 void* alloc_zeroed(size_t size) {

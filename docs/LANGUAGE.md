@@ -127,7 +127,8 @@ public static class Port
 }
 ```
 Метод не генерируется, вызов пишется как `::neko::cpu::outb(port, value)`. Так же можно отобразить структуру
-(`[Native("::neko::BootInfo")] struct BootInfo` — поля должны совпадать по именам с C++) и статическое поле.
+(`[Native("::neko::BootInfo")] struct BootInfo` — поля совпадают по именам с C++ или помечены `[Native("c_name")]`),
+`enum` (`[Native("::neko::vmm::PageFlags")]` — члены с теми же именами) и статическое поле.
 Новый примитив добавляется так: объявление в `runtime/include/neko/*.hpp`, реализация в `runtime/src/`,
 C#-обёртка в `sdk/Nekotia.Sdk/`.
 
@@ -143,7 +144,8 @@ C#-обёртка в `sdk/Nekotia.Sdk/`.
 | `Nekotia.Hal.Cpu` | `Halt`, `HaltForever`, `Enable/DisableInterrupts`, `ReadTimestamp`, `ReadCr2/Cr3` |
 | `Nekotia.Hal.Port` | `In8/16/32`, `Out8/16/32`, `Wait` |
 | `Nekotia.Mem.Heap` | `Alloc`, `AllocZeroed`, `Realloc`, `Free`, `New<T>`, `NewArray<T>`, `Delete<T>`, статистика, `Check` |
-| `Nekotia.Mem.Pages` | `Alloc`, `Free` (4 KiB, обнулённые), `FreeCount`, `VirtToPhys`, `PhysToVirt` |
+| `Nekotia.Mem.Pages` | `Alloc`/`Free` (4 KiB), `AllocContiguous`/`FreeContiguous` (buddy, выровнены), `FreeBlocks(order)`, `VirtToPhys` |
+| `Nekotia.Mem.VirtualMemory` | `Map`, `Unmap`, `Protect`, `Translate`, `MapFresh`, `PageFlags` (Write/Execute/User/Uncached/WriteCombining) |
 | `Nekotia.Mem.Memory` | `Set`, `Copy`, `Move`, `Compare`, `Zero` |
 | `Nekotia.Debug` | `Panic`, `Assert` — с файлом/строкой/методом вызывающего, экран смерти |
 | `Nekotia.Str` | `Length`, `Equals` для C-строк |

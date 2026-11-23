@@ -56,7 +56,10 @@ public static unsafe class SelfTest
         HeapBasics();
         HeapLinkedList();
         HeapCoalescing();
+        HeapGrowth();
         PageFrames();
+        BuddyBlocks();
+        Paging();
     }
 
     static void Report()
@@ -201,6 +204,48 @@ public static unsafe class SelfTest
         Heap.Free(c);
         Heap.Free(b);
         Check(Heap.BlockCount() == blocks && Heap.Check(), "heap: neighbours coalesce after free");
+    }
+
+    static void HeapGrowth()
+    {
+        nuint total = Heap.TotalBytes();
+        byte* big = (byte*)Heap.Alloc(total + 1024 * 1024);   // larger than the whole heap right now
+        Check(big != null && Heap.TotalBytes() > total, "heap: grows on demand");
+        if (big != null) {
+            big[0] = 1;
+            big[total] = 2;
+            Heap.Free(big);
+        }
+        Check(Heap.Check(), "heap: consistent after growing");
+    }
+
+    static void BuddyBlocks()
+    {
+        ulong before = Pages.FreeCount();
+        byte* block = (byte*)Pages.AllocContiguous(8);
+        ulong phys = Pages.VirtToPhys(block);
+        Check(block != null && phys % (8 * Pages.Size) == 0 && block[8 * 4096 - 1] == 0, "buddy: 8 contiguous zeroed pages, 32 KiB aligned");
+        if (VirtualMemory.Ready())
+            Check(VirtualMemory.Translate((ulong)(block + 7 * 4096)) == phys + 7 * 4096, "buddy: physically contiguous (checked through the page tables)");
+        Pages.FreeContiguous(block, 8);
+        Check(Pages.FreeCount() == before, "buddy: freed block merges back");
+    }
+
+    static void Paging()
+    {
+        unless (VirtualMemory.Ready())
+            return;   // host mode has no page tables
+        ulong virt = VirtualMemory.FreeBase + 7 * Pages.Size;
+        ulong* frame = (ulong*)Pages.Alloc();
+        ulong phys = Pages.VirtToPhys(frame);
+        bool mapped = VirtualMemory.Map(virt, phys, PageFlags.Write);
+        *(ulong*)virt = 0xC0FFEE;
+        Check(mapped && VirtualMemory.Translate(virt) == phys && *frame == 0xC0FFEE, "paging: map a frame at a second address");
+        Check(!VirtualMemory.Map(virt, phys, PageFlags.Write), "paging: refuses to map over an existing page");
+        VirtualMemory.Unmap(virt);
+        Check(VirtualMemory.Translate(virt) == VirtualMemory.Unmapped, "paging: unmap");
+        Pages.Free(frame);
+        Check(VirtualMemory.IsStackGuard(VirtualMemory.StackBase), "paging: kernel stack has a guard page");
     }
 
     static void PageFrames()

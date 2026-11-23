@@ -10,7 +10,7 @@ namespace Nekotia.OS;
 public static unsafe class Commands
 {
     /// Space-separated, used by Tab completion.
-    public const string Names = "help clear info mem uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
+    public const string Names = "help clear info mem vm pages alloc uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
 
     public static void Run(byte* cmd, byte* args)
     {
@@ -18,6 +18,9 @@ public static unsafe class Commands
         else if (Is(cmd, "clear")) Terminal.Clear();
         else if (Is(cmd, "info")) Info();
         else if (Is(cmd, "mem")) Mem();
+        else if (Is(cmd, "vm")) Vm();
+        else if (Is(cmd, "pages")) PageStats();
+        else if (Is(cmd, "alloc")) Alloc(args);
         else if (Is(cmd, "uptime")) Uptime();
         else if (Is(cmd, "echo")) Echo(args);
         else if (Is(cmd, "sleep")) Sleep(args);
@@ -52,6 +55,9 @@ public static unsafe class Commands
         Terminal.WriteLine("Commands:");
         Line("info", "system information");
         Line("mem", "memory, heap and page allocator statistics");
+        Line("vm", "virtual memory layout and page tables");
+        Line("pages", "buddy allocator: free blocks per order");
+        Line("alloc MB", "allocate MB on the heap (it grows), touch and free it");
         Line("uptime", "time since boot");
         Line("echo TEXT", "print TEXT");
         Line("sleep MS", "sleep for MS milliseconds (LAPIC timer)");
@@ -62,7 +68,7 @@ public static unsafe class Commands
         Line("selftest", "run the kernel self tests");
         Line("clear", "clear the screen (also Ctrl+L)");
         Line("panic", "stop screen: KERNEL_PANIC");
-        Line("crash KIND", "stop screen tests: null div throw custom assert pf gp ud bp double-free");
+        Line("crash KIND", "stop screen: null div throw custom assert pf gp ud bp double-free stack nx wp");
         Line("reboot", "restart the machine");
         Line("shutdown", "power off (QEMU)");
         Terminal.WriteLine("Keys: ↑/↓ history, Tab completion, Ctrl+U erase line, Ctrl+C cancel.");
@@ -100,6 +106,67 @@ public static unsafe class Commands
             Terminal.WriteLine(AnsiColor.Green, "ok");
         else
             Terminal.WriteLine(AnsiColor.BrightRed, "CORRUPTED");
+    }
+
+    static void Vm()
+    {
+        unless (VirtualMemory.Ready()) {
+            Terminal.WriteLine("no page tables in host mode");
+            return;
+        }
+        VmStats vm = VmStats.Get();
+        Terminal.WriteLine($"paging:     own 4-level tables, {vm.TablePages} table pages, NX {(vm.NoExecute ? "on" : "off")}, framebuffer {(vm.WriteCombining ? "write-combining" : "uncached")}");
+        Terminal.WriteLine($"kernel:     0xffffffff80000000 → phys {vm.KernelPhysical:X}: text {vm.TextBytes:size} RX, rodata {vm.RodataBytes:size} R, data {vm.DataBytes:size} RW");
+        Terminal.WriteLine($"hhdm:       {Kernel.Info->HhdmOffset:X}  all RAM, read/write, no execute");
+        Terminal.WriteLine($"heap:       {VirtualMemory.HeapBase:X}  {vm.HeapMapped:size} mapped, {Heap.UsedBytes():size} used — grows on demand");
+        Terminal.WriteLine($"free:       {VirtualMemory.FreeBase:X}  for VirtualMemory.Map");
+        Terminal.WriteLine($"stacks:     {VirtualMemory.StackBase:X}  {vm.Stacks} stack(s), each above an unmapped guard page");
+    }
+
+    static void PageStats()
+    {
+        Terminal.WriteLine("order  block      free blocks");
+        for uint order in 0..=10 {
+            ulong blocks = Pages.FreeBlocks(order);
+            Terminal.Write($"  {order}");
+            Terminal.Write(order < 10 ? "    " : "   ");
+            ulong size = Pages.Size << (int)order;
+            ulong shown = size >= 1024 * 1024 ? size / (1024 * 1024) : size / 1024;
+            Terminal.Write($"{size:size}");
+            for int i in (Digits(shown) + 4)..11 { Terminal.WriteChar((byte)' '); }
+            Terminal.WriteLine($"{blocks}");
+        }
+        Terminal.WriteLine($"free: {Pages.FreeCount()} of {Pages.TotalCount()} pages, largest block order {Pages.LargestFreeOrder()}");
+    }
+
+    static int Digits(ulong v)
+    {
+        int n = 1;
+        while (v >= 10) {
+            v /= 10;
+            n++;
+        }
+        return n;
+    }
+
+    static void Alloc(byte* args)
+    {
+        ulong mb = 0;
+        unless (ParseNumber(args, out mb) && mb > 0) {
+            Terminal.WriteLine("usage: alloc MB");
+            return;
+        }
+        nuint size = (nuint)(mb * 1024 * 1024);
+        nuint before = Heap.TotalBytes();
+        ulong start = Time.UptimeMs();
+        byte* block = (byte*)Heap.Alloc(size);
+        if (block == null) {
+            Terminal.WriteLine(AnsiColor.BrightRed, "allocation failed: out of memory");
+            return;
+        }
+        defer Heap.Free(block);
+        Memory.Set(block, 0xA5, size);
+        Terminal.WriteLine($"allocated {size:size} at {(ulong)block:X} in {Time.UptimeMs() - start} ms; heap {before:size} → {Heap.TotalBytes():size}");
     }
 
     static void Uptime()
@@ -205,13 +272,32 @@ public static unsafe class Commands
             asm "ud2";                                          // #UD
         } else if (Is(kind, "bp")) {
             Intrinsics.Breakpoint();                            // #BP (int3)
+        } else if (Is(kind, "stack")) {
+            Terminal.WriteDec(Recurse(0));                      // guard page → StackOverflowException
+        } else if (Is(kind, "nx")) {
+            byte* code = (byte*)Heap.Alloc(16);
+            code[0] = 0xC3;                                     // ret — but the heap is not executable
+            delegate*<void> function = (delegate*<void>)code;
+            function();
+        } else if (Is(kind, "wp")) {
+            delegate*<void> help = &Help;
+            *(byte*)help = 0x90;                                // kernel code is read-only
         } else if (Is(kind, "double-free")) {
             void* block = Heap.Alloc(64);
             Heap.Free(block);
             Heap.Free(block);                                   // HEAP_CORRUPTION
         } else {
-            Terminal.WriteLine("usage: crash null|div|throw|custom|assert|pf|gp|ud|bp|double-free");
+            Terminal.WriteLine("usage: crash null|div|throw|custom|assert|pf|gp|ud|bp|double-free|stack|nx|wp");
         }
+    }
+
+    static int Recurse(int depth)
+    {
+        if (_zero == 1)
+            return depth;   // never true; keeps the recursion "finite" for the compiler
+        byte* frame = stackalloc byte[256];
+        frame[0] = (byte)depth;
+        return Recurse(depth + 1) + frame[0];
     }
 
     static bool ParseNumber(byte* s, out ulong value)

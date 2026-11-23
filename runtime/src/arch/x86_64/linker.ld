@@ -14,6 +14,7 @@ PHDRS
 SECTIONS
 {
     . = 0xffffffff80000000;
+    __kernel_start = .;
 
     .limine_requests : {
         KEEP(*(.limine_requests_start))
@@ -22,11 +23,14 @@ SECTIONS
     } :limine_requests
 
     . = ALIGN(CONSTANT(MAXPAGESIZE));
+    __text_start = .;
     .text : {
         *(.text .text.*)
     } :text
+    __text_end = .;
 
     . = ALIGN(CONSTANT(MAXPAGESIZE));
+    __rodata_start = .;
     .rodata : {
         *(.rodata .rodata.*)
     } :rodata
@@ -37,8 +41,10 @@ SECTIONS
         KEEP(*(.init_array))
         __init_array_end = .;
     } :rodata
+    __rodata_end = .;
 
     . = ALIGN(CONSTANT(MAXPAGESIZE));
+    __data_start = .;
     .data : {
         *(.data .data.*)
     } :data
@@ -47,12 +53,15 @@ SECTIONS
         *(.bss .bss.*)
         *(COMMON)
     } :data
+    __data_end = .;
 
     /* Last, so adding it in the second link pass moves nothing (scripts/gen-symbols.py --verify). */
     . = ALIGN(CONSTANT(MAXPAGESIZE));
+    __symbols_start = .;
     .neko_symbols : {
         KEEP(*(.neko_symbols))
     } :symbols
+    __symbols_end = .;
 
     /DISCARD/ : {
         *(.eh_frame*)

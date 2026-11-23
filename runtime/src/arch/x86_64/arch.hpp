@@ -42,7 +42,17 @@ void irq_dispatch(uint8_t vector);
 
 namespace neko::vmm {
 
-// Makes [phys, phys + size) reachable at HHDM + phys as uncached memory and returns that address.
-void* map_mmio(uint64_t phys, size_t size);
+struct MemoryRange {
+    uint64_t base;
+    uint64_t length;
+    bool framebuffer;
+};
+
+// Builds the kernel's page tables (HHDM for `ranges`, the kernel image with per-section
+// permissions) and switches CR3. Needs a working pmm.
+void init(uint64_t hhdm, uint64_t kernel_phys, const MemoryRange* ranges, size_t count);
+
+// Heap grower installed after init.
+bool grow_heap(size_t min_bytes);
 
 }  // namespace neko::vmm

@@ -196,24 +196,37 @@ void classify(Report& r) {
             r.exception = "System.InvalidProgramException";
             r.message = "The CPU met an invalid instruction (ud2, a corrupted return address or a jump into data).";
             break;
-        case 8:
+        case 8: {
+            uint64_t cr2 = read_cr(2);
+            bool guard = vmm::is_stack_guard(cr2) || vmm::is_stack_guard(f.rsp - 8);
             r.exception = "System.StackOverflowException";
-            r.message = "Double fault: an exception happened while handling another one — usually a stack overflow.";
+            r.message = guard ? "The kernel stack overflowed into its guard page (deep or infinite recursion, or a huge stackalloc)."
+                              : "Double fault: an exception happened while handling another one — usually a stack overflow.";
+            if (guard) {
+                r.detail = "guard page hit at";
+                r.detail_address = vmm::is_stack_guard(cr2) ? cr2 : f.rsp - 8;
+            }
             break;
+        }
         case 13:
             r.exception = "System.AccessViolationException";
             r.message = "General protection fault: non-canonical address, bad segment or a privileged instruction.";
             break;
         case 14: {
             uint64_t cr2 = read_cr(2);
+            bool present = f.error_code & 1, write = f.error_code & 2, fetch = f.error_code & 16;
             bool null_ref = cr2 < 0x10000;
             r.exception = null_ref ? "System.NullReferenceException" : "System.AccessViolationException";
-            r.message = null_ref ? "Object reference not set to an instance of an object (access near address 0)."
-                                 : "Attempted to read or write memory that is not mapped.";
-            r.detail = (f.error_code & 1) ? ((f.error_code & 2) ? "write to a protected page at" : "read from a protected page at")
-                                          : ((f.error_code & 16) ? "instruction fetch from an unmapped page at"
-                                                                 : ((f.error_code & 2) ? "write to an unmapped page at"
-                                                                                       : "read from an unmapped page at"));
+            r.message = null_ref               ? "Object reference not set to an instance of an object (access near address 0)."
+                        : vmm::is_stack_guard(cr2) ? "Access to a kernel stack guard page (stack overflow)."
+                        : present && fetch     ? "Attempted to execute memory that is not executable (NX: heap, stack or data)."
+                        : present && write     ? "Attempted to write read-only memory (kernel code or constant data)."
+                        : present              ? "Access to a page the kernel is not allowed to touch."
+                                               : "Attempted to read or write memory that is not mapped.";
+            if (vmm::is_stack_guard(cr2)) r.exception = "System.StackOverflowException";
+            r.detail = fetch ? (present ? "instruction fetch from a non-executable page at" : "instruction fetch from an unmapped page at")
+                       : write ? (present ? "write to a protected page at" : "write to an unmapped page at")
+                               : (present ? "read from a protected page at" : "read from an unmapped page at");
             r.detail_address = cr2;
             break;
         }
@@ -255,18 +268,41 @@ void stack(const Report& r) {
     uint64_t rbp = r.frame;
     if (r.cpu) {
         frame_line(index++, r.cpu->rip, false);
+        // rip outside any known function (a jump into data, a bad function pointer): the caller's
+        // return address is still on top of the stack.
+        if (&neko_symtab && !symbolize(r.cpu->rip).function && plausible(r.cpu->rsp))
+            frame_line(index++, *reinterpret_cast<uint64_t*>(r.cpu->rsp), true);
     } else if (r.first_return) {
         frame_line(index++, r.first_return, true);
         rbp = plausible(rbp) ? *reinterpret_cast<uint64_t*>(rbp) : 0;  // skip the crash entry point's own frame
     }
-    for (; index < 12 && plausible(rbp); ++index) {
+    uint64_t last = 0, repeats = 0;
+    for (uint64_t walked = 0; index < 14 && plausible(rbp) && walked < 1000000; ++walked) {
         auto* frame = reinterpret_cast<uint64_t*>(rbp);
         uint64_t ret = frame[1];
         if (ret == 0) break;
-        frame_line(index, ret, true);
+        if (ret == last) {
+            ++repeats;  // recursion: fold identical frames into one line
+        } else {
+            if (repeats) {
+                color(kMuted);
+                text("      … the frame above repeats ");
+                dec(repeats);
+                text(" more times\n");
+                repeats = 0;
+            }
+            frame_line(index++, ret, true);
+            last = ret;
+        }
         uint64_t next = frame[0];
         if (next <= rbp) break;  // the stack grows down; callers are at higher addresses
         rbp = next;
+    }
+    if (repeats) {
+        color(kMuted);
+        text("      … the frame above repeats ");
+        dec(repeats);
+        text(" more times\n");
     }
     if (!&neko_symtab) {
         color(kMuted);

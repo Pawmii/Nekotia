@@ -102,6 +102,31 @@ void shutdown() {
 }
 }  // namespace neko::power
 
+namespace neko::vmm {
+// No page tables in host mode: the "virtual memory" API reports itself unavailable.
+bool ready() { return false; }
+bool map(uint64_t, uint64_t, PageFlags) { return false; }
+bool unmap(uint64_t) { return false; }
+bool protect(uint64_t, PageFlags) { return false; }
+uint64_t translate(uint64_t virt) { return virt; }
+bool map_fresh(uint64_t, size_t, PageFlags) { return false; }
+void* map_mmio(uint64_t phys, size_t) { return reinterpret_cast<void*>(phys); }
+uint64_t create_stack(size_t) { return 0; }
+bool is_stack_guard(uint64_t) { return false; }
+Stats stats() { return Stats{}; }
+}  // namespace neko::vmm
+
+namespace {
+// Heap growth in host mode: extra malloc'd arenas (not adjacent, which the heap handles).
+bool grow_heap(size_t min_bytes) {
+    size_t size = min_bytes < (4u << 20) ? (4u << 20) : (min_bytes + 4095) & ~size_t(4095);
+    void* arena = aligned_alloc(4096, size);
+    if (!arena) return false;
+    neko::heap::add_region(arena, size);
+    return true;
+}
+}  // namespace
+
 namespace neko::sysinfo {
 const char* cpu_brand() { return "host CPU (Linux process)"; }
 uint32_t cpu_count() { return 1; }
@@ -119,6 +144,7 @@ int main(int argc, char** argv) {
     }
 
     neko::heap::add_region(heap, kHeapSize);
+    neko::heap::set_grower(grow_heap);
     neko::pmm::init(0);
     neko::pmm::add_region(pages, kPagesSize);
 

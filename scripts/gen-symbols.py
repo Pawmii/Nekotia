@@ -25,6 +25,7 @@ def run(*args):
 
 
 def pretty(name):
+    name = name.replace('(anonymous namespace)::', '')
     # Drop the parameter list: the first '(' outside template brackets.
     depth = 0
     for i, c in enumerate(name):
@@ -35,7 +36,6 @@ def pretty(name):
         elif c == '(' and depth == 0 and not name.startswith('operator', max(0, i - 8)):
             name = name[:i]
             break
-    name = name.replace('(anonymous namespace)::', '')
     if '::' in name and not name.startswith('neko::'):
         name = name.replace('::', '.')  # generated from C#
     return name

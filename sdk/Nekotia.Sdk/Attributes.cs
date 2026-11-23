@@ -15,7 +15,7 @@ public sealed class KernelEntryAttribute : Attribute { }
 /// reference as <paramref name="cppName"/>. Works on methods, structs and fields.
 /// Sugar: <c>@native("neko::serial::write")</c>.
 /// </summary>
-[AttributeUsage(AttributeTargets.Method | AttributeTargets.Struct | AttributeTargets.Field | AttributeTargets.Class)]
+[AttributeUsage(AttributeTargets.Method | AttributeTargets.Struct | AttributeTargets.Field | AttributeTargets.Class | AttributeTargets.Enum)]
 public sealed class NativeAttribute(string cppName) : Attribute
 {
     public string CppName { get; } = cppName;

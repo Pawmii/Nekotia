@@ -97,7 +97,7 @@ memory:     254 MiB usable of 255 MiB
 
 ### Командная строка ядра
 
-Кликните в окно QEMU и печатайте. Команды: `help`, `info`, `mem`, `uptime`, `echo`, `sleep MS`, `irq`, `layout`,
+Кликните в окно QEMU и печатайте. Команды: `help`, `info`, `mem`, `vm`, `pages`, `alloc MB`, `uptime`, `echo`, `sleep MS`, `irq`, `layout`,
 `colors`, `neko` (котик на весь экран), `selftest`, `clear`, `panic`, `crash KIND` (проверка экрана смерти),
 `reboot`, `shutdown`. Клавиши: **Alt+Shift** — EN/RU, **↑/↓** — история, **Tab** — дополнение команды,
 **Ctrl+L** — очистить, **Ctrl+U** — стереть строку, **Ctrl+C** — отменить.
@@ -146,7 +146,9 @@ code --install-extension build/vscode-nekotia-0.1.0.vsix
 - **стек вызовов** с C#-методами и строками `.cs`/`.neko` (таблица символов вшивается в ядро вторым проходом линковки,
   `scripts/gen-symbols.py`), **регистры** с `cr0–cr4`, **состояние системы** (uptime, куча, страницы, CPU).
 
-Текст дублируется в serial. **R** — перезагрузка. Проверить все варианты: `crash null|div|throw|custom|assert|pf|gp|ud|bp|double-free`.
+Текст дублируется в serial. **R** — перезагрузка. Проверить все варианты:
+`crash null|div|throw|custom|assert|pf|gp|ud|bp|double-free|stack|nx|wp` (`stack` — переполнение стека в guard-страницу,
+`nx` — выполнение кода из кучи, `wp` — запись в код ядра).
 `addr2line -e build/nekotia.elf <адрес>` тоже указывает **на строку в C#-файле** — nekoc пишет `#line` перед каждым оператором.
 - **F5 в VS Code** (нужно расширение C/C++ `ms-vscode.cpptools`): собирает `-O0`-ядро, запускает QEMU с gdb-сервером
   и подключается. Breakpoint'ы ставятся кликом прямо в `.cs` и `.neko`, видны стек вызовов и переменные.
@@ -163,8 +165,8 @@ kernel/Drivers/         драйверы на C# (PS/2 клавиатура)
 kernel/Shell/           командная строка ядра
 sdk/Nekotia.Sdk/        C# API ядра: атрибуты, Asm, Terminal/Serial/Cpu/Port/Time/Irq/Power/SysInfo, Heap/Pages/Memory
 runtime/include/neko/   C++ заголовки, которые использует сгенерированный код
-runtime/src/core/       куча, page allocator, консоль (PSF/UTF-8/ANSI), вывод, panic (общие для всех платформ)
-runtime/src/arch/x86_64 Limine boot, GDT/TSS, IDT + isr.S, ACPI, APIC/таймер/IRQ, vmm (MMIO), COM1, linker.ld
+runtime/src/core/       куча, buddy-аллокатор, консоль (PSF/UTF-8/ANSI), экран смерти, вывод (общие для всех платформ)
+runtime/src/arch/x86_64 Limine boot, GDT/TSS, IDT + isr.S, ACPI, APIC/таймер/IRQ, vmm (таблицы страниц), COM1, linker.ld
 runtime/assets/fonts/   шрифт консоли Terminus (OFL 1.1)
 runtime/src/freestanding memcpy/memset…, operator new/delete
 runtime/src/host/       host-режим (ядро как Linux-процесс)
@@ -180,6 +182,7 @@ nekotia.json            проект nekoc: исходники и каталог
 
 - **Фаза 0** (фундамент): загрузка BIOS/UEFI, куча, page allocator, исключения, транспилятор с диагностикой, сахар, VS Code.
 - **Фаза 2** (основное): своя GDT/TSS с IST, ACPI MADT, LAPIC-таймер 1 кГц, IOAPIC, IRQ из C#, консоль во фреймбуфере,
-  PS/2 клавиатура с EN/RU, командная строка.
+  PS/2 клавиатура с EN/RU, командная строка, экран смерти.
+- **Фаза 3** (основное): свои таблицы страниц с NX/W^X, buddy-аллокатор, растущая куча, стек ядра с guard-страницей.
 
-Дальше — свои таблицы страниц (фаза 3), потоки и планировщик (фаза 4), userspace (фаза 5). См. [ROADMAP.md](ROADMAP.md).
+Дальше — потоки и планировщик (фаза 4), userspace (фаза 5). См. [ROADMAP.md](ROADMAP.md).
