@@ -7,7 +7,8 @@
 #   make run-uefi   same with OVMF firmware
 #   make debug      QEMU paused with a gdb stub on :1234
 #   make test       boot in QEMU (BIOS + UEFI), run the self tests, fail on any failure
-#   make user       user programs (user/NAME → build/user/bin/NAME → /boot/bin/NAME on the ISO)
+#   make user       user programs (user/NAME → build/user/bin/NAME → /bin/NAME in the initrd)
+#   make initrd     build/initrd.tar: /bin (the programs) + everything under initrd/
 #   make check      nekoc diagnostics only
 #   make doctor     check that the toolchain is installed
 
@@ -67,7 +68,7 @@ HOST_FLAGS := $(COMMON_FLAGS) -O1 -DNEKO_HOSTED=1 $(HOST_SAN)
 KERNEL_OBJS := $(patsubst %,$(BUILD)/kernel/%.o,$(KERNEL_SRCS) $(KERNEL_ASM)) $(BUILD)/kernel/gen.o
 HOST_OBJS   := $(patsubst %,$(BUILD)/host/%.o,$(HOST_SRCS) $(CORE_ASM)) $(BUILD)/host/gen.o
 
-.PHONY: all kernel gen check host run-host iso run run-uefi debug test doctor tools clean vscode-ext user
+.PHONY: all kernel gen check host run-host iso run run-uefi debug test doctor tools clean vscode-ext user initrd
 
 all: kernel
 
@@ -117,7 +118,7 @@ $(BUILD)/kernel/gen.o: $(GEN_CPP)
 #
 # Every directory user/NAME with a nekotia.json ("target": "user") is a program: nekoc turns its C# into
 # build/user/NAME/gen/*.cpp, which is linked with the user runtime (runtime/user/) into a static ELF at
-# 0x400000. The ISO carries them in /boot/bin and limine.conf hands them to the kernel as modules.
+# 0x400000. They go into /bin of the initrd (below).
 
 USER_PROGRAMS := $(sort $(patsubst user/%/nekotia.json,%,$(wildcard user/*/nekotia.json)))
 USER_SDK      := $(shell find sdk/Nekotia.User -name '*.cs') $(wildcard sdk/Nekotia.Sdk/*.cs)
@@ -158,10 +159,26 @@ $(BUILD)/user/bin/$(1): $(BUILD)/user/$(1)/gen.o $(USER_RT_OBJS) runtime/user/li
 endef
 $(foreach p,$(USER_PROGRAMS),$(eval $(call user-program,$(p))))
 
-# boot/limine.conf + one module_path line per program (appended to the last entry).
-$(BUILD)/limine.conf: boot/limine.conf Makefile $(wildcard user/*/nekotia.json)
+# ---------------------------------------------------------------- initrd
+#
+# A ustar archive, loaded by Limine as a module (boot/limine.conf) and unpacked into the VFS at boot:
+# the programs in /bin plus the files under initrd/ (etc/motd, home/…). Deterministic: sorted, mtime 0.
+
+INITRD_FILES := $(shell find initrd -type f 2>/dev/null)
+
+initrd: $(BUILD)/initrd.tar
+
+$(BUILD)/initrd.tar: $(USER_BINS) $(INITRD_FILES)
+	rm -rf $(BUILD)/initrd_root
+	mkdir -p $(BUILD)/initrd_root/bin
+	$(if $(INITRD_FILES),cp -r initrd/. $(BUILD)/initrd_root/)
+	$(if $(USER_BINS),cp $(USER_BINS) $(BUILD)/initrd_root/bin/)
+	tar --format=ustar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf $@ -C $(BUILD)/initrd_root .
+	@echo "initrd: $@ ($$(du -h $@ | cut -f1), $$(tar -tf $@ | wc -l) entries)"
+
+$(BUILD)/limine.conf: boot/limine.conf
 	@mkdir -p $(BUILD)
-	{ cat boot/limine.conf; for p in $(USER_PROGRAMS); do echo "    module_path: boot():/boot/bin/$$p"; done; } > $@
+	cp boot/limine.conf $@
 
 # ---------------------------------------------------------------- host build
 
@@ -194,9 +211,7 @@ define make-iso
 	@test -n "$(LIMINE_DIR)" || { echo "Limine not found: install it (scripts/setup-arch.sh) or run scripts/fetch-limine.sh"; exit 1; }
 	rm -rf $(3)
 	mkdir -p $(3)/boot/limine $(3)/EFI/BOOT
-	cp $(BUILD)/nekotia.elf $(3)/boot/
-	mkdir -p $(3)/boot/bin
-	$(if $(USER_BINS),cp $(USER_BINS) $(3)/boot/bin/)
+	cp $(BUILD)/nekotia.elf $(BUILD)/initrd.tar $(3)/boot/
 	cp $(1) $(3)/boot/limine/limine.conf
 	cp $(LIMINE_DIR)/limine-bios.sys $(LIMINE_DIR)/limine-bios-cd.bin $(LIMINE_DIR)/limine-uefi-cd.bin $(3)/boot/limine/
 	cp $(LIMINE_DIR)/BOOTX64.EFI $(3)/EFI/BOOT/
@@ -207,12 +222,12 @@ define make-iso
 	@echo "iso: $(2)"
 endef
 
-$(BUILD)/nekotia.iso: $(BUILD)/nekotia.elf $(BUILD)/limine.conf $(USER_BINS)
+$(BUILD)/nekotia.iso: $(BUILD)/nekotia.elf $(BUILD)/limine.conf $(BUILD)/initrd.tar
 	$(call make-iso,$(BUILD)/limine.conf,$@,$(BUILD)/iso_root)
 
 # Same kernel, but the command line says `test`: the kernel runs its self tests and leaves QEMU
 # through the isa-debug-exit device (exit status 1 = all passed, 3 = failures).
-$(BUILD)/nekotia-test.iso: $(BUILD)/nekotia.elf $(BUILD)/limine.conf $(USER_BINS)
+$(BUILD)/nekotia-test.iso: $(BUILD)/nekotia.elf $(BUILD)/limine.conf $(BUILD)/initrd.tar
 	sed 's/^\( *cmdline:\).*/\1 test/' $(BUILD)/limine.conf > $(BUILD)/limine-test.conf
 	$(call make-iso,$(BUILD)/limine-test.conf,$@,$(BUILD)/iso_root_test)
 

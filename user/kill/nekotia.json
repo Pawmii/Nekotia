@@ -1,5 +1,5 @@
 {
-  // A Nekotia user program: nekoc → C++ → static ELF at /boot/bin/kill (see Makefile, runtime/user/).
+  // A Nekotia user program: nekoc → C++ → static ELF in the initrd at /bin/kill (see Makefile, runtime/user/).
   "name": "kill",
   "target": "user",
   "sources": [

@@ -2,6 +2,7 @@
 using System;
 using Nekotia;
 using Nekotia.Hal;
+using Nekotia.IO;
 using Nekotia.Mem;
 using Nekotia.OS.Drivers;
 using Nekotia.Processes;
@@ -12,7 +13,7 @@ namespace Nekotia.OS;
 public static unsafe class Commands
 {
     /// Space-separated, used by Tab completion.
-    public const string Names = "help clear info ps lspci run progs kill spawn mem vm pages alloc uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
+    public const string Names = "help clear info ps lspci ls cd pwd cat mkdir rm mv write df run progs kill spawn mem vm pages alloc uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
 
     public static void Run(byte* cmd, byte* args)
     {
@@ -21,6 +22,15 @@ public static unsafe class Commands
         else if (Is(cmd, "info")) Info();
         else if (Is(cmd, "ps")) Ps();
         else if (Is(cmd, "lspci")) Lspci(args);
+        else if (Is(cmd, "ls")) Files.List(args);
+        else if (Is(cmd, "cd")) Files.ChangeDirectory(args);
+        else if (Is(cmd, "pwd")) Files.PrintDirectory();
+        else if (Is(cmd, "cat")) Files.Cat(args);
+        else if (Is(cmd, "mkdir")) Files.MakeDirectory(args);
+        else if (Is(cmd, "rm")) Files.Remove(args);
+        else if (Is(cmd, "mv")) Files.Move(args);
+        else if (Is(cmd, "write")) Files.Write(args);
+        else if (Is(cmd, "df")) Files.Usage();
         else if (Is(cmd, "run")) RunProgram(args);
         else if (Is(cmd, "progs")) Programs();
         else if (Is(cmd, "kill")) KillProcess(args);
@@ -65,8 +75,11 @@ public static unsafe class Commands
         Line("info", "system information");
         Line("ps", "threads and processes: state, priority, CPU time, context switches");
         Line("lspci [-v]", "PCI devices (-v: BARs, IRQ, capabilities)");
+        Line("ls [PATH]", "list a directory (cd, pwd, cat FILE, mkdir DIR, rm PATH, mv FROM TO)");
+        Line("write FILE TEXT", "replace FILE with TEXT and a newline");
+        Line("df", "file system usage: nodes, open files, heap and initrd bytes");
         Line("run PROG ARGS", "run a user program in ring 3 (or just type its name; `&` at the end: background)");
-        Line("progs", "user programs in /boot/bin");
+        Line("progs", "user programs in /bin");
         Line("kill PID", "end a user process (Ctrl+C ends the one in the foreground)");
         Line("spawn KIND", "start a demo thread: spinner primes burn counter");
         Line("mem", "memory, heap and page allocator statistics");
@@ -269,29 +282,45 @@ public static unsafe class Commands
 
     // ---------------------------------------------------------------- user programs
 
+    /// A file in /bin called `name`, or `name` itself when it is a path (./prog, /tmp/prog).
     static bool HasProgram(byte* name)
     {
-        for (uint i = 0; i < Process.ProgramCount(); i++) {
-            if (Str.Equals(name, Process.ProgramName(i)))
-                return true;
-        }
-        return false;
+        bool path = false;
+        for (byte* c = name; *c != 0; c++)
+            path |= *c == '/';
+        FileStat st = default;
+        if (path)
+            return Vfs.Stat(name, out st) == 0 && st.Type == NodeType.File;
+        byte* full = stackalloc byte[Vfs.MaxPath];
+        Files.Join("/bin", name, full);
+        return Vfs.Stat(full, out st) == 0 && st.Type == NodeType.File;
     }
 
     static void Programs()
     {
-        uint n = Process.ProgramCount();
-        if (n == 0) {
-            Terminal.WriteLine("no programs (host mode, or the ISO has no /boot/bin)");
+        OpenFile* dir = null;
+        if (Vfs.Open("/bin", Vfs.Read, out dir) < 0) {
+            Terminal.WriteLine("no /bin directory");
             return;
         }
-        for (uint i = 0; i < n; i++) {
+        DirEntry e = default;
+        uint n = 0;
+        for (uint i = 0; Vfs.ReadDirectory(dir, i, out e) == 1; i++) {
+            if (e.Type != NodeType.File)
+                continue;
             Terminal.Write("  ");
-            Terminal.Write(AnsiColor.BrightCyan, Process.ProgramName(i));
-            Pad((int)Str.Length(Process.ProgramName(i)), 14);
-            Terminal.WriteLine($"{Process.ProgramSize(i):size}");
+            Terminal.SetColor(AnsiColor.BrightCyan);
+            Terminal.Write(e.Name);
+            Terminal.ResetColor();
+            Pad((int)Str.Length(e.Name), 14);
+            Terminal.WriteLine($"{e.Size:size}");
+            n++;
         }
-        Terminal.WriteLine($"{n} program(s) in /boot/bin — run one with `run NAME ARGS` or just `NAME ARGS`");
+        Vfs.Close(dir);
+        if (n == 0)
+            Terminal.WriteLine("no programs (host mode, or the boot medium has no initrd)");
+        else
+            Terminal.WriteLine($"{n} program(s) in /bin — run one with `run NAME ARGS` or just `NAME ARGS`");
     }
 
     static void KillProcess(byte* args)
@@ -314,7 +343,7 @@ public static unsafe class Commands
     static void RunProgram(byte* args)
     {
         if (*args == 0) {
-            Terminal.WriteLine("usage: run PROGRAM [ARGS] [&]   (programs: `progs`)");
+            Terminal.WriteLine("usage: run PROGRAM [ARGS] [&]   (programs: `progs`; a path runs that file)");
             return;
         }
         byte* rest = args;

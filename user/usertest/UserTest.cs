@@ -5,6 +5,7 @@
 //   usertest spin | sleep | read     never finishes on its own (for kill and Ctrl+C tests)
 //   usertest parent                  waits for a `usertest sleep` child forever
 //   usertest texit | tfault          a second thread calls exit(9) / dereferences null
+//   usertest cwd                     prints its working directory (for the inheritance check)
 using Nekotia;
 using Nekotia.User;
 
@@ -58,6 +59,13 @@ public static unsafe class Program
                 Thread.Start(Str.Equals(mode, "texit") ? &ExitFromThread : &FaultInThread);
                 while (true) { Process.Sleep(100000); }
             }
+            if (Str.Equals(mode, "cwd"))
+            {
+                byte* cwd = stackalloc byte[File.MaxPath];
+                File.CurrentDirectory(cwd, File.MaxPath);
+                Console.Write(cwd);
+                return 0;
+            }
             _verbose = Str.Equals(mode, "-v");
         }
 
@@ -67,6 +75,7 @@ public static unsafe class Program
         HeapAndFpu();
         Children();
         Threads();
+        Files();
 
         if (_verbose || _failed > 0)
             Console.WriteLine($"usertest: {_passed} passed, {_failed} failed");
@@ -156,6 +165,91 @@ public static unsafe class Program
         Check(Process.Wait((uint)child) == Process.ErrNotFound, "a child can be waited for only once");
         long other = Process.Wait(Process.Id());
         Check(other == Process.ErrNotChild, "wait() for a process that is not a child fails");
+    }
+
+    // ---------------------------------------------------------------- files
+
+    static long ReadAll(byte* path, byte* buffer, ulong capacity)
+    {
+        long fd = File.Open(path, File.Read);
+        if (fd < 0)
+            return fd;
+        long n = File.ReadBytes((int)fd, buffer, capacity - 1);
+        File.Close((int)fd);
+        if (n >= 0)
+            buffer[n] = 0;
+        return n;
+    }
+
+    static void Files()
+    {
+        byte* buf = stackalloc byte[256];
+        FileStat st = default;
+        Check(File.CreateDirectory("/tmp/usertest") == 0 || File.IsDirectory(Str.Bytes("/tmp/usertest")), "mkdir /tmp/usertest");
+        long fd = File.Open("/tmp/usertest/f", File.Read | File.Write | File.Create | File.Truncate);
+        Check(fd >= 3, "open: a new file gets the lowest free fd above 0–2");
+        Check(File.WriteBytes((int)fd, Str.Bytes("nekotia"), 7) == 7 && File.Seek((int)fd, 0, File.SeekSet) == 0
+              && File.ReadBytes((int)fd, buf, 16) == 7 && buf[0] == 'n' && buf[6] == 'a', "write, seek, read back");
+        Check(File.Stat((int)fd, out st) == 0 && st.Size == 7 && st.Type == (byte)NodeType.File, "fstat");
+        long copy = File.Duplicate((int)fd);
+        Check(copy > fd && File.Seek((int)copy, 2, File.SeekSet) == 2 && File.Seek((int)fd, 0, File.SeekCurrent) == 2,
+              "dup shares the file offset");
+        Check(File.Close((int)copy) == 0 && File.Close((int)copy) == Process.ErrBadFd, "close; closing twice fails");
+        File.Close((int)fd);
+        Check(File.ReadBytes(17, buf, 4) == Process.ErrBadFd && File.ReadBytes(999, buf, 4) == Process.ErrBadFd, "bad fds are refused");
+        Check(Process.Syscall(16, KernelAddress, File.Read) == Process.ErrBadAddress, "open() refuses a kernel string");
+        Check(Process.Syscall(19, (ulong)Str.Bytes("/tmp"), KernelAddress) == Process.ErrBadAddress, "stat() refuses a kernel buffer");
+
+        // A child inherits stdout: redirect it into a file around spawn.
+        long outFd = File.Open("/tmp/usertest/out", File.Write | File.Create | File.Truncate);
+        long saved = File.Duplicate(1);
+        File.Redirect((int)outFd, 1);
+        File.Close((int)outFd);
+        long child = Process.Start("echo", "inherited stdout");
+        File.Redirect((int)saved, 1);
+        File.Close((int)saved);
+        Check(child > 0 && Process.Wait((uint)child) == 0 && ReadAll(Str.Bytes("/tmp/usertest/out"), buf, 256) == 17
+              && Str.StartsWith(buf, "inherited stdout"), "a child writes to the stdout it inherited (redirection)");
+
+        Check(File.ChangeDirectory("/tmp/usertest") == 0 && File.Exists(Str.Bytes("f")), "chdir + relative path");
+        outFd = File.Open("cwd.txt", File.Write | File.Create | File.Truncate);
+        saved = File.Duplicate(1);
+        File.Redirect((int)outFd, 1);
+        File.Close((int)outFd);
+        child = Process.Start("usertest", "cwd");
+        File.Redirect((int)saved, 1);
+        File.Close((int)saved);
+        Check(child > 0 && Process.Wait((uint)child) == 0 && ReadAll(Str.Bytes("cwd.txt"), buf, 256) > 0
+              && Str.Equals(buf, "/tmp/usertest"), "a child starts in its parent's working directory");
+
+        int opened = 0;
+        long last = 0;
+        long* fds = stackalloc long[40];
+        for (int i = 0; i < 40; i++)
+        {
+            fds[i] = File.Open("f", File.Read);
+            if (fds[i] >= 0)
+                opened++;
+            else
+                last = fds[i];
+        }
+        Check(opened == 29 && last == Process.ErrTooManyFiles, "32 file descriptors per process, then ErrTooManyFiles");
+        for (int i = 0; i < 40; i++)
+        {
+            if (fds[i] >= 0)
+                File.Close((int)fds[i]);
+        }
+
+        long dir = File.Open(".", File.Read);
+        DirEntry e = default;
+        uint entries = 0;
+        for (uint i = 0; File.ReadDirectory((int)dir, i, out e) == 1; i++)
+            entries++;
+        File.Close((int)dir);
+        Check(entries == 3, "readdir lists f, out, cwd.txt");
+        Check(File.Delete("f") == 0 && File.Delete("out") == 0 && File.Delete("cwd.txt") == 0 && File.ChangeDirectory("/") == 0
+              && File.Delete("/tmp/usertest") == 0, "remove files and the directory");
+        Check(ReadAll(Str.Bytes("/etc/motd"), buf, 8) == 7 && Str.StartsWith(buf, "Welcome"), "read a file from the initrd");
     }
 
     static void ExitFromThread(ulong arg)

@@ -1,0 +1,248 @@
+// File commands of the kernel shell: ls, cd, pwd, cat, mkdir, rm, mv, write, df (on top of Nekotia.IO.Vfs).
+using Nekotia;
+using Nekotia.Hal;
+using Nekotia.IO;
+using Nekotia.Processes;
+
+namespace Nekotia.OS;
+
+public static unsafe class Files
+{
+    /// `dir` + "/" + `name` into `out` (Vfs.MaxPath bytes).
+    public static void Join(string dir, byte* name, byte* output) => JoinBytes(Str.Bytes(dir), name, output);
+
+    public static void JoinBytes(byte* dir, byte* name, byte* output)
+    {
+        int n = 0;
+        for (byte* d = dir; *d != 0 && n < Vfs.MaxPath - 2; d++)
+            output[n++] = *d;
+        if (n > 0 && output[n - 1] != '/')
+            output[n++] = (byte)'/';
+        for (byte* c = name; *c != 0 && *c != '/' && n < Vfs.MaxPath - 1; c++)
+            output[n++] = *c;
+        output[n] = 0;
+    }
+
+    static void Fail(string command, byte* path, long error)
+    {
+        Terminal.SetColor(AnsiColor.BrightRed);
+        Terminal.Write(command);
+        Terminal.Write(": ");
+        if (path != null && *path != 0) {
+            Terminal.Write(path);
+            Terminal.Write(": ");
+        }
+        Terminal.Write(Process.ErrorText(error));
+        Terminal.ResetColor();
+        Terminal.WriteLine();
+    }
+
+    /// Splits "A B…" at the first run of spaces: returns B (A is NUL-terminated in place).
+    static byte* Split(byte* args)
+    {
+        byte* p = args;
+        while (*p != 0 && *p != ' ')
+            p++;
+        if (*p == 0)
+            return p;
+        *p++ = 0;
+        while (*p == ' ')
+            p++;
+        return p;
+    }
+
+    public static void List(byte* args)
+    {
+        byte* path = *args != 0 ? args : Str.Bytes(".");
+        FileStat st = default;
+        long e = Vfs.Stat(path, out st);
+        if (e < 0) {
+            Fail("ls", path, e);
+            return;
+        }
+        if (st.Type != NodeType.Directory) {
+            Terminal.Write(path);
+            Terminal.WriteLine($"  {st.Size:size}");
+            return;
+        }
+        OpenFile* dir = null;
+        e = Vfs.Open(path, Vfs.Read, out dir);
+        if (e < 0) {
+            Fail("ls", path, e);
+            return;
+        }
+        DirEntry entry = default;
+        uint count = 0;
+        for (uint i = 0; Vfs.ReadDirectory(dir, i, out entry) == 1; i++) {
+            count++;
+            int width = (int)Str.Length(entry.Name);
+            if (entry.Type == NodeType.Directory) {
+                Terminal.SetColor(AnsiColor.BrightBlue);
+                Terminal.Write(entry.Name);
+                Terminal.Write("/");
+                width++;
+            } else if (entry.Type == NodeType.Device) {
+                Terminal.SetColor(AnsiColor.Yellow);
+                Terminal.Write(entry.Name);
+            } else {
+                Terminal.Write(entry.Name);
+            }
+            Terminal.ResetColor();
+            for int pad in width..20 { Terminal.WriteChar((byte)' '); }
+            if (entry.Type == NodeType.Directory) {
+                Terminal.SetColor(AnsiColor.Gray);
+                if (entry.Size == 1)
+                    Terminal.WriteLine("1 entry");
+                else
+                    Terminal.WriteLine($"{entry.Size} entries");
+                Terminal.ResetColor();
+            }
+            else if (entry.Type == NodeType.Device)
+                Terminal.WriteLine(AnsiColor.Gray, "device");
+            else
+                Terminal.WriteLine($"{entry.Size:size}");
+        }
+        Vfs.Close(dir);
+        if (count == 0)
+            Terminal.WriteLine(AnsiColor.Gray, "(empty)");
+    }
+
+    public static void ChangeDirectory(byte* args)
+    {
+        byte* path = *args != 0 ? args : Str.Bytes("/");
+        long e = Vfs.ChangeDirectory(path);
+        if (e < 0)
+            Fail("cd", path, e);
+    }
+
+    public static void PrintDirectory()
+    {
+        byte* cwd = stackalloc byte[Vfs.MaxPath];
+        long e = Vfs.CurrentDirectory(cwd, Vfs.MaxPath);
+        if (e < 0) {
+            Fail("pwd", null, e);
+            return;
+        }
+        Terminal.Write(cwd);
+        Terminal.WriteLine();
+    }
+
+    public static void Cat(byte* args)
+    {
+        if (*args == 0) {
+            Terminal.WriteLine("usage: cat FILE…");
+            return;
+        }
+        byte* buffer = stackalloc byte[513];
+        while (*args != 0) {
+            byte* next = Split(args);
+            OpenFile* f = null;
+            long e = Vfs.Open(args, Vfs.Read, out f);
+            if (e < 0) {
+                Fail("cat", args, e);
+            } else {
+                bool newline = true;
+                loop {
+                    long n = Vfs.ReadFile(f, buffer, 512);
+                    if (n < 0) {
+                        Fail("cat", args, n);
+                        break;
+                    }
+                    if (n == 0)
+                        break;
+                    buffer[n] = 0;
+                    Terminal.Write(buffer);   // stops at a NUL byte: cat is meant for text
+                    newline = buffer[n - 1] == '\n';
+                }
+                Vfs.Close(f);
+                if (!newline)
+                    Terminal.WriteLine();
+            }
+            args = next;
+        }
+    }
+
+    public static void MakeDirectory(byte* args)
+    {
+        if (*args == 0) {
+            Terminal.WriteLine("usage: mkdir DIR…");
+            return;
+        }
+        while (*args != 0) {
+            byte* next = Split(args);
+            long e = Vfs.CreateDirectory(args);
+            if (e < 0)
+                Fail("mkdir", args, e);
+            args = next;
+        }
+    }
+
+    public static void Remove(byte* args)
+    {
+        if (*args == 0) {
+            Terminal.WriteLine("usage: rm PATH…   (files and empty directories)");
+            return;
+        }
+        while (*args != 0) {
+            byte* next = Split(args);
+            long e = Vfs.Remove(args);
+            if (e < 0)
+                Fail("rm", args, e);
+            args = next;
+        }
+    }
+
+    public static void Move(byte* args)
+    {
+        byte* to = Split(args);
+        if (*args == 0 || *to == 0) {
+            Terminal.WriteLine("usage: mv FROM TO");
+            return;
+        }
+        Split(to);
+        FileStat st = default;
+        byte* joined = stackalloc byte[Vfs.MaxPath];
+        if (Vfs.Stat(to, out st) == 0 && st.Type == NodeType.Directory) {   // mv FILE DIR: into DIR
+            byte* name = args;
+            for (byte* c = args; *c != 0; c++) {
+                if (*c == '/' && c[1] != 0)
+                    name = c + 1;
+            }
+            JoinBytes(to, name, joined);
+            to = joined;
+        }
+        long e = Vfs.Rename(args, to);
+        if (e < 0)
+            Fail("mv", args, e);
+    }
+
+    public static void Write(byte* args)
+    {
+        byte* text = Split(args);
+        if (*args == 0) {
+            Terminal.WriteLine("usage: write FILE TEXT");
+            return;
+        }
+        OpenFile* f = null;
+        long e = Vfs.Open(args, Vfs.Write | Vfs.Create | Vfs.Truncate, out f);
+        if (e < 0) {
+            Fail("write", args, e);
+            return;
+        }
+        ulong n = Str.Length(text);
+        text[n] = (byte)'\n';   // the line buffer has room: Split left at least the NUL
+        e = Vfs.WriteFile(f, text, n + 1);
+        text[n] = 0;
+        Vfs.Close(f);
+        if (e < 0)
+            Fail("write", args, e);
+    }
+
+    public static void Usage()
+    {
+        VfsStats s = Vfs.Statistics();
+        Terminal.WriteLine($"nodes:      {s.Nodes} (files, directories, devices), {s.OpenFiles} open file(s)");
+        Terminal.WriteLine($"contents:   {s.HeapBytes:size} in the kernel heap, {s.InitrdBytes:size} read straight from the initrd");
+        Terminal.WriteLine($"initrd:     {s.InitrdEntries} entries unpacked at boot");
+    }
+}

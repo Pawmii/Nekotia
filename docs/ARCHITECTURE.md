@@ -20,8 +20,9 @@ xorriso + limine bios-install ──► build/nekotia.iso (гибрид BIOS/UEF
 
 user/NAME/nekotia.json ("target": "user") ──► nekoc build ──► build/user/NAME/gen/*.cpp
 clang++ (freestanding, ring 3) + runtime/user (crt0, user.cpp) + core/math.cpp + freestanding/libc.cpp
-ld.lld -T runtime/user/linker.ld (0x400000) ──► build/user/bin/NAME ──► /boot/bin/NAME на ISO
-                                                  (module_path в build/limine.conf → модуль Limine)
+ld.lld -T runtime/user/linker.ld (0x400000) ──► build/user/bin/NAME
+tar (ustar) build/user/bin/* + initrd/* ──► build/initrd.tar ──► /boot/initrd.tar на ISO
+                                                  (module_path в boot/limine.conf → модуль Limine → VFS /)
 ```
 
 ## nekoc (`tools/nekoc`)
@@ -169,18 +170,23 @@ ANSI-последовательности (`ESC[…m`, `ESC[2J`, `ESC[H`, `ESC[K
 
 - **Общая верхняя половина**: `vmm::init` заранее создаёт все 256 записей PML4[256…511], поэтому новое пространство
   копирует их один раз, а любые последующие отображения ядра (куча, стеки, MMIO) сразу видны во всех процессах.
-- **Процесс = адресное пространство + потоки (до 64).** `proc::spawn` проверяет ELF (статический ET_EXEC x86_64, сегменты в
+- **Процесс = адресное пространство + потоки (до 64) + 32 файловых дескриптора + рабочий каталог.** `proc::spawn` читает
+  программу из VFS (`/bin/NAME` или путь со `/`) во временный буфер, проверяет ELF (статический ET_EXEC x86_64, сегменты в
   пользовательской зоне, точка входа в исполняемом сегменте), отображает сегменты и стек через HHDM (пространство при
   этом не активно), кладёт argc/argv и запускает поток ядра `sched::spawn_for(process, …)`. Его первая функция загружает
-  чистое состояние FPU и делает `iretq` в ring 3 (`neko_enter_user`, CS 0x23 / SS 0x1B, `swapgs`).
+  чистое состояние FPU и делает `iretq` в ring 3 (`neko_enter_user`, CS 0x23 / SS 0x1B, `swapgs`). Дескрипторы 0–2 и
+  рабочий каталог наследуются от родителя (так `sh` делает перенаправления: `dup` → `dup2` → `spawn` → `dup2` обратно);
+  детям ядра достаются три ссылки на `/dev/console`. Файлы закрываются, когда снят с CPU последний поток.
 - **Переключение**: перед каждым `neko_switch_context` хук `neko_sched_switch_to` ставит `TSS.rsp0` и `gs:8` на вершину
   стека ядра входящего потока и загружает его CR3 (у потоков ядра — таблицы ядра).
 - **`syscall`**: STAR = 0x08/0x10 (sysret → 0x23/0x1B), SFMASK гасит IF/DF/TF/AC. `neko_syscall_entry` делает `swapgs`,
   переходит на стек ядра потока, строит `SyscallFrame` (как кадр прерывания без вектора), `fxsave`, `sti` и вызывает
   `neko_syscall_dispatch`. Номер — `rax`, аргументы — `rdi rsi rdx r10 r8 r9`, результат — `rax` (отрицательный = ошибка).
-  Встроенные вызовы (exit, write, getpid, yield, sleep, uptime, spawn, wait, alloc, process_info, kill,
-  thread_create, thread_exit, thread_id, program_info) — в C++;
-  остальные регистрирует C#-код ядра атрибутом `[Syscall(n)]` (так сделан `read` с клавиатуры: `kernel/Syscalls.neko`).
+  Встроенные вызовы 0–31 (exit, read, write, getpid, yield, sleep, uptime, spawn, wait, alloc, process_info, kill,
+  thread_create, thread_exit, thread_id и файловые 16–29: open, close, seek, stat, fstat, readdir, mkdir, remove,
+  dup, dup2, chdir, getcwd, rename, truncate) — в C++; номера от 32 регистрирует C#-код ядра атрибутом `[Syscall(n)]`.
+  `read`/`write` идут через таблицу дескрипторов процесса в VFS (через промежуточный буфер ядра по 16 КиБ);
+  чтение `/dev/console` — построчный ввод с клавиатуры на C# (`kernel/Syscalls.neko`, `Vfs.SetConsoleReader`).
   Ядро читает и пишет память программы только через `proc::copy_from_user/copy_to_user` (`neko_user_copy` в
   `syscall.S`): проверка диапазона, `stac`/`clac` вокруг `rep movsb`, а #PF внутри копирования `idt.cpp` переводит на
   метку-исправление — вызов возвращает `ErrBadAddress`, ядро не падает. Где CPU умеет, включены SMEP (ring 0 не исполняет
@@ -204,7 +210,37 @@ ANSI-последовательности (`ESC[…m`, `ESC[2J`, `ESC[H`, `ESC[K
 Рантайм программ (`runtime/user/`): `crt0.S` (`_start` → `neko_user_start`: `__init_array`, `Main`, `exit`), обёртки
 системных вызовов, буферизованный вывод (сброс на `\n`, перед `read` и при выходе), first-fit куча поверх `alloc`,
 `str::*`, потоки и `Lock`, а `throw`/`Debug.Assert` печатают сообщение и завершают программу с кодом 134. C#-API —
-`sdk/Nekotia.User` (`Console`, `Process`, `Thread`, `SpinLock`, `Atomic`, `Memory`, `Time`); `Attributes.cs`, `Intrinsics.cs`, `Debug.cs`, `Maths.cs` общие с ядром.
+`sdk/Nekotia.User` (`Console`, `Process`, `File`, `Path`, `Thread`, `SpinLock`, `Atomic`, `Memory`, `Time`); `Attributes.cs`, `Intrinsics.cs`, `Debug.cs`, `Maths.cs` общие с ядром.
+
+### Файловая система
+
+`core/vfs.cpp`, API — `include/neko/vfs.hpp`, C# — `sdk/Nekotia.Sdk/IO/Vfs.cs` (ядро) и `sdk/Nekotia.User/File.cs` (программы).
+
+```
+/            ramfs: узлы и содержимое файлов в куче ядра
+/bin /etc …  из initrd (build/initrd.tar → модуль Limine): файлы указывают прямо в модуль до первой записи
+/dev         console (клавиатура + экран), null, zero
+/tmp         пустой каталог
+```
+
+- **Одно дерево узлов** (`Node`: имя, тип, родитель, дети, данные или `DeviceOps`). Пути — абсолютные или от рабочего
+  каталога (у процесса свой, у потоков ядра — общий); `.` и `..` разбираются при обходе.
+- **Подсчёт ссылок**: узел держит ссылку, пока он в дереве, плюс по одной на открытый файл и рабочий каталог. `remove`
+  только отцепляет узел — открытый файл продолжает читаться, память уходит с последней ссылкой. Открытый файл (`File`:
+  узел, смещение, флаги) тоже со счётчиком: `dup` и наследование делят смещение.
+- **Блокировка**: один spin lock на дерево и смещения. Вызовы устройств идут без него (консоль ждёт строку), копирования
+  под ним ограничены 16 КиБ (размер промежуточного буфера системных вызовов).
+- **initrd**: ustar (`name` + `prefix`, проверка контрольной суммы), каталоги создаются по пути, ссылки пропускаются.
+  Запись в файл из initrd сначала копирует его в кучу (copy-on-write); `df` показывает, сколько ещё читается из модуля.
+  Модуль, который не tar, становится `/bin/ИМЯ` — так можно подложить программу строкой `module_path`.
+
+### PCI
+
+`arch/x86_64/pci.cpp`, API — `include/neko/pci.hpp`, C# — `sdk/Nekotia.Sdk/Hal/Pci.cs`. Конфигурационное пространство —
+ECAM из таблицы ACPI MCFG (каждая функция — своя 4-КиБ MMIO-страница, отображается по требованию) или, без MCFG, порты
+`0xCF8/0xCFC`. Обход шины 0 (и корневых шин мульти-функционального host bridge) идёт рекурсивно через PCI-to-PCI мосты;
+для каждой функции запоминаются id, класс, IRQ и BAR с размерами (запись `0xFFFFFFFF` при выключенном декодировании).
+Драйверы ищут устройства через `Pci.Find`/`FindClass`, включают `Enable(memory, io, busMaster)` и отображают `MapBar`.
 
 ### Исключения
 

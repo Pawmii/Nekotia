@@ -13,6 +13,7 @@
 #include <neko/runtime.hpp>
 #include <neko/process.hpp>
 #include <neko/sched.hpp>
+#include <neko/vfs.hpp>
 
 namespace {
 
@@ -239,6 +240,7 @@ int main(int argc, char** argv) {
     neko::smp::g_cpus[0].online = true;
     neko::sched::init(0, 0);
     neko::console::init(g_info.Screen);
+    neko::vfs::init();
     neko::term::write("[neko-host] running the kernel as a Linux process\n");
     neko_kernel_init();
     neko_kernel_main(&g_info);

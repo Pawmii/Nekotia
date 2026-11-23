@@ -1,8 +1,11 @@
-// System calls written in C#. The runtime (runtime/src/core/process.cpp) handles the basic ones
-// itself — exit, write, spawn, wait, alloc… — and routes every number registered with @syscall here.
-// Handlers run on the calling program's own thread, in kernel mode, with interrupts enabled.
+// The console's input side, and system calls written in C#. The runtime (runtime/src/core/process.cpp)
+// handles the basic system calls itself — exit, read/write, files, spawn, wait, alloc… — and routes every
+// number registered with @syscall (32 and above) here. Handlers run on the calling program's own thread,
+// in kernel mode, with interrupts enabled.
 using Nekotia;
 using Nekotia.Hal;
+using Nekotia.IO;
+using Nekotia.Mem;
 using Nekotia.Processes;
 using Nekotia.OS.Drivers;
 using Nekotia.Threading;
@@ -24,19 +27,17 @@ public static unsafe class Syscalls
     static int _position;   // next byte read() hands out
     static Mutex _reading;  // one program reads the keyboard at a time
 
-    /// read(fd, buffer, length): fd 0 is the keyboard, cooked like a terminal — the program gets whole lines
-    /// (with the final '\n') once Enter is pressed, the user can correct them with Backspace, and Ctrl+D on an
-    /// empty line is end of input (0 bytes). Ctrl+C never gets here: the keyboard driver kills the foreground
-    /// program, and the interrupted wait makes read return.
-    @syscall(2)
-    static long Read(int fd, byte* buffer, ulong length)
+    /// Hooks the keyboard up to reads of /dev/console (fd 0 of programs the kernel starts).
+    public static void Init() => Vfs.SetConsoleReader(&ConsoleRead);
+
+    /// Reads of /dev/console, cooked like a terminal: the program gets whole lines (with the final '\n') once
+    /// Enter is pressed, the user can correct them with Backspace, and Ctrl+D on an empty line is end of input
+    /// (0 bytes). Ctrl+C never gets here: the keyboard driver kills the foreground program, and the interrupted
+    /// wait makes read return. `buffer` is kernel memory (the runtime copies it out to the program).
+    static long ConsoleRead(byte* buffer, ulong length)
     {
-        if (fd != 0)
-            return Process.ErrBadArgument;
         if (length == 0)
             return 0;
-        if (!UserMemory.CanWrite(buffer, length))
-            return Process.ErrBadAddress;
 
         long n = 0;
         lock (_reading) {
@@ -46,8 +47,7 @@ public static unsafe class Syscalls
             if ((ulong)n > length)
                 n = (long)length;
             fixed (byte* bytes = _line.Bytes) {
-                unless (UserMemory.CopyTo(buffer, bytes + _position, (ulong)n))
-                    return Process.ErrBadAddress;
+                Memory.Copy(buffer, bytes + _position, (nuint)n);
             }
             _position += (int)n;
         }

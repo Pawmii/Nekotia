@@ -1,0 +1,3 @@
+Welcome to Nekotia — a kernel written in C#, transpiled to C++ by nekoc.
+Everything you see in / lives in RAM: /bin and /etc come from the initrd,
+/dev holds the devices, /tmp is yours. Try: ls /bin, cat /etc/motd, sh.

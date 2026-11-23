@@ -16,20 +16,16 @@ public unsafe struct ProcessInfo
     [Native("threads")] public uint Threads;
 }
 
-/// <summary>A program in /boot/bin. Mirrors <c>neko::user::ProgramInfo</c>.</summary>
-[Native("::neko::user::ProgramInfo")]
-public unsafe struct ProgramInfo
-{
-    [Native("name")] public fixed byte Name[24];
-    [Native("size")] public ulong Size;
-}
-
 /// <summary>The running program and the processes it starts (system calls, see runtime/include/neko/process.hpp).</summary>
 public static unsafe class Process
 {
     /// <summary>Negative results of Start/Wait.</summary>
     public const long ErrBadArgument = -1, ErrNotFound = -2, ErrNoMemory = -3, ErrBadAddress = -4,
         ErrNoSyscall = -5, ErrBadExecutable = -6, ErrNotChild = -7, ErrInterrupted = -8, ErrLimit = -9;
+
+    /// <summary>File errors.</summary>
+    public const long ErrExists = -10, ErrNotDirectory = -11, ErrIsDirectory = -12, ErrNotEmpty = -13, ErrBadFd = -14,
+        ErrTooManyFiles = -15, ErrNameTooLong = -16, ErrBusy = -17, ErrAccess = -18, ErrNotSupported = -19;
 
     /// <summary>Exit codes set by the kernel: Ctrl+C, kill; a CPU exception gives 128 + vector (142 = page fault).</summary>
     public const long ExitInterrupted = 130, ExitKilled = 137;
@@ -48,7 +44,10 @@ public static unsafe class Process
     [Native("::neko::user::sleep_ms")]
     public static extern void Sleep(ulong ms);
 
-    /// <summary>Starts program <paramref name="name"/> from /boot/bin; returns its pid or a negative error.</summary>
+    /// <summary>
+    /// Starts program <paramref name="name"/> (/bin/NAME, or a path when it contains '/'); returns its pid or a
+    /// negative error. The child inherits fds 0–2 and the working directory.
+    /// </summary>
     [Native("::neko::user::spawn")]
     public static extern long Start(string name, string args = null);
 
@@ -63,10 +62,6 @@ public static unsafe class Process
     [Native("::neko::user::kill")]
     public static extern long Kill(uint pid);
 
-    /// <summary>Program number <paramref name="index"/> in /boot/bin; false past the end.</summary>
-    [Native("::neko::user::program_info")]
-    public static extern bool GetProgram(uint index, out ProgramInfo info);
-
     /// <summary>Process number <paramref name="index"/> in the kernel's table; false past the end.</summary>
     [Native("::neko::user::process_info")]
     public static extern bool GetInfo(uint index, out ProcessInfo info);
@@ -77,6 +72,30 @@ public static unsafe class Process
 
     [Native("::neko::user::arg")]
     public static extern byte* Arg(int index);
+
+    /// <summary>Human-readable text for a negative result.</summary>
+    public static string ErrorText(long error)
+    {
+        if (error == ErrBadArgument) return "bad argument";
+        if (error == ErrNotFound) return "not found";
+        if (error == ErrNoMemory) return "out of memory";
+        if (error == ErrBadAddress) return "bad address";
+        if (error == ErrBadExecutable) return "not an executable";
+        if (error == ErrNotChild) return "not a child";
+        if (error == ErrInterrupted) return "interrupted";
+        if (error == ErrLimit) return "limit reached";
+        if (error == ErrExists) return "already exists";
+        if (error == ErrNotDirectory) return "not a directory";
+        if (error == ErrIsDirectory) return "is a directory";
+        if (error == ErrNotEmpty) return "directory not empty";
+        if (error == ErrBadFd) return "bad file descriptor";
+        if (error == ErrTooManyFiles) return "too many open files";
+        if (error == ErrNameTooLong) return "name too long";
+        if (error == ErrBusy) return "busy";
+        if (error == ErrAccess) return "access denied";
+        if (error == ErrNotSupported) return "not supported";
+        return "error";
+    }
 
     /// <summary>A system call the kernel implements in C# with [Syscall(n)].</summary>
     [Native("::neko::user::syscall")]

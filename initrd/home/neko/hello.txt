@@ -1,0 +1,3 @@
+Hello from the initrd! This file was packed into build/initrd.tar by the
+Makefile and unpacked into the VFS at boot. Change it and the change lives
+in the kernel heap until the next reboot.

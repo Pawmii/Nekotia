@@ -153,7 +153,9 @@ C#-обёртка в `sdk/Nekotia.Sdk/`.
 | Класс (`sdk/Nekotia.User`) | Что умеет |
 |---|---|
 | `Nekotia.User.Console` | `Write*`, `WriteLine` (с интерполяцией), `WriteError`, `Read`, `ReadLine`; цвета — `Ansi.*` |
-| `Nekotia.User.Process` | `Exit`, `Id`, `Yield`, `Sleep`, `Start(name, args)`, `Wait(pid)`, `Kill(pid)`, `GetInfo`, `GetProgram`, `ArgCount`/`Arg(i)`, `Syscall(n, …)` |
+| `Nekotia.User.Process` | `Exit`, `Id`, `Yield`, `Sleep`, `Start(name or path, args)`, `Wait(pid)`, `Kill(pid)`, `GetInfo`, `ArgCount`/`Arg(i)`, `ErrorText`, `Syscall(n, …)` |
+| `Nekotia.User.File` | `Open`, `Close`, `ReadBytes`, `WriteBytes`, `Seek`, `Stat`, `ReadDirectory`, `CreateDirectory`, `Delete`, `Rename`, `ChangeDirectory`, `CurrentDirectory`, `Duplicate`, `Redirect` (dup2), `SetLength` |
+| `Nekotia.User.Path` / `Tool` | `BaseName`, `Join`; `Tool.Fail` — сообщение об ошибке утилиты |
 | `Nekotia.User.Thread` | `Start(&Entry, arg)` → handle, `Join`, `CurrentId`, `Exit`, `Yield` |
 | `Nekotia.User.SpinLock` / `Atomic` | `Lock`/`Unlock` (с `yield`); `Add`, `Load`, `Store`, `CompareExchange` над `long*` |
 | `Nekotia.User.Memory` | `Alloc`, `AllocZeroed`, `Free`, `New<T>`, `NewArray<T>`, `Delete<T>`, `UsedBytes`, `TotalBytes` |
@@ -175,12 +177,14 @@ C#-обёртка в `sdk/Nekotia.Sdk/`.
 | `Nekotia.Mem.VirtualMemory` | `Map`, `Unmap`, `Protect`, `Translate`, `MapFresh`, `PageFlags` (Write/Execute/User/Uncached/WriteCombining) |
 | `Nekotia.Mem.Memory` | `Set`, `Copy`, `Move`, `Compare`, `Zero` |
 | `Nekotia.Threading.Thread` | `Start(name, &Entry, arg, priority)`, `Yield`, `Sleep`, `Exit`, `CurrentId`, `GetInfo` |
-| `Nekotia.Processes.Process` | `Start(name, args, detached)`, `Wait(pid)`, `Kill(pid)`, `InterruptForeground`, `Foreground`, `Count`, `GetInfo`, `ProgramCount/Name/Size`, `ExitCurrent`, `ErrorText` |
+| `Nekotia.Processes.Process` | `Start(name, args, detached)`, `Wait(pid)`, `Kill(pid)`, `InterruptForeground`, `Foreground`, `Count`, `GetInfo`, `ExitCurrent`, `ErrorText` |
+| `Nekotia.IO.Vfs` | `Open(path, flags, out OpenFile*)`, `ReadFile`, `WriteFile`, `Seek`, `SetLength`, `Stat`, `ReadDirectory`, `Close`, `CreateDirectory`, `Remove`, `Rename`, `ChangeDirectory`, `CurrentDirectory`, `Exists`, `WriteAll`, `UnpackTar`, `Statistics` |
+| `Nekotia.Hal.Pci` | `Count`, `GetInfo(i, out PciDevice)`, `Find(vendor, device)`, `FindClass`, `Read8/16/32`, `Write16/32`, `Enable`, `FindCapability`, `MapBar`, `ClassName`, `VendorName` |
 | `Nekotia.Processes.UserMemory` | `CopyTo`/`CopyFrom` — единственный способ трогать память программы (SMAP); `CanRead`/`CanWrite` — предварительная проверка |
 | `Nekotia.Threading.Mutex` / `Semaphore` / `SpinLock` | `Lock/Unlock/TryLock/SetName`; `Wait/Signal/TryWait` (Signal — и из IRQ) |
 | `Nekotia.Maths` | `Sqrt`, `Sin`, `Cos`, `Tan`, `Atan2`, `Exp`, `Log`, `Pow`, `Floor`, `Ceiling`, `Round`, `Abs`, `Pi` |
 | `Nekotia.Debug` | `Panic`, `Assert` — с файлом/строкой/методом вызывающего, экран смерти |
-| `Nekotia.Str` | `Length`, `Equals` для C-строк |
+| `Nekotia.Str` | `Length`, `Equals`, `StartsWith` для C-строк; `Bytes("литерал")` → `byte*` (только чтение) |
 | `Nekotia.Asm`, `Nekotia.Intrinsics` | `Emit`, `EmitAtt`, `Unreachable`, `Breakpoint`, `CompilerBarrier` |
 | `BootInfo`, `Framebuffer` | данные от загрузчика: память, HHDM, экран, cmdline |
 

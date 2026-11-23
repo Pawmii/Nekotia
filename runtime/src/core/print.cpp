@@ -162,6 +162,13 @@ bool starts_with(const uint8_t* s, const char* prefix) {
     return true;
 }
 
+void copy(char* dst, const char* src, size_t capacity) {
+    if (!capacity) return;
+    size_t i = 0;
+    for (; src && src[i] && i + 1 < capacity; ++i) dst[i] = src[i];
+    dst[i] = 0;
+}
+
 }  // namespace str
 
 void panic(const char* message) { crash::panic_at(message, nullptr, 0, nullptr); }

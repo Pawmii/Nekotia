@@ -21,8 +21,8 @@ public unsafe struct ProcessInfo
 }
 
 /// <summary>
-/// User programs (runtime/src/core/process.cpp): static ELF64 executables from /boot/bin, each run in its own
-/// address space in ring 3 by one thread. Programs are C# too — see user/ and sdk/Nekotia.User.
+/// User programs (runtime/src/core/process.cpp): static ELF64 executables from /bin (the initrd), each run in its
+/// own address space in ring 3. Programs are C# too — see user/ and sdk/Nekotia.User.
 /// </summary>
 public static unsafe class Process
 {
@@ -32,13 +32,20 @@ public static unsafe class Process
 
     public const long ErrInterrupted = -8, ErrLimit = -9;
 
+    /// <summary>File errors (<c>neko/vfs.hpp</c>).</summary>
+    public const long ErrExists = -10, ErrNotDirectory = -11, ErrIsDirectory = -12, ErrNotEmpty = -13, ErrBadFd = -14,
+        ErrTooManyFiles = -15, ErrNameTooLong = -16, ErrBusy = -17, ErrAccess = -18, ErrNotSupported = -19;
+
     /// <summary>Exit codes: Ctrl+C, kill.</summary>
     public const long ExitInterrupted = 130, ExitKilled = 137;
 
     /// <summary>A process killed by CPU exception <c>v</c> exits with <c>KilledBase + v</c> (142 = page fault).</summary>
     public const long KilledBase = 128;
 
-    /// <summary>Starts program <paramref name="name"/> with space-separated <paramref name="args"/>; returns its pid or a negative error.</summary>
+    /// <summary>
+    /// Starts program <paramref name="name"/> (/bin/NAME, or a path when it contains '/') with space-separated
+    /// <paramref name="args"/>; returns its pid or a negative error.
+    /// </summary>
     [Native("::neko::proc::spawn")]
     public static extern long Start(string name, string args = null, bool detached = false);
 
@@ -67,16 +74,6 @@ public static unsafe class Process
     [Native("::neko::proc::info")]
     public static extern bool GetInfo(uint index, out ProcessInfo info);
 
-    /// <summary>Programs found on the boot medium.</summary>
-    [Native("::neko::proc::module_count")]
-    public static extern uint ProgramCount();
-
-    [Native("::neko::proc::module_name")]
-    public static extern string ProgramName(uint index);
-
-    [Native("::neko::proc::module_size")]
-    public static extern ulong ProgramSize(uint index);
-
     /// <summary>Ends the calling user process (from a [Syscall] handler, which runs on the process's thread).</summary>
     [Native("::neko::proc::exit_current")]
     [NoReturn]
@@ -104,6 +101,16 @@ public static unsafe class Process
         if (error == ErrNotChild) return "not a child of the caller";
         if (error == ErrInterrupted) return "interrupted";
         if (error == ErrLimit) return "too many threads";
+        if (error == ErrExists) return "already exists";
+        if (error == ErrNotDirectory) return "not a directory";
+        if (error == ErrIsDirectory) return "is a directory";
+        if (error == ErrNotEmpty) return "directory not empty";
+        if (error == ErrBadFd) return "bad file descriptor";
+        if (error == ErrTooManyFiles) return "too many open files";
+        if (error == ErrNameTooLong) return "name too long";
+        if (error == ErrBusy) return "busy";
+        if (error == ErrAccess) return "access denied";
+        if (error == ErrNotSupported) return "not supported";
         return "unknown error";
     }
 }

@@ -1,5 +1,5 @@
 {
-  // A Nekotia user program: nekoc → C++ → static ELF at /boot/bin/guess (see Makefile, runtime/user/).
+  // A Nekotia user program: nekoc → C++ → static ELF in the initrd at /bin/guess (see Makefile, runtime/user/).
   "name": "guess",
   "target": "user",
   "sources": [

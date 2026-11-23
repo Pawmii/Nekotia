@@ -27,7 +27,9 @@ namespace {
 enum : uint64_t {
     kExit = 0, kWrite = 1, kRead = 2, kGetPid = 3, kYield = 4, kSleep = 5, kUptime = 6,
     kSpawn = 7, kWait = 8, kAlloc = 9, kProcessInfo = 10, kKill = 11, kThreadCreate = 12,
-    kThreadExit = 13, kThreadId = 14, kProgramInfo = 15,
+    kThreadExit = 13, kThreadId = 14,
+    kOpen = 16, kClose = 17, kSeek = 18, kStat = 19, kFStat = 20, kReadDir = 21, kMakeDir = 22, kRemove = 23,
+    kDup = 24, kDup2 = 25, kChangeDir = 26, kGetCwd = 27, kRename = 28, kTruncate = 29,
 };
 
 Lock g_out_lock;
@@ -112,9 +114,41 @@ int64_t syscall(uint64_t number, uint64_t a, uint64_t b, uint64_t c) {
 
 int64_t kill(uint32_t target) { return sys::call(kKill, target); }
 
-bool program_info(uint32_t index, ProgramInfo& out) {
-    return sys::call(kProgramInfo, index, reinterpret_cast<uint64_t>(&out)) == 1;
+// ---------------------------------------------------------------- files
+
+namespace {
+uint64_t ptr(const void* p) { return reinterpret_cast<uint64_t>(p); }
+}  // namespace
+
+int64_t open(const uint8_t* path, uint32_t flags) { return sys::call(kOpen, ptr(path), flags); }
+int64_t open(const char* path, uint32_t flags) { return sys::call(kOpen, ptr(path), flags); }
+int64_t close(int32_t fd) {
+    if (fd == 1) flush();  // buffered output belongs to the file being closed
+    return sys::call(kClose, uint64_t(fd));
 }
+int64_t read(int32_t fd, void* buffer, uint64_t length) {
+    if (fd == 0) flush();
+    return sys::call(kRead, uint64_t(fd), ptr(buffer), length);
+}
+int64_t seek(int32_t fd, int64_t offset, int32_t whence) { return sys::call(kSeek, uint64_t(fd), uint64_t(offset), uint64_t(whence)); }
+int64_t stat(const uint8_t* path, Stat& out) { return sys::call(kStat, ptr(path), ptr(&out)); }
+int64_t stat(const char* path, Stat& out) { return sys::call(kStat, ptr(path), ptr(&out)); }
+int64_t fstat(int32_t fd, Stat& out) { return sys::call(kFStat, uint64_t(fd), ptr(&out)); }
+int64_t readdir(int32_t fd, uint32_t index, DirEntry& out) { return sys::call(kReadDir, uint64_t(fd), index, ptr(&out)); }
+int64_t mkdir(const uint8_t* path) { return sys::call(kMakeDir, ptr(path)); }
+int64_t mkdir(const char* path) { return sys::call(kMakeDir, ptr(path)); }
+int64_t remove(const uint8_t* path) { return sys::call(kRemove, ptr(path)); }
+int64_t remove(const char* path) { return sys::call(kRemove, ptr(path)); }
+int64_t rename(const uint8_t* from, const uint8_t* to) { return sys::call(kRename, ptr(from), ptr(to)); }
+int64_t chdir(const uint8_t* path) { return sys::call(kChangeDir, ptr(path)); }
+int64_t chdir(const char* path) { return sys::call(kChangeDir, ptr(path)); }
+int64_t getcwd(uint8_t* buffer, uint64_t capacity) { return sys::call(kGetCwd, ptr(buffer), capacity); }
+int64_t dup(int32_t fd) { return sys::call(kDup, uint64_t(fd)); }
+int64_t dup2(int32_t fd, int32_t target) {
+    if (target == 1) flush();
+    return sys::call(kDup2, uint64_t(fd), uint64_t(target));
+}
+int64_t truncate(int32_t fd, uint64_t size) { return sys::call(kTruncate, uint64_t(fd), size); }
 
 // ---------------------------------------------------------------- locks and threads
 

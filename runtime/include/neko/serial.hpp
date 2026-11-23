@@ -23,6 +23,9 @@ size_t length(const char* s);
 size_t length(const uint8_t* s);
 bool equals(const char* a, const char* b);
 bool equals(const uint8_t* a, const char* b);
+inline bool equals(const uint8_t* a, const uint8_t* b) { return equals(a, reinterpret_cast<const char*>(b)); }
 bool starts_with(const uint8_t* s, const char* prefix);
+void copy(char* dst, const char* src, size_t capacity);  // always NUL-terminated (truncates)
+inline uint8_t* bytes(const char* s) { return reinterpret_cast<uint8_t*>(const_cast<char*>(s)); }
 
 }  // namespace neko::str

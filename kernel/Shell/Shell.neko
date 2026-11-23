@@ -1,6 +1,7 @@
 // Kernel shell: line editing, history, tab completion. Commands live in Commands.neko.
 using Nekotia;
 using Nekotia.Hal;
+using Nekotia.IO;
 using Nekotia.OS.Drivers;
 
 namespace Nekotia.OS;
@@ -50,7 +51,13 @@ public static unsafe class Shell
     static void Prompt()
     {
         Terminal.Write(AnsiColor.BrightMagenta, "neko");
-        Terminal.Write(Keyboard.Russian ? AnsiColor.Yellow : AnsiColor.Cyan, Keyboard.Russian ? " ru" : " en");
+        Terminal.Write(Keyboard.Russian ? AnsiColor.Yellow : AnsiColor.Cyan, Keyboard.Russian ? " ru " : " en ");
+        byte* cwd = stackalloc byte[Vfs.MaxPath];
+        if (Vfs.CurrentDirectory(cwd, Vfs.MaxPath) < 0)
+            cwd[0] = 0;
+        Terminal.SetColor(AnsiColor.BrightBlue);
+        Terminal.Write(cwd);
+        Terminal.ResetColor();
         Terminal.Write("> ");
     }
 

@@ -2,6 +2,7 @@
 using System;
 using Nekotia;
 using Nekotia.Hal;
+using Nekotia.IO;
 using Nekotia.Mem;
 using Nekotia.Processes;
 using Nekotia.Threading;
@@ -65,6 +66,7 @@ public static unsafe class SelfTest
         Paging();
         Threads();
         PciBus();
+        FileSystem();
         UserMode();
         return _failed;
     }
@@ -395,10 +397,108 @@ public static unsafe class SelfTest
         Check(Pci.Find(0xFFFF, 0xFFFF, Pci.Count()) == -1, "pci: lookups past the end find nothing");
     }
 
+    static long Put(string path, byte* data, ulong length, uint flags)
+    {
+        OpenFile* f = null;
+        long e = Vfs.Open(path, flags, out f);
+        if (e < 0)
+            return e;
+        e = Vfs.WriteFile(f, data, length);
+        Vfs.Close(f);
+        return e;
+    }
+
+    /// Reads `path` into `buffer` (NUL-terminated); bytes read or an error.
+    static long Get(string path, byte* buffer, ulong capacity)
+    {
+        OpenFile* f = null;
+        long e = Vfs.Open(path, Vfs.Read, out f);
+        if (e < 0)
+            return e;
+        long n = Vfs.ReadFile(f, buffer, capacity - 1);
+        Vfs.Close(f);
+        if (n >= 0)
+            buffer[n] = 0;
+        return n;
+    }
+
+    static void FileSystem()
+    {
+        nuint heap = Heap.UsedBytes();
+        ulong nodes = Vfs.Statistics().Nodes;
+        byte* buf = stackalloc byte[128];
+        FileStat st = default;
+
+        Check(Vfs.Stat("/", out st) == 0 && st.Type == NodeType.Directory, "vfs: the root is a directory");
+        Check(Vfs.Stat("/dev/console", out st) == 0 && st.Type == NodeType.Device, "vfs: /dev/console is a device");
+        Check(Vfs.CreateDirectory("/tmp/selftest") == 0, "vfs: mkdir");
+        Check(Vfs.CreateDirectory("/tmp/selftest") == Process.ErrExists, "vfs: mkdir of an existing name fails (exists)");
+
+        Check(Put("/tmp/selftest/a", Str.Bytes("hello"), 5, Vfs.Write | Vfs.Create) == 5, "vfs: create + write");
+        Check(Put("/tmp/selftest/a", Str.Bytes(", world"), 7, Vfs.Write | Vfs.Append) == 7, "vfs: append");
+        Check(Get("/tmp/selftest/a", buf, 128) == 12 && Str.Equals(buf, "hello, world"), "vfs: read back");
+
+        OpenFile* f = null;
+        Vfs.Open("/tmp/selftest/a", Vfs.Read | Vfs.Write, out f);
+        Check(Vfs.Seek(f, 7, Vfs.SeekSet) == 7 && Vfs.WriteFile(f, Str.Bytes("there"), 5) == 5, "vfs: seek + overwrite");
+        Check(Vfs.Seek(f, 20, Vfs.SeekSet) == 20 && Vfs.WriteFile(f, Str.Bytes("!"), 1) == 1 && Vfs.Stat(f, out st) == 0 && st.Size == 21,
+              "vfs: writing past the end grows the file");
+        Vfs.Seek(f, 12, Vfs.SeekSet);
+        Check(Vfs.ReadFile(f, buf, 8) == 8 && buf[0] == 0 && buf[7] == 0, "vfs: the hole reads as zeros");
+        Check(Vfs.SetLength(f, 5) == 0 && Vfs.Stat(f, out st) == 0 && st.Size == 5, "vfs: truncate");
+        Check(Vfs.Seek(f, -1, Vfs.SeekSet) == Process.ErrBadArgument, "vfs: seeking before the start fails");
+        Vfs.Close(f);
+        Check(Get("/tmp/selftest/a", buf, 128) == 5 && Str.Equals(buf, "hello"), "vfs: contents after truncate");
+
+        Check(Vfs.Open("/tmp/selftest/missing", Vfs.Read, out f) == Process.ErrNotFound, "vfs: opening a missing file fails (not found)");
+        Check(Vfs.Open("/tmp/selftest", Vfs.Write, out f) == Process.ErrIsDirectory, "vfs: a directory cannot be opened for writing");
+        Check(Vfs.Open("/tmp/selftest/a/b", Vfs.Read, out f) == Process.ErrNotDirectory, "vfs: a file is not a directory in a path");
+        Check(Vfs.Open("/tmp/selftest/a", Vfs.Write | Vfs.Create | Vfs.Exclusive, out f) == Process.ErrExists, "vfs: exclusive create of an existing file fails");
+
+        // Working directory and relative paths.
+        Check(Vfs.ChangeDirectory("/tmp/selftest") == 0 && Vfs.CurrentDirectory(buf, 128) == 13 && Str.Equals(buf, "/tmp/selftest"),
+              "vfs: chdir + getcwd");
+        Check(Vfs.Stat("a", out st) == 0 && st.Size == 5 && Vfs.Stat("../selftest/./a", out st) == 0, "vfs: relative paths, . and ..");
+        Check(Vfs.CreateDirectory("sub") == 0 && Vfs.Rename("a", "sub/b") == 0 && Vfs.Stat("sub/b", out st) == 0 && !Vfs.Exists("a"),
+              "vfs: rename moves between directories");
+        Check(Vfs.Rename("/tmp/selftest", "/tmp/selftest/sub/x") == Process.ErrBusy, "vfs: a directory cannot move into itself");
+        Check(Vfs.Remove("sub") == Process.ErrNotEmpty, "vfs: removing a non-empty directory fails");
+
+        // A removed file stays readable through an open file until it is closed.
+        Vfs.Open("sub/b", Vfs.Read, out f);
+        Check(Vfs.Remove("sub/b") == 0 && !Vfs.Exists("sub/b"), "vfs: remove");
+        Check(Vfs.ReadFile(f, buf, 128) == 5, "vfs: an open file outlives its name");
+        Vfs.Close(f);
+
+        Vfs.Open("/tmp/selftest", Vfs.Read, out f);
+        DirEntry e = default;
+        Check(Vfs.ReadDirectory(f, 0, out e) == 1 && Str.Equals(e.Name, "sub") && e.Type == NodeType.Directory
+              && Vfs.ReadDirectory(f, 1, out e) == 0, "vfs: readdir");
+        Vfs.Close(f);
+
+        Check(Vfs.ChangeDirectory("/") == 0 && Vfs.Remove("/tmp/selftest/sub") == 0 && Vfs.Remove("/tmp/selftest") == 0,
+              "vfs: removing empty directories");
+        Check(Vfs.Remove("/") == Process.ErrBusy, "vfs: the root cannot be removed");
+
+        Vfs.Open("/dev/zero", Vfs.Read, out f);
+        buf[0] = 1;
+        Check(Vfs.ReadFile(f, buf, 16) == 16 && buf[0] == 0 && buf[15] == 0, "vfs: /dev/zero");
+        Vfs.Close(f);
+        Check(Put("/dev/null", buf, 16, Vfs.Write) == 16 && Get("/dev/null", buf, 16) == 0, "vfs: /dev/null");
+
+        Check(Vfs.Statistics().Nodes == nodes && Vfs.Statistics().OpenFiles == 0 && Heap.UsedBytes() == heap,
+              "vfs: nodes, open files and memory are all freed");
+
+        if (Kernel.Info->Hosted)
+            return;
+        Check(Vfs.Statistics().InitrdEntries > 0 && Vfs.Exists("/bin/sh"), "initrd: unpacked at boot (/bin/sh)");
+        Check(Get("/etc/motd", buf, 16) == 15 && Str.StartsWith(buf, "Welcome"), "initrd: /etc/motd reads straight from the module");
+    }
+
     static void UserMode()
     {
-        if (Process.ProgramCount() == 0)
-            return;   // host mode, or an ISO without /boot/bin
+        if (Kernel.Info->Hosted || !Vfs.Exists("/bin/usertest"))
+            return;   // host mode, or a boot medium without the initrd
         Process.SetFaultReports(_verbose);
         defer Process.SetFaultReports(true);
 

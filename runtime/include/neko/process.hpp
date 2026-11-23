@@ -1,8 +1,9 @@
 // User processes (core/process.cpp, arch/x86_64/usermode.cpp, arch/x86_64/syscall.S).
 //
-// A process is one address space + one or more threads running in ring 3. Programs are static ELF64
-// executables handed to the kernel as Limine modules (/boot/bin/* on the ISO) and built from C#
-// by nekoc with "target": "user" (see user/ and runtime/user/).
+// A process is one address space + one or more threads running in ring 3, a table of open files
+// (fds 0–2 are inherited from the parent; the kernel gives its own children /dev/console) and a
+// working directory. Programs are static ELF64 executables in the VFS (/bin/NAME, from the initrd)
+// built from C# by nekoc with "target": "user" (see user/ and runtime/user/).
 //
 // User address space (lower half; the kernel half is shared by every process):
 //   0x0000000000400000  program image (PT_LOAD segments, R / RW / RX, NX where not executable)
@@ -22,17 +23,22 @@ namespace neko::crash {
 struct CpuState;
 }
 
+namespace neko::vfs {
+struct Node;
+struct File;
+}
+
 namespace neko::proc {
 
 enum class Syscall : uint32_t {
     Exit = 0,      // exit(code)                          never returns
-    Write = 1,     // write(fd, buffer, length)           → bytes written (fd 1 = stdout, 2 = stderr)
-    Read = 2,      // read(fd, buffer, length)            → bytes read (fd 0 = keyboard; implemented in C#)
+    Write = 1,     // write(fd, buffer, length)           → bytes written
+    Read = 2,      // read(fd, buffer, length)            → bytes read, 0 at the end (console: one line)
     GetPid = 3,    // getpid()                            → process id
     Yield = 4,     // yield()
     Sleep = 5,     // sleep(milliseconds)
     Uptime = 6,    // uptime()                            → milliseconds since boot
-    Spawn = 7,     // spawn(name, arguments)              → pid of the new process
+    Spawn = 7,     // spawn(program, arguments)           → pid; program = /bin/NAME or a path with '/' 
     Wait = 8,      // wait(pid)                           → its exit code (only for its parent)
     Alloc = 9,     // alloc(bytes)                        → address of fresh zeroed RW pages
     ProcessInfo = 10,  // process_info(index, ProcessInfo*) → 1, or 0 past the end
@@ -40,7 +46,21 @@ enum class Syscall : uint32_t {
     ThreadCreate = 12, // thread_create(rip, stack_top, arg) → thread id; starts at rip with rdi = arg
     ThreadExit = 13,   // thread_exit()                      never returns; the last thread ends the process
     ThreadId = 14,     // thread_id()                        → id of the calling thread
-    ProgramInfo = 15,  // program_info(index, ProgramInfo*)  → 1, or 0 past the end (/boot/bin listing)
+    // 15 is unused (was program_info: programs are files in /bin now)
+    Open = 16,         // open(path, flags)                  → fd (flags: neko/vfs.hpp kRead…)
+    Close = 17,        // close(fd)                          → 0
+    Seek = 18,         // seek(fd, offset, whence)           → new offset
+    Stat = 19,         // stat(path, Stat*)                  → 0
+    FStat = 20,        // fstat(fd, Stat*)                   → 0
+    ReadDir = 21,      // readdir(fd, index, DirEntry*)      → 1, or 0 past the end
+    MakeDir = 22,      // mkdir(path)                        → 0
+    Remove = 23,       // remove(path)                       → 0 (file or empty directory)
+    Dup = 24,          // dup(fd)                            → new fd sharing the open file
+    Dup2 = 25,         // dup2(fd, target)                   → target (closed first if open)
+    ChangeDir = 26,    // chdir(path)                        → 0
+    GetCwd = 27,       // getcwd(buffer, capacity)           → length (NUL-terminated)
+    Rename = 28,       // rename(from, to)                   → 0
+    Truncate = 29,     // truncate(fd, size)                 → 0
 };
 constexpr uint32_t kMaxSyscalls = 64;
 constexpr uint32_t kFirstFreeSyscall = 32;  // numbers below are reserved for the runtime
@@ -56,6 +76,17 @@ enum Error : int64_t {
     kErrNotChild = -7,
     kErrInterrupted = -8,  // the caller is being killed
     kErrLimit = -9,        // too many threads
+    // files (neko/vfs.hpp)
+    kErrExists = -10,
+    kErrNotDirectory = -11,
+    kErrIsDirectory = -12,
+    kErrNotEmpty = -13,
+    kErrBadFd = -14,
+    kErrTooManyFiles = -15,
+    kErrNameTooLong = -16,
+    kErrBusy = -17,        // e.g. moving a directory into itself
+    kErrAccess = -18,      // writing a file opened read-only, reading a write-only one
+    kErrNotSupported = -19,
 };
 
 // Exit code of a process killed by a CPU exception: 128 + vector (like a Unix signal number).
@@ -63,6 +94,7 @@ constexpr int64_t kKilledBase = 128;
 constexpr int64_t kExitInterrupted = 130;  // Ctrl+C
 constexpr int64_t kExitKilled = 137;       // kill
 constexpr uint32_t kMaxThreads = 64;       // per process
+constexpr uint32_t kMaxFiles = 32;         // open file descriptors per process
 
 constexpr uint64_t kUserImageBase = 0x400000;
 constexpr uint64_t kUserAllocBase = 0x0000100000000000ull;
@@ -89,20 +121,16 @@ struct Process {
     uint32_t threads;    // threads not yet freed; the last one tears the address space down
     bool exiting;        // exit/kill/fault happened: exit_code is final, every thread is being ended
     uint64_t started_ms;
-    sync::SpinLock lock; // alloc_next, user_pages
+    sync::SpinLock lock; // alloc_next, user_pages, files
+    vfs::File* files[kMaxFiles];  // file descriptors
+    vfs::Node* cwd;      // working directory
     sync::Semaphore exited;  // signalled once the address space is gone
     Process* next;
 };
 
-// ---- program modules (Limine modules: /boot/bin/NAME)
-void add_module(const char* path, const void* data, uint64_t size);
-uint32_t module_count();
-const char* module_name(uint32_t index);
-uint64_t module_size(uint32_t index);
-
 // ---- processes
-// Starts program `name` with `args` (space-separated, may be null). Returns the pid or an Error.
-// `detached`: nobody will wait for it.
+// Starts program `name` (/bin/NAME, or a path when it contains '/') with `args` (space-separated,
+// may be null). Returns the pid or an Error. `detached`: nobody will wait for it.
 int64_t spawn(const char* name, const char* args, bool detached = false);
 inline int64_t spawn(const uint8_t* name, const uint8_t* args, bool detached = false) {
     return spawn(reinterpret_cast<const char*>(name), reinterpret_cast<const char*>(args), detached);

@@ -1,43 +1,26 @@
-// User processes: program modules, the ELF loader, the process table, exit/wait and the
+// User processes: the ELF loader, the process table, exit/wait, file descriptors and the
 // system call table (see neko/process.hpp for the ABI and the address-space layout).
 //
 // Life of a process (one or more threads sharing an address space):
-//   spawn  — find the module, check the ELF, build a fresh address space (image + stack with
-//            argc/argv), start a kernel thread bound to it (sched::spawn_for)
+//   spawn  — read the program from the VFS, check the ELF, build a fresh address space (image +
+//            stack with argc/argv), inherit fds 0–2 and the working directory, start a kernel
+//            thread bound to it (sched::spawn_for)
 //   start  — that thread loads a clean FPU state and drops to ring 3 (arch::enter_user)
 //   run    — system calls arrive through neko_syscall_dispatch; CPU exceptions in ring 3 end the
 //            process (user_exception) instead of stopping the kernel
 //   exit   — exit(), kill, Ctrl+C or a fault fix the exit code and mark every thread kill_pending
 //            (sched::interrupt also cuts short sleeps and interruptible waits); each thread ends
 //            on its way back to ring 3 (check_killed). Once the last one is off its CPU,
-//            thread_freed frees the address space and wakes the parent blocked in wait()
+//            thread_freed frees the address space, closes the files and wakes the parent in wait()
 //   wait   — the parent collects the exit code and the Process record is freed
 #include <neko/process.hpp>
 #include <neko/runtime.hpp>
+#include <neko/vfs.hpp>
 
 extern "C" uint64_t neko_user_copy(void* dst, const void* src, uint64_t length);  // syscall.S: 0 or -1 on #PF
 
 namespace neko::proc {
 namespace {
-
-// ---------------------------------------------------------------- modules
-
-constexpr uint32_t kMaxModules = 32;
-
-struct Module {
-    char name[24];
-    const uint8_t* data;
-    uint64_t size;
-};
-
-Module g_modules[kMaxModules];
-uint32_t g_module_count = 0;
-
-const Module* find_module(const char* name) {
-    for (uint32_t i = 0; i < g_module_count; ++i)
-        if (str::equals(g_modules[i].name, name)) return &g_modules[i];
-    return nullptr;
-}
 
 // ---------------------------------------------------------------- process table
 
@@ -251,10 +234,51 @@ uint32_t start_thread(Process* p, const StartInfo& start) {
     return tid;
 }
 
+// Closes every file descriptor and drops the working directory.
+void close_files(Process* p) {
+    for (uint32_t i = 0; i < kMaxFiles; ++i) {
+        vfs::File* f;
+        {
+            sync::ScopedLock guard(p->lock);
+            f = p->files[i];
+            p->files[i] = nullptr;
+        }
+        vfs::close(f);
+    }
+    vfs::node_release(p->cwd);
+    p->cwd = nullptr;
+}
+
 void release(Process* p) {
+    close_files(p);
     vmm::space_destroy(p->pml4);
     heap::free(p);
 }
+
+// fds 0–2 of a new process: the parent's, or the console for programs the kernel starts.
+bool inherit_files(Process* p, Process* parent) {
+    if (parent) {
+        sync::ScopedLock guard(parent->lock);
+        for (uint32_t i = 0; i < 3; ++i) p->files[i] = vfs::dup(parent->files[i]);
+    } else {
+        vfs::File* console = vfs::open_console();
+        if (!console) return false;
+        p->files[0] = console;
+        p->files[1] = vfs::dup(console);
+        p->files[2] = vfs::dup(console);
+    }
+    p->cwd = vfs::cwd_retain();
+    return true;
+}
+
+const char* base_name(const char* path) {
+    const char* base = path;
+    for (const char* c = path; *c; ++c)
+        if (*c == '/') base = c + 1;
+    return base;
+}
+
+constexpr uint64_t kMaxProgramSize = 64ull << 20;
 
 // g_lock held. Fixes the exit code (first one wins) and ends every thread of p except the caller.
 void terminate_locked(Process* p, int64_t code) {
@@ -280,23 +304,6 @@ void terminate_locked(Process* p, int64_t code) {
 
 }  // namespace
 
-// ---------------------------------------------------------------- modules
-
-void add_module(const char* path, const void* data, uint64_t size) {
-    if (g_module_count == kMaxModules || !path) return;
-    const char* base = path;
-    for (const char* c = path; *c; ++c)
-        if (*c == '/') base = c + 1;
-    Module& m = g_modules[g_module_count++];
-    copy_name(reinterpret_cast<uint8_t*>(m.name), base);
-    m.data = static_cast<const uint8_t*>(data);
-    m.size = size;
-}
-
-uint32_t module_count() { return g_module_count; }
-const char* module_name(uint32_t i) { return i < g_module_count ? g_modules[i].name : ""; }
-uint64_t module_size(uint32_t i) { return i < g_module_count ? g_modules[i].size : 0; }
-
 // ---------------------------------------------------------------- processes
 
 Process* current() {
@@ -307,26 +314,49 @@ Process* current() {
 int64_t spawn(const char* name, const char* args, bool detached) {
     if (!name || !*name) return kErrBadArgument;
     if (!arch::user_mode_available()) return kErrNoSyscall;
-    const Module* m = find_module(name);
-    if (!m) return kErrNotFound;
-    if (!valid_elf(m->data, m->size)) return kErrBadExecutable;
+    // A bare name is a program in /bin; anything with a slash is a path.
+    char path[vfs::kMaxPath];
+    bool has_slash = false;
+    for (const char* c = name; *c; ++c) has_slash |= *c == '/';
+    if (has_slash) {
+        str::copy(path, name, sizeof(path));
+    } else {
+        if (str::length(name) > vfs::kMaxName) return kErrNotFound;
+        str::copy(path, "/bin/", sizeof(path));
+        str::copy(path + 5, name, sizeof(path) - 5);
+    }
+    uint8_t* image = nullptr;
+    int64_t size = vfs::read_all(path, image, kMaxProgramSize);
+    if (size == kErrIsDirectory || size == kErrNotSupported) return kErrBadExecutable;
+    if (size < 0) return size;
+    const char* program = base_name(path);
+    if (!valid_elf(image, uint64_t(size))) {
+        heap::free(image);
+        return kErrBadExecutable;
+    }
 
     auto* p = static_cast<Process*>(heap::alloc_zeroed(sizeof(Process)));
-    if (!p) return kErrNoMemory;
+    if (!p) {
+        heap::free(image);
+        return kErrNoMemory;
+    }
+    Process* parent = current();
     p->pml4 = vmm::space_create();
-    if (!p->pml4) {
-        heap::free(p);
+    if (!p->pml4 || !inherit_files(p, parent)) {
+        heap::free(image);
+        release(p);
         return kErrNoMemory;
     }
     p->pml4_phys = pmm::virt_to_phys(p->pml4);
     StartInfo start{p, 0, 0, 0, 0};
-    if (!load_image(p, m->data, start) || !build_stack(p, m->name, args, start)) {
+    bool loaded = load_image(p, image, start) && build_stack(p, program, args, start);
+    heap::free(image);
+    if (!loaded) {
         release(p);
         return kErrNoMemory;
     }
     p->alloc_next = kUserAllocBase;
-    copy_name(p->name, m->name);
-    Process* parent = current();
+    copy_name(p->name, program);
     p->parent = parent ? parent->pid : 0;
     p->detached = detached;
     p->started_ms = time::uptime_ms();
@@ -431,6 +461,7 @@ void thread_freed(sched::Thread* t) {
     }
     vmm::space_destroy(p->pml4);
     p->pml4 = nullptr;
+    close_files(p);
     bool free_now;
     {
         sync::ScopedLock guard(g_lock);
@@ -530,7 +561,7 @@ void user_exception(const crash::CpuState* f) {
 // ---------------------------------------------------------------- user memory
 
 bool register_syscall(uint32_t number, SyscallHandler handler) {
-    if (number < kFirstFreeSyscall && number != uint32_t(Syscall::Read)) return false;  // runtime-owned
+    if (number < kFirstFreeSyscall) return false;  // runtime-owned
     if (number >= kMaxSyscalls || !handler || g_syscalls[number]) return false;
     g_syscalls[number] = handler;
     return true;
@@ -576,24 +607,227 @@ int64_t copy_string(const void* user, char* out, uint64_t capacity) {
 
 namespace {
 
-int64_t sys_write(uint64_t fd, uint64_t buffer, uint64_t length) {
-    if (fd != 1 && fd != 2) return kErrBadArgument;
-    if (length > (1u << 20)) length = 1u << 20;
-    auto* src = reinterpret_cast<const char*>(buffer);
-    if (!check_read(src, length)) return kErrBadAddress;
-    char chunk[257];
-    for (uint64_t done = 0; done < length;) {
-        uint64_t n = length - done < 256 ? length - done : 256;
-        if (!copy_from_user(chunk, src + done, n)) return done ? int64_t(done) : kErrBadAddress;
-        chunk[n] = 0;
-        term::write(chunk);
-        done += n;
-    }
-    return int64_t(length);
+// ---- file descriptors
+
+// The open file behind `fd` with one extra reference (drop it with vfs::close), or nullptr.
+vfs::File* take(uint64_t fd) {
+    Process* p = current();
+    if (fd >= kMaxFiles) return nullptr;
+    sync::ScopedLock guard(p->lock);
+    return vfs::dup(p->files[fd]);
 }
 
+// Puts `f` in the lowest free slot at or above `from`; the fd, or kErrTooManyFiles (f is closed then).
+int64_t install(vfs::File* f, uint32_t from = 0) {
+    Process* p = current();
+    {
+        sync::ScopedLock guard(p->lock);
+        for (uint32_t i = from; i < kMaxFiles; ++i) {
+            if (!p->files[i]) {
+                p->files[i] = f;
+                return i;
+            }
+        }
+    }
+    vfs::close(f);
+    return kErrTooManyFiles;
+}
+
+constexpr uint64_t kChunk = 16 * 1024;  // bounce buffer between user memory and the VFS
+
+int64_t sys_read(uint64_t fd, uint64_t buffer, uint64_t length) {
+    vfs::File* f = take(fd);
+    if (!f) return kErrBadFd;
+    auto* dst = reinterpret_cast<uint8_t*>(buffer);
+    if (length > (1u << 20)) length = 1u << 20;
+    int64_t r = 0;
+    if (length && !check_write(dst, length)) r = kErrBadAddress;
+    uint8_t* bounce = nullptr;
+    if (r == 0 && length) {
+        bounce = static_cast<uint8_t*>(heap::alloc(length < kChunk ? length : kChunk));
+        if (!bounce) r = kErrNoMemory;
+    }
+    // Files fill the whole buffer chunk by chunk; a device answers once (the console: one line).
+    vfs::Stat st;
+    bool regular = vfs::fstat(f, st) == 0 && st.type == vfs::Type::File;
+    uint64_t done = 0;
+    while (r == 0 && done < length) {
+        uint64_t n = length - done < kChunk ? length - done : kChunk;
+        int64_t got = vfs::read(f, bounce, n);
+        if (got < 0) {
+            if (done == 0) r = got;
+            break;
+        }
+        if (got && !copy_to_user(dst + done, bounce, uint64_t(got))) {
+            if (done == 0) r = kErrBadAddress;
+            break;
+        }
+        done += uint64_t(got);
+        if (!regular || uint64_t(got) < n || sched::killed()) break;
+    }
+    heap::free(bounce);
+    vfs::close(f);
+    return r < 0 ? r : int64_t(done);
+}
+
+int64_t sys_write(uint64_t fd, uint64_t buffer, uint64_t length) {
+    vfs::File* f = take(fd);
+    if (!f) return kErrBadFd;
+    auto* src = reinterpret_cast<const uint8_t*>(buffer);
+    if (length > (16u << 20)) length = 16u << 20;
+    int64_t r = 0;
+    if (length && !check_read(src, length)) r = kErrBadAddress;
+    uint8_t* bounce = nullptr;
+    if (r == 0 && length) {
+        bounce = static_cast<uint8_t*>(heap::alloc(length < kChunk ? length : kChunk));
+        if (!bounce) r = kErrNoMemory;
+    }
+    uint64_t done = 0;
+    while (r == 0 && done < length) {
+        uint64_t n = length - done < kChunk ? length - done : kChunk;
+        if (!copy_from_user(bounce, src + done, n)) {
+            if (done == 0) r = kErrBadAddress;
+            break;
+        }
+        int64_t put = vfs::write(f, bounce, n);
+        if (put < 0) {
+            if (done == 0) r = put;
+            break;
+        }
+        done += uint64_t(put);
+        if (uint64_t(put) < n) break;
+    }
+    heap::free(bounce);
+    vfs::close(f);
+    return r < 0 ? r : int64_t(done);
+}
+
+// A path argument: copied into `out` (vfs::kMaxPath bytes).
+int64_t user_path(uint64_t address, char* out) {
+    int64_t n = copy_string(reinterpret_cast<const void*>(address), out, vfs::kMaxPath);
+    if (n == kErrBadArgument) return kErrNameTooLong;
+    return n < 0 ? n : 0;
+}
+
+int64_t sys_open(uint64_t path, uint64_t flags) {
+    char p[vfs::kMaxPath];
+    if (int64_t e = user_path(path, p)) return e;
+    vfs::File* f;
+    int64_t e = vfs::open(p, uint32_t(flags), f);
+    if (e < 0) return e;
+    return install(f);
+}
+
+int64_t sys_close(uint64_t fd) {
+    Process* p = current();
+    if (fd >= kMaxFiles) return kErrBadFd;
+    vfs::File* f;
+    {
+        sync::ScopedLock guard(p->lock);
+        f = p->files[fd];
+        p->files[fd] = nullptr;
+    }
+    if (!f) return kErrBadFd;
+    vfs::close(f);
+    return 0;
+}
+
+int64_t sys_seek(uint64_t fd, uint64_t offset, uint64_t whence) {
+    vfs::File* f = take(fd);
+    if (!f) return kErrBadFd;
+    int64_t r = vfs::seek(f, int64_t(offset), int32_t(whence));
+    vfs::close(f);
+    return r;
+}
+
+int64_t sys_stat(uint64_t path, uint64_t out) {
+    char p[vfs::kMaxPath];
+    if (int64_t e = user_path(path, p)) return e;
+    vfs::Stat st;
+    int64_t e = vfs::stat(p, st);
+    if (e < 0) return e;
+    return copy_to_user(reinterpret_cast<void*>(out), &st, sizeof(st)) ? 0 : kErrBadAddress;
+}
+
+int64_t sys_fstat(uint64_t fd, uint64_t out) {
+    vfs::File* f = take(fd);
+    if (!f) return kErrBadFd;
+    vfs::Stat st;
+    int64_t e = vfs::fstat(f, st);
+    vfs::close(f);
+    if (e < 0) return e;
+    return copy_to_user(reinterpret_cast<void*>(out), &st, sizeof(st)) ? 0 : kErrBadAddress;
+}
+
+int64_t sys_readdir(uint64_t fd, uint64_t index, uint64_t out) {
+    vfs::File* f = take(fd);
+    if (!f) return kErrBadFd;
+    vfs::DirEntry entry;
+    int64_t r = index > 0xFFFFFFFFu ? 0 : vfs::readdir(f, uint32_t(index), entry);
+    vfs::close(f);
+    if (r == 1 && !copy_to_user(reinterpret_cast<void*>(out), &entry, sizeof(entry))) return kErrBadAddress;
+    return r;
+}
+
+int64_t sys_path_op(uint64_t path, int64_t (*op)(const char*)) {
+    char p[vfs::kMaxPath];
+    if (int64_t e = user_path(path, p)) return e;
+    return op(p);
+}
+
+int64_t sys_rename(uint64_t from, uint64_t to) {
+    char a[vfs::kMaxPath], b[vfs::kMaxPath];
+    if (int64_t e = user_path(from, a)) return e;
+    if (int64_t e = user_path(to, b)) return e;
+    return vfs::rename(a, b);
+}
+
+int64_t sys_dup(uint64_t fd) {
+    vfs::File* f = take(fd);
+    return f ? install(f) : kErrBadFd;
+}
+
+int64_t sys_dup2(uint64_t fd, uint64_t target) {
+    if (target >= kMaxFiles) return kErrBadFd;
+    vfs::File* f = take(fd);
+    if (!f) return kErrBadFd;
+    if (fd == target) {
+        vfs::close(f);
+        return int64_t(target);
+    }
+    Process* p = current();
+    vfs::File* old;
+    {
+        sync::ScopedLock guard(p->lock);
+        old = p->files[target];
+        p->files[target] = f;
+    }
+    vfs::close(old);
+    return int64_t(target);
+}
+
+int64_t sys_getcwd(uint64_t buffer, uint64_t capacity) {
+    char path[vfs::kMaxPath];
+    int64_t n = vfs::getcwd(path, sizeof(path));
+    if (n < 0) return n;
+    if (uint64_t(n) + 1 > capacity) return kErrNameTooLong;
+    return copy_to_user(reinterpret_cast<void*>(buffer), path, uint64_t(n) + 1) ? n : kErrBadAddress;
+}
+
+int64_t sys_truncate(uint64_t fd, uint64_t size) {
+    vfs::File* f = take(fd);
+    if (!f) return kErrBadFd;
+    int64_t r = vfs::truncate(f, size);
+    vfs::close(f);
+    return r;
+}
+
+int64_t mkdir_op(const char* p) { return vfs::mkdir(p); }
+int64_t remove_op(const char* p) { return vfs::remove(p); }
+int64_t chdir_op(const char* p) { return vfs::chdir(p); }
+
 int64_t sys_spawn(uint64_t name, uint64_t args) {
-    char n[24], a[512];
+    char n[vfs::kMaxPath], a[512];
     if (copy_string(reinterpret_cast<const void*>(name), n, sizeof(n)) < 0) return kErrBadAddress;
     if (args && copy_string(reinterpret_cast<const void*>(args), a, sizeof(a)) < 0) return kErrBadAddress;
     return spawn(n, args ? a : nullptr);
@@ -617,19 +851,6 @@ int64_t sys_alloc(uint64_t bytes) {
 int64_t sys_process_info(uint64_t index, uint64_t out) {
     ProcessInfo i;
     if (!info(uint32_t(index), i)) return 0;
-    return copy_to_user(reinterpret_cast<void*>(out), &i, sizeof(i)) ? 1 : kErrBadAddress;
-}
-
-struct ProgramInfo {
-    uint8_t name[24];
-    uint64_t size;
-};
-
-int64_t sys_program_info(uint64_t index, uint64_t out) {
-    if (index >= g_module_count) return 0;
-    ProgramInfo i;
-    copy_name(i.name, g_modules[index].name);
-    i.size = g_modules[index].size;
     return copy_to_user(reinterpret_cast<void*>(out), &i, sizeof(i)) ? 1 : kErrBadAddress;
 }
 
@@ -664,6 +885,7 @@ extern "C" void neko_syscall_dispatch(neko::proc::SyscallFrame* f) {
     switch (Syscall(f->rax)) {
         case Syscall::Exit: exit_current(int64_t(f->rdi));
         case Syscall::Write: r = sys_write(f->rdi, f->rsi, f->rdx); break;
+        case Syscall::Read: r = sys_read(f->rdi, f->rsi, f->rdx); break;
         case Syscall::GetPid: r = current()->pid; break;
         case Syscall::Yield: sched::yield(); r = 0; break;
         case Syscall::Sleep: sched::sleep_ms(f->rdi); r = 0; break;
@@ -676,7 +898,20 @@ extern "C" void neko_syscall_dispatch(neko::proc::SyscallFrame* f) {
         case Syscall::ThreadCreate: r = sys_thread_create(f->rdi, f->rsi, f->rdx); break;
         case Syscall::ThreadExit: sched::exit();
         case Syscall::ThreadId: r = sched::current_id(); break;
-        case Syscall::ProgramInfo: r = sys_program_info(f->rdi, f->rsi); break;
+        case Syscall::Open: r = sys_open(f->rdi, f->rsi); break;
+        case Syscall::Close: r = sys_close(f->rdi); break;
+        case Syscall::Seek: r = sys_seek(f->rdi, f->rsi, f->rdx); break;
+        case Syscall::Stat: r = sys_stat(f->rdi, f->rsi); break;
+        case Syscall::FStat: r = sys_fstat(f->rdi, f->rsi); break;
+        case Syscall::ReadDir: r = sys_readdir(f->rdi, f->rsi, f->rdx); break;
+        case Syscall::MakeDir: r = sys_path_op(f->rdi, mkdir_op); break;
+        case Syscall::Remove: r = sys_path_op(f->rdi, remove_op); break;
+        case Syscall::Dup: r = sys_dup(f->rdi); break;
+        case Syscall::Dup2: r = sys_dup2(f->rdi, f->rsi); break;
+        case Syscall::ChangeDir: r = sys_path_op(f->rdi, chdir_op); break;
+        case Syscall::GetCwd: r = sys_getcwd(f->rdi, f->rsi); break;
+        case Syscall::Rename: r = sys_rename(f->rdi, f->rsi); break;
+        case Syscall::Truncate: r = sys_truncate(f->rdi, f->rsi); break;
         default:
             if (f->rax < kMaxSyscalls && g_syscalls[f->rax]) r = g_syscalls[f->rax](f->rdi, f->rsi, f->rdx, f->r10, f->r8, f->r9);
             break;

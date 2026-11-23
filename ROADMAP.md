@@ -104,8 +104,8 @@
 ## Фаза 5 — Userspace ✅ (основное)
 
 - [x] Ring 3, `syscall`/`sysret` (swapgs, свой стек ядра на поток через `TSS.rsp0`/GS), таблица системных вызовов
-- [x] `[Syscall(n)]` / `@syscall(n)` — системный вызов на C# в ядре (так сделан `read` с клавиатуры)
-- [x] Процессы: свои адресные пространства (общая верхняя половина), загрузчик статических ELF64 из модулей Limine (`/boot/bin`),
+- [x] `[Syscall(n)]` / `@syscall(n)` — системный вызов на C# в ядре (номера от 32; ввод с клавиатуры для программ — тоже C#, через `/dev/console`)
+- [x] Процессы: свои адресные пространства (общая верхняя половина), загрузчик статических ELF64 из VFS (`/bin` в initrd),
       `spawn`, `exit`, `wait`, argc/argv, куча программы (`alloc`), полное освобождение памяти при выходе, сироты → ядру
 - [x] Несколько потоков в процессе (`thread_create`/`thread_exit`, `Thread.Start/Join`, `SpinLock`, `Atomic`);
       `exit` или падение любого потока завершает весь процесс
@@ -117,7 +117,8 @@
 - [x] User SDK: nekoc с `"target": "user"` (точка входа `Main`), `runtime/user`, `sdk/Nekotia.User`, IDE-проект `user/`
 - [x] Shell в userspace (`sh`) и утилиты `ls`, `ps`, `echo`, `kill`, `primes` (параллельный счёт на всех CPU);
       `init=NAME` в командной строке ядра; в shell ядра — `run`, запуск по имени, `progs`, `kill`, процессы в `ps`
-- [ ] `cat`, файлы, `exec` по пути — после VFS (фаза 6)
+- [x] Файлы в программах: 32 дескриптора на процесс, наследование 0–2 и рабочего каталога, `dup/dup2`; `sh` с `cd`,
+      `> >> <` и запуском по пути; утилиты `ls`, `cat`, `mkdir`, `rm`, `mv`
 - [ ] Ожидание потоков без опроса (futex), сигналы/IPC (каналы, разделяемая память)
 - [ ] `munmap`/`mprotect` для программ (сейчас память только растёт), лимиты ресурсов
 
@@ -126,7 +127,9 @@
 - [x] PCI/PCIe перечисление: ECAM через ACPI MCFG (или порты 0xCF8), рекурсивный обход мостов, BAR с размерами,
       capabilities; `Pci` в SDK, команда `lspci [-v]`
 - [ ] virtio-blk, AHCI (SATA), NVMe
-- [ ] VFS, initrd (Limine module: tar/cpio), ramfs, devfs
+- [x] VFS: дерево узлов с подсчётом ссылок, ramfs, initrd (ustar-модуль Limine, copy-on-write из модуля),
+      `/dev/{console,null,zero}`, рабочие каталоги, системные вызовы 16–29; команды `ls/cd/cat/mkdir/rm/mv/write/df`
+- [ ] Каналы (`|` в `sh`), `/proc`, монтирование других ФС в каталоги VFS
 - [ ] FAT32 (чтение/запись), ext2 (чтение)
 - [ ] virtio-net, (*) минимальный TCP/IP стек (ARP, IPv4, ICMP, UDP, DHCP, TCP)
 - [ ] (*) USB (xHCI), HID

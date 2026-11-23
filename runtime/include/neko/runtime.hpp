@@ -14,6 +14,7 @@
 #include <neko/process.hpp>
 #include <neko/sched.hpp>
 #include <neko/smp.hpp>
+#include <neko/vfs.hpp>
 
 namespace neko {
 

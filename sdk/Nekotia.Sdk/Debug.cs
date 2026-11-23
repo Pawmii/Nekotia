@@ -42,4 +42,11 @@ public static unsafe class Str
 
     [Native("::neko::str::starts_with")]
     public static extern bool StartsWith(byte* s, string prefix);
+
+    /// <summary>The bytes of a string literal, for APIs that take <c>byte*</c>. Read-only: never write through it.</summary>
+    [Native("::neko::str::bytes")]
+    public static extern byte* Bytes(string s);
+
+    [Native("::neko::str::equals")]
+    public static extern bool Equals(byte* a, byte* b);
 }

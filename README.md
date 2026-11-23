@@ -56,13 +56,15 @@ public static unsafe class Kernel
 
 - **База на C++** (`runtime/`) — всё, что чувствительно к памяти и железу: аллокатор кучи (first-fit free list,
   coalescing, проверка заголовков, детект double free), физический page allocator, GDT/TSS/IDT с дампом регистров на
-  исключениях, ACPI (MADT), LAPIC-таймер, IOAPIC, текстовая консоль во фреймбуфере, serial, старт ядра.
+  исключениях, ACPI (MADT, MCFG), LAPIC-таймер, IOAPIC, PCI/PCIe, VFS (ramfs + initrd + /dev), текстовая консоль
+  во фреймбуфере, serial, старт ядра.
 - **Логика ядра на C#** (`kernel/`) — подмножество C# без GC: `static class`, `struct`, `enum`, указатели, `unsafe`,
   `fixed`-буферы, `stackalloc`, перегрузка операторов, свойства, generic-методы (→ шаблоны C++), function pointers,
   интерполяция `$"..."` в `Write` (без аллокаций), обработчики прерываний `[Irq(n)]` и системных вызовов `[Syscall(n)]`.
-  На C# написаны драйвер клавиатуры, shell и `read` для программ.
-- **Программы в ring 3** (`user/`) — тоже C#: nekoc с `"target": "user"` собирает их в статические ELF, ядро грузит их
-  из `/boot/bin` в отдельные адресные пространства и общается с ними через `syscall`. Падение программы убивает только её.
+  На C# написаны драйвер клавиатуры, shell (с `ls/cd/cat/mkdir/rm/mv/lspci`) и чтение консоли для программ.
+- **Программы в ring 3** (`user/`) — тоже C#: nekoc с `"target": "user"` собирает их в статические ELF, Makefile
+  упаковывает их в initrd (`/bin` внутри tar), ядро распаковывает его в VFS и запускает программы в отдельных адресных
+  пространствах. У процесса есть файловые дескрипторы и рабочий каталог. Падение программы убивает только её.
 - **Свой сахар** (`.neko` файлы) — `asm { }`, `defer`, `unless`, `loop`, `for T i in a..b`, `@entry`/`@packed`/`@native(...)`/`@irq(n)`.
   Подсветка и подсказки — в VS Code-расширении (`editor/vscode-nekotia`).
 
@@ -122,17 +124,27 @@ lower
 ```
 
 Программа — каталог `user/NAME` с `nekotia.json` (`"target": "user"`) и C#-кодом со `static int Main(int argc, byte** argv)`;
-API — `sdk/Nekotia.User` (`Console`, `Process`, `Memory`, `Time`). `make` сам найдёт новый каталог, соберёт ELF и положит
-его в `/boot/bin` на ISO. Программы: `sh` (shell в ring 3), `ls`, `ps`, `echo`, `kill`, `primes` (простые числа в N потоках —
-видно ускорение на нескольких CPU), `hello`, `guess` (читает клавиатуру), `usertest` (проверки ABI для `make test`).
+API — `sdk/Nekotia.User` (`Console`, `Process`, `File`, `Path`, `Memory`, `Time`). `make` сам найдёт новый каталог,
+соберёт ELF и положит его в `/bin` initrd (`build/initrd.tar`, туда же попадает всё из `initrd/`). Программы: `sh`
+(shell в ring 3: `cd`, `pwd`, `> FILE`, `>> FILE`, `< FILE`, запуск по пути), `ls`, `cat`, `mkdir`, `rm`, `mv`, `ps`,
+`echo`, `kill`, `primes` (простые числа в N потоках — видно ускорение на нескольких CPU), `hello`, `guess` (читает
+клавиатуру), `usertest` (проверки ABI для `make test`).
 **Ctrl+C** завершает программу на переднем плане; `init=sh` в `cmdline` (`boot/limine.conf`) загружает сразу в `sh`.
 
 ```
-neko en> sh
-sh$ primes 3000000 4
+neko en /> sh
+sh /$ primes 3000000 4
 216816 primes below 3000000
 1 thread: 805 ms, 4 threads: 211 ms — x3.82
+sh /$ cd /tmp
+sh /tmp$ echo hello > a.txt
+sh /tmp$ cat a.txt /etc/motd
+hello
+Welcome to Nekotia — a kernel written in C#, transpiled to C++ by nekoc.
 ```
+
+Файлы живут в памяти (ramfs): `/bin`, `/etc`, `/home` приходят из initrd (файлы initrd читаются прямо из модуля,
+пока их не изменят), `/dev` — устройства `console`, `null`, `zero`, `/tmp` — пустой каталог для своих файлов.
 
 ## Команды
 
@@ -142,6 +154,7 @@ sh$ primes 3000000 4
 | `make gen` | только транспиляция → `build/gen/nekotia.gen.{hpp,cpp}` |
 | `make check` | диагностика nekoc без сборки (ядро и программы) |
 | `make user` | только программы → `build/user/bin/*` |
+| `make initrd` | `build/initrd.tar`: программы в `/bin` + содержимое `initrd/` |
 | `make iso` | загрузочный гибридный BIOS/UEFI ISO |
 | `make run` / `make run-uefi` | запуск в QEMU (`QEMU_FLAGS=...` чтобы поменять) |
 | `make debug` | отладочная `-O0`-сборка в `build/debug`, QEMU на паузе с gdb-сервером `:1234` |

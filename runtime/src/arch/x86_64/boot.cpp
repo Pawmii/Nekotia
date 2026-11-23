@@ -11,6 +11,7 @@
 #include <neko/process.hpp>
 #include <neko/sched.hpp>
 #include <neko/smp.hpp>
+#include <neko/vfs.hpp>
 
 #ifndef NEKO_HEAP_SIZE
 #define NEKO_HEAP_SIZE (4u * 1024 * 1024)  // initial heap; it grows on demand
@@ -135,13 +136,15 @@ using Constructor = void (*)();
 extern "C" Constructor __init_array_start[];
 extern "C" Constructor __init_array_end[];
 
-// Programs on the ISO (/boot/bin/*, listed as module_path in limine.conf) become runnable modules.
+// Modules from limine.conf: the initrd (/boot/initrd.tar) is unpacked into the VFS; any other
+// module becomes /bin/NAME.
 void init_modules() {
+    neko::vfs::init();
     auto* res = module_request.response;
     if (!res) return;
     for (uint64_t i = 0; i < res->module_count; ++i) {
         limine_file* f = res->modules[i];
-        neko::proc::add_module(f->path, f->address, f->size);
+        neko::vfs::add_module(f->path, f->address, f->size);
     }
 }
 
@@ -218,9 +221,7 @@ uint64_t g_kernel_stack_top = 0;
     neko::term::write(neko::arch::smep_enabled() ? "on" : "off");
     neko::term::write(", SMAP ");
     neko::term::write(neko::arch::smap_enabled() ? "on" : "off");
-    neko::term::write(", ");
-    neko::term::write_udec(neko::proc::module_count());
-    neko::term::write(" program(s) in /boot/bin\n");
+    neko::term::write("\n");
 
     neko::term::write("[neko] heap ");
     neko::term::write_size(neko::heap::total_bytes());
