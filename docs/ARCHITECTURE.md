@@ -406,6 +406,15 @@ ASan/UBSan. Куча и фреймы — из `aligned_alloc`, HHDM = 0, framebu
   сопоставляются через documentation id), структура файла, символы рабочей области, семантическая подсветка с
   модификатором `native`, CodeLens «C++». Тесты: `make test-lsp` (`tests/lsp/run.py` — сессия редактора по stdio,
   `tests/lsp/client-test.js` — клиент VS Code с подставным модулем `vscode`).
+- **Отладчик** (`editor/vscode-nekotia/debug-adapter.js`) — Debug Adapter Protocol поверх gdb/MI, работает внутри
+  VS Code (`DebugAdapterInlineImplementation`), без cpptools. `launch` запускает `make debug GDB_PORT=…` (сборка `-O0`
+  в `build/debug`, QEMU с `-S`, вывод serial — в Debug Console), затем `gdb --interpreter=mi3` с `mi-async on`
+  (точки останова и пауза, пока ядро работает). Потоки DAP — это vCPU из gdb-сервера QEMU. Точки останова в
+  `.cs`/`.neko` работают, потому что nekoc пишет `#line` на строки C#; если на строке ещё и лямбда nekoc
+  (интерполяция, `switch`-выражение), её место в точке останова отключается, иначе каждый шаг заходил бы в лямбду.
+  Имена кадров и типы переводятся в C# (`Nekotia::OS::Commands::Dmesg` → `Commands.Dmesg`, `unsigned char *` →
+  `byte*`); выражения пробуются как есть, с полями `snake_case` для `[Native]`-структур и с `::` вместо `.`.
+  Фильтры исключений — точки останова на `neko::crash::*` (экран смерти) и `neko::exc::raise`. Тест — `make test-debug`.
 - `editor/vscode-nekotia` — расширение на чистом JS: язык `nekotia` (`source.neko` = `source.cs` + инъекция сахара),
   `lsp-client.js` — свой небольшой LSP-клиент (без npm) для `nekoc lsp`, перезапуск сервера после `make tools`;
   без сервера — диагностика через `nekoc check --format json` при сохранении; команды `make`, переход к

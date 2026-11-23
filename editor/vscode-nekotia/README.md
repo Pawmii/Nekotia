@@ -12,6 +12,12 @@ Editor support for the [Nekotia](../../README.md) OS project.
   outline, workspace symbols, semantic highlighting (`[Native]` calls stand out), live diagnostics from Roslyn
   and from nekoc itself (`NEKO0xxx`: the supported C# subset) — all of it in `.neko` files too.
 - **"C++" lens** above every method: opens the C++ nekoc generated for it.
+- **Kernel debugger** — F5 (no `launch.json` needed) or the bug button in the status bar: builds the `-O0` kernel,
+  boots it in QEMU, attaches gdb. Breakpoints in `.cs` and `.neko` (also conditions and hit counts), function
+  breakpoints by C# name (`Commands.Dmesg`), CPUs as threads, a call stack with C# names, locals with C# types,
+  registers, watch expressions, the serial console in the Debug Console, and exception filters that stop before the
+  stop screen (kernel panic) or on every `throw`. Raw gdb in the Debug Console: `` `info registers ``.
+  Needs only `gdb`; Microsoft's C/C++ extension is not required.
 - **Commands** (Ctrl+Shift+P → "Nekotia"): Build Kernel, Run in QEMU (BIOS / UEFI), Run as Linux Process,
   Start QEMU Paused for gdb, Check, Show Desugared C#, Show Generated C++ for This Line.
 - **Status bar** button `▶ Nekotia` → `make run`.
@@ -35,6 +41,7 @@ The language server is nekoc itself: `make tools`. After every `make tools` the 
 | `nekotia.languageServer.enabled` | `true` | run `nekoc lsp` |
 | `nekotia.languageServer.csharpFiles` | `auto` | serve `.cs` too: `auto` = only without the C# extension (nekoc's own errors are shown in `.cs` either way) |
 | `nekotia.codeLens` | `true` | the "C++" lens |
+| `nekotia.debug.traceGdb` | `false` | log the debugger's gdb/MI traffic to the Nekotia output |
 | `nekotia.checkOnSave` | `true` | without the server: run `nekoc check` on save |
 | `nekotia.nekocPath` | `build/tools/nekoc/nekoc.dll` | relative to the folder with `nekotia.json` |
 | `nekotia.dotnetPath` | `dotnet` | |

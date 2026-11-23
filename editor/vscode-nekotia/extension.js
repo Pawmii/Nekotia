@@ -14,6 +14,7 @@ const cp = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { LspClient } = require('./lsp-client');
+const { NekotiaDebugSession } = require('./debug-adapter');
 
 let diagnostics;
 let output;
@@ -36,6 +37,13 @@ function activate(context) {
         vscode.commands.registerCommand('nekotia.runUefi', make('run-uefi')),
         vscode.commands.registerCommand('nekotia.runHost', make('run-host')),
         vscode.commands.registerCommand('nekotia.debug', make('debug')),
+        vscode.commands.registerCommand('nekotia.debugKernel', debugKernel),
+        vscode.debug.registerDebugAdapterDescriptorFactory('nekotia', {
+            createDebugAdapterDescriptor: () => new vscode.DebugAdapterInlineImplementation(new NekotiaDebugSession({
+                log: config().get('debug.traceGdb') ? (line) => output.appendLine(line) : undefined,
+            })),
+        }),
+        vscode.debug.registerDebugConfigurationProvider('nekotia', { resolveDebugConfiguration }),
         vscode.commands.registerCommand('nekotia.check', () => runCheck(true)),
         vscode.commands.registerCommand('nekotia.showDesugared', showDesugared),
         vscode.commands.registerCommand('nekotia.showGeneratedCpp', showGeneratedCpp),
@@ -51,8 +59,15 @@ function activate(context) {
     status.text = '$(play) Nekotia';
     status.tooltip = 'Build and boot the kernel in QEMU (make run)';
     status.command = 'nekotia.run';
-    context.subscriptions.push(status);
-    if (workspaceRoot()) status.show();
+    const debugStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 9);
+    debugStatus.text = '$(debug-alt)';
+    debugStatus.tooltip = 'Debug the kernel: -O0 build, QEMU, gdb — breakpoints in .cs and .neko';
+    debugStatus.command = 'nekotia.debugKernel';
+    context.subscriptions.push(status, debugStatus);
+    if (workspaceRoot()) {
+        status.show();
+        debugStatus.show();
+    }
 
     lspDiagnostics = vscode.languages.createDiagnosticCollection('nekoc-lsp');
     context.subscriptions.push(
@@ -90,6 +105,35 @@ function activate(context) {
 
 function deactivate() {
     return lsp ? lsp.stop() : undefined;
+}
+
+// ---------------------------------------------------------------- debugger
+
+/** F5 with no launch.json, or a nekotia configuration with fields left out: fill in the defaults. */
+function resolveDebugConfiguration(folder, cfg) {
+    const root = workspaceRoot();
+    if (!root) {
+        vscode.window.showErrorMessage('Nekotia: open the folder that contains nekotia.json to debug the kernel.');
+        return undefined;
+    }
+    if (!cfg.type && !cfg.request) {   // no launch.json
+        const editor = vscode.window.activeTextEditor;
+        const lang = editor && editor.document.languageId;
+        if (lang && !['nekotia', 'csharp', 'cpp', 'c'].includes(lang)) return cfg;
+        cfg = { type: 'nekotia', request: 'launch', name: 'Debug Nekotia kernel' };
+    }
+    cfg.cwd = cfg.cwd || root;
+    cfg.program = cfg.program || 'build/debug/nekotia.elf';
+    if (cfg.display === undefined) cfg.display = true;
+    return cfg;
+}
+
+/** One click: build the -O0 kernel, boot it in QEMU, attach gdb — breakpoints in .cs/.neko just work. */
+function debugKernel() {
+    const root = requireRoot();
+    if (!root) return;
+    const folder = vscode.workspace.workspaceFolders.find((f) => f.uri.fsPath === root);
+    vscode.debug.startDebugging(folder, { type: 'nekotia', request: 'launch', name: 'Debug Nekotia kernel' });
 }
 
 // ---------------------------------------------------------------- language server

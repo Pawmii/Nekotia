@@ -24,7 +24,10 @@
   "activationEvents": [
     "onLanguage:nekotia",
     "onLanguage:csharp",
-    "workspaceContains:nekotia.json"
+    "workspaceContains:nekotia.json",
+    "onDebugResolve:nekotia",
+    "onDebugDynamicConfigurations:nekotia",
+    "onCommand:nekotia.debugKernel"
   ],
   "contributes": {
     "languages": [
@@ -117,6 +120,12 @@
         "command": "nekotia.restartLanguageServer",
         "title": "Restart Language Server",
         "category": "Nekotia"
+      },
+      {
+        "command": "nekotia.debugKernel",
+        "title": "Debug Kernel (QEMU + gdb)",
+        "category": "Nekotia",
+        "icon": "$(debug-alt)"
       }
     ],
     "semanticTokenModifiers": [
@@ -129,21 +138,41 @@
       {
         "language": "nekotia",
         "scopes": {
-          "method.native": ["support.function.native.neko"],
-          "function.native": ["support.function.native.neko"],
-          "struct.native": ["support.type.native.neko"],
-          "class.native": ["support.class.native.neko"],
-          "enum.native": ["support.type.native.neko"]
+          "method.native": [
+            "support.function.native.neko"
+          ],
+          "function.native": [
+            "support.function.native.neko"
+          ],
+          "struct.native": [
+            "support.type.native.neko"
+          ],
+          "class.native": [
+            "support.class.native.neko"
+          ],
+          "enum.native": [
+            "support.type.native.neko"
+          ]
         }
       },
       {
         "language": "csharp",
         "scopes": {
-          "method.native": ["support.function.native.neko"],
-          "function.native": ["support.function.native.neko"],
-          "struct.native": ["support.type.native.neko"],
-          "class.native": ["support.class.native.neko"],
-          "enum.native": ["support.type.native.neko"]
+          "method.native": [
+            "support.function.native.neko"
+          ],
+          "function.native": [
+            "support.function.native.neko"
+          ],
+          "struct.native": [
+            "support.type.native.neko"
+          ],
+          "class.native": [
+            "support.class.native.neko"
+          ],
+          "enum.native": [
+            "support.type.native.neko"
+          ]
         }
       }
     ],
@@ -158,6 +187,11 @@
           "command": "nekotia.showGeneratedCpp",
           "when": "resourceExtname == .neko || resourceExtname == .cs",
           "group": "navigation@2"
+        },
+        {
+          "command": "nekotia.debugKernel",
+          "when": "resourceExtname == .neko",
+          "group": "navigation@3"
         }
       ],
       "editor/context": [
@@ -198,7 +232,11 @@
         },
         "nekotia.languageServer.csharpFiles": {
           "type": "string",
-          "enum": ["auto", "always", "never"],
+          "enum": [
+            "auto",
+            "always",
+            "never"
+          ],
           "default": "auto",
           "enumDescriptions": [
             "Serve .cs files only when the C# extension is not installed (nekoc's own diagnostics are shown either way)",
@@ -211,8 +249,106 @@
           "type": "boolean",
           "default": true,
           "description": "Show a \"C++\" lens above every method that opens the C++ nekoc generated for it."
+        },
+        "nekotia.debug.traceGdb": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log the debugger's gdb/MI traffic to the Nekotia output channel."
         }
       }
-    }
+    },
+    "breakpoints": [
+      {
+        "language": "nekotia"
+      },
+      {
+        "language": "csharp"
+      },
+      {
+        "language": "cpp"
+      },
+      {
+        "language": "c"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "nekotia",
+        "label": "Nekotia kernel (QEMU + gdb)",
+        "languages": [
+          "nekotia",
+          "csharp"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "properties": {
+              "program": {
+                "type": "string",
+                "default": "build/debug/nekotia.elf",
+                "description": "Kernel ELF with symbols (built by `make debug`)."
+              },
+              "cwd": {
+                "type": "string",
+                "default": "${workspaceFolder}",
+                "description": "Folder with the Makefile and nekotia.json."
+              },
+              "display": {
+                "type": "boolean",
+                "default": true,
+                "description": "Show the QEMU window (false: headless, the serial console is in the Debug Console)."
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "default": false,
+                "description": "Stay paused at the first instruction (before the bootloader)."
+              },
+              "gdbPort": {
+                "type": "number",
+                "default": 1234,
+                "description": "Port of QEMU's gdb server."
+              },
+              "makeArgs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": [],
+                "description": "Extra `make debug` arguments, e.g. \"QEMU_FLAGS=…\", \"NET_FLAGS=…\"."
+              },
+              "gdb": {
+                "type": "string",
+                "default": "gdb",
+                "description": "gdb executable."
+              },
+              "make": {
+                "type": "string",
+                "default": "make",
+                "description": "make executable."
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "nekotia",
+            "request": "launch",
+            "name": "Debug Nekotia kernel",
+            "cwd": "${workspaceFolder}"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Nekotia: debug the kernel in QEMU",
+            "description": "Build the -O0 kernel, boot it in QEMU, attach gdb",
+            "body": {
+              "type": "nekotia",
+              "request": "launch",
+              "name": "Debug Nekotia kernel",
+              "cwd": "^\"\\${workspaceFolder}\""
+            }
+          }
+        ]
+      }
+    ]
   }
 }

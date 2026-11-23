@@ -169,7 +169,9 @@
       переход к определению (для `[Native]` — в C++), ссылки, переименование между проектами, структура, диагностика
       Roslyn и nekoc на лету прямо в `.neko`; LSP-клиент в расширении без npm; `make test-lsp`
 - [x] Семантическая подсветка (модификатор `native` для `[Native]`-вызовов и типов), CodeLens «C++»
-- [ ] Отладка из VS Code в один клик (debug adapter поверх gdb + QEMU)
+- [x] Отладка из VS Code в один клик: свой debug adapter (DAP поверх gdb/MI, без cpptools) — `make debug` + QEMU + gdb,
+      точки останова в `.cs`/`.neko` (лямбды nekoc на той же строке не мешают шагам), CPU как потоки, имена и типы C#,
+      Locals/Registers, выражения и команды gdb в Debug Console, остановка на панике и на `throw`; `make test-debug`
 - [ ] `nekoc new module`, шаблоны проектов, документация SDK (генерация из XML-комментариев)
 - [ ] Пакет расширения в Open VSX / Marketplace
 

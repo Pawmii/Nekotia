@@ -2,7 +2,16 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Nekotia: debug kernel in QEMU (gdb)",
+      // The Nekotia extension's debugger (make vscode-ext): builds the -O0 kernel, boots QEMU, attaches gdb.
+      // Breakpoints in .cs and .neko, C# names in the call stack, stop on kernel panic. Nothing else to install.
+      "name": "Debug Nekotia kernel",
+      "type": "nekotia",
+      "request": "launch",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      // The same through Microsoft's C/C++ extension (ms-vscode.cpptools), if you prefer it.
+      "name": "Debug kernel with the C/C++ extension (cppdbg)",
       "type": "cppdbg",
       "request": "launch",
       "program": "${workspaceFolder}/build/debug/nekotia.elf",

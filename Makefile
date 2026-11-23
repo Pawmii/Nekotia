@@ -70,7 +70,7 @@ HOST_FLAGS := $(COMMON_FLAGS) -O1 -DNEKO_HOSTED=1 $(HOST_SAN)
 KERNEL_OBJS := $(patsubst %,$(BUILD)/kernel/%.o,$(KERNEL_SRCS) $(KERNEL_ASM)) $(BUILD)/kernel/gen.o
 HOST_OBJS   := $(patsubst %,$(BUILD)/host/%.o,$(HOST_SRCS) $(CORE_ASM)) $(BUILD)/host/gen.o
 
-.PHONY: all kernel gen check test-nekoc test-lsp host run-host iso run run-uefi debug test doctor tools clean vscode-ext user initrd
+.PHONY: all kernel gen check test-nekoc test-lsp test-debug host run-host iso run run-uefi debug test doctor tools clean vscode-ext user initrd
 
 all: kernel
 
@@ -96,6 +96,11 @@ test-nekoc: $(NEKOC_DLL)
 test-lsp: $(NEKOC_DLL)
 	@python3 -I tests/lsp/run.py
 	@scripts/run-js.sh tests/lsp/client-test.js
+	@scripts/run-js.sh tests/editor/activate-test.js
+
+# The VS Code debugger end to end: make debug → headless QEMU → gdb, driven over DAP (needs gdb).
+test-debug: $(DISK)
+	@scripts/run-js.sh tests/debug/adapter-test.js
 
 check: $(NEKOC_DLL)
 	$(NEKOC) check
@@ -297,11 +302,14 @@ run-uefi: $(BUILD)/nekotia.iso $(DISK)
 	$(QEMU) $(QEMU_FLAGS) $(DISK_FLAGS) -bios $(OVMF) -cdrom $<
 
 # Separate -O0 build in build/debug so breakpoints on C# lines map 1:1 to code.
+# GDB_PORT picks the gdb server port, QEMU_EXTRA adds QEMU options (the VS Code debugger uses both).
+GDB_PORT ?= 1234
+QEMU_EXTRA ?=
 debug: $(DISK)
 	@$(MAKE) --no-print-directory BUILD=$(DEBUG_BUILD) OPT=-O0 $(DEBUG_BUILD)/nekotia.iso
-	@echo "nekotia: starting QEMU paused, gdb server on :1234"
-	@( sleep 1; echo "nekotia: QEMU is waiting for gdb on :1234 (symbols: $(DEBUG_BUILD)/nekotia.elf)" ) &
-	$(QEMU) $(QEMU_FLAGS) $(DISK_FLAGS) -cdrom $(DEBUG_BUILD)/nekotia.iso -s -S
+	@echo "nekotia: starting QEMU paused, gdb server on :$(GDB_PORT)"
+	@( sleep 1; echo "nekotia: QEMU is waiting for gdb on :$(GDB_PORT) (symbols: $(DEBUG_BUILD)/nekotia.elf)" ) &
+	$(QEMU) $(QEMU_FLAGS) $(DISK_FLAGS) $(QEMU_EXTRA) -cdrom $(DEBUG_BUILD)/nekotia.iso -gdb tcp::$(GDB_PORT) -S
 
 # ---------------------------------------------------------------- misc
 
