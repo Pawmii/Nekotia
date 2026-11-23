@@ -7,6 +7,7 @@
 //   usertest texit | tfault          a second thread calls exit(9) / dereferences null
 //   usertest cwd                     prints its working directory (for the inheritance check)
 //   usertest flood                   writes to stdout forever (broken-pipe check)
+//   usertest unmapped | readonly     touches unmapped / read-only pages (exit code 142)
 //   usertest uncaught                throws without a try (exit code 134)
 //   usertest churn                   maps fresh memory in a loop, for many copies at once (allocator stress)
 //   usertest piperead                waits on a pipe nobody writes to (kill check)
@@ -63,6 +64,22 @@ public static unsafe class Program
                 Thread.Start(Str.Equals(mode, "texit") ? &ExitFromThread : &FaultInThread);
                 while (true) { Process.Sleep(100000); }
             }
+            if (Str.Equals(mode, "unmapped"))
+            {
+                byte* page = (byte*)Memory.MapPages(4096);
+                page[0] = 1;
+                Memory.UnmapPages(page, 4096);
+                return page[0];   // #PF → 142
+            }
+            if (Str.Equals(mode, "readonly"))
+            {
+                byte* page = (byte*)Memory.MapPages(4096);
+                page[0] = 1;
+                Memory.ProtectPages(page, 4096, Memory.ReadOnly);
+                byte v = page[0];   // still readable
+                page[0] = (byte)(v + 1);   // #PF → 142
+                return 0;
+            }
             if (Str.Equals(mode, "uncaught"))
                 throw new System.InvalidOperationException("nobody catches this");
             if (Str.Equals(mode, "churn"))
@@ -111,6 +128,7 @@ public static unsafe class Program
         Pipes();
         Sockets();
         Exceptions();
+        FutexAndPages();
 
         if (_verbose || _failed > 0)
             Console.WriteLine($"usertest: {_passed} passed, {_failed} failed");
@@ -361,6 +379,55 @@ public static unsafe class Program
         File.Close((int)saved);
         File.Close(w);
         Check(child > 0 && Process.Wait((uint)child) == Process.ExitBrokenPipe, "writing to a pipe without readers ends the writer (141)");
+    }
+
+    // ---------------------------------------------------------------- futex and pages
+
+    static uint* _word;
+
+    static void Waiter(ulong unused)
+    {
+        while (Atomic.Load((long*)_word) == 0)
+            Futex.Wait(_word, 0);
+        _word[1] = 7;   // proof it ran after the wake
+    }
+
+    static ulong MemoryKib()
+    {
+        ProcessInfo info;
+        for (uint i = 0; Process.GetInfo(i, out info); i++)
+            if (info.Pid == Process.Id())
+                return info.MemoryKib;
+        return 0;
+    }
+
+    static void FutexAndPages()
+    {
+        _word = (uint*)Memory.AllocZeroed(16);
+        Check(Futex.Wait(_word, 5) == Process.ErrBusy, "futex_wait returns at once when the value differs");
+        Check(Futex.Wake(_word, 1) == 0, "futex_wake with nobody waiting wakes nobody");
+        ulong t0 = Time.UptimeMs();
+        Check(Futex.Wait(_word, 0, 20) == 0 && Time.UptimeMs() - t0 >= 20, "futex_wait with a timeout");
+        ulong t = Thread.Start(&Waiter);
+        Process.Sleep(20);   // let it go to sleep
+        _word[0] = 1;
+        long woken = Futex.Wake(_word, 1);
+        Thread.Join(t);
+        Check(woken == 1 && _word[1] == 7, "a sleeping thread is woken by futex_wake; Thread.Join sleeps too");
+
+        ulong before = MemoryKib();
+        byte* pages = (byte*)Memory.MapPages(256 * 1024);
+        for (int i = 0; i < 256 * 1024; i += 4096)
+            pages[i] = 1;
+        ulong mapped = MemoryKib();
+        Check(pages != null && mapped >= before + 256 && Memory.UnmapPages(pages, 256 * 1024) == 0 && MemoryKib() == before,
+              "unmap gives pages back to the kernel");
+        byte* again = (byte*)Memory.MapPages(64 * 1024);
+        Check(again == pages && again[0] == 0, "an unmapped range is reused, zeroed");
+        Memory.UnmapPages(again, 64 * 1024);
+        Check(Process.Wait((uint)Process.Start("usertest", "unmapped")) == 142, "touching unmapped memory faults (142)");
+        Check(Process.Wait((uint)Process.Start("usertest", "readonly")) == 142, "writing a read-only page faults, reading it works");
+        Check(Memory.UnmapPages((void*)0x400000, 4096) == Process.ErrBadArgument, "unmap refuses the program image");
     }
 
     // ---------------------------------------------------------------- exceptions

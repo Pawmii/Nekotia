@@ -845,6 +845,117 @@ int64_t sys_pipe(uint64_t out) {
     return 0;
 }
 
+// ---- memory given back, permissions
+
+bool in_alloc_area(Process* p, uint64_t address, uint64_t length) {
+    return (address & (kPage - 1)) == 0 && length > 0 && address >= kUserAllocBase && address + length > address &&
+           address + length <= p->alloc_next;
+}
+
+int64_t sys_unmap(uint64_t address, uint64_t length) {
+    Process* p = current();
+    length = mem::align_up(length, kPage);
+    {
+        sync::ScopedLock guard(p->lock);
+        if (!in_alloc_area(p, address, length)) return kErrBadArgument;
+    }
+    for (uint64_t v = address; v < address + length; v += kPage) {
+        uint64_t phys = vmm::space_unmap(p->pml4, v);
+        if (phys == ~0ull) continue;
+        pmm::free_page(pmm::phys_to_virt(phys));
+        sync::ScopedLock guard(p->lock);
+        --p->user_pages;
+    }
+    sync::ScopedLock guard(p->lock);
+    // Merge with a neighbouring hole, or remember it (when the table is full the range is simply not reused).
+    for (uint32_t i = 0; i < p->hole_count; ++i) {
+        auto& h = p->holes[i];
+        if (h.start + h.size == address) {
+            h.size += length;
+            return 0;
+        }
+        if (address + length == h.start) {
+            h.start = address;
+            h.size += length;
+            return 0;
+        }
+    }
+    if (p->hole_count < 32) p->holes[p->hole_count++] = {address, length};
+    return 0;
+}
+
+int64_t sys_protect(uint64_t address, uint64_t length, uint64_t flags) {
+    Process* p = current();
+    if ((address & (kPage - 1)) || length == 0 || address + length < address || address + length > kUserEnd) return kErrBadArgument;
+    vmm::PageFlags f = vmm::PageFlags::None;
+    if (flags & 1) f = f | vmm::PageFlags::Write;
+    if (flags & 2) f = f | vmm::PageFlags::Execute;
+    for (uint64_t v = address; v < address + mem::align_up(length, kPage); v += kPage)
+        if (!vmm::space_protect(p->pml4, v, f)) return kErrBadAddress;
+    return 0;
+}
+
+// ---- futex: sleep while a user word holds an expected value
+
+struct FutexWaiter {
+    Process* process;
+    uint64_t address;
+    sync::Semaphore wake;
+    FutexWaiter* next;
+};
+
+sync::SpinLock g_futex_lock;
+FutexWaiter* g_futex_waiters = nullptr;
+
+void futex_unlink(FutexWaiter* w) {
+    for (FutexWaiter** pp = &g_futex_waiters; *pp; pp = &(*pp)->next) {
+        if (*pp == w) {
+            *pp = w->next;
+            return;
+        }
+    }
+}
+
+int64_t sys_futex_wait(uint64_t address, uint64_t expected, uint64_t timeout_ms) {
+    if (address & 3) return kErrBadArgument;
+    FutexWaiter w{current(), address, {}, nullptr};
+    {
+        sync::ScopedLock guard(g_futex_lock);  // a wake cannot slip in between the check and the queueing
+        uint32_t value;
+        if (!copy_from_user(&value, reinterpret_cast<void*>(address), 4)) return kErrBadAddress;
+        if (value != uint32_t(expected)) return kErrBusy;
+        w.next = g_futex_waiters;
+        g_futex_waiters = &w;
+    }
+    bool interrupted = false;
+    if (timeout_ms == 0) {
+        interrupted = !w.wake.wait_interruptible();
+    } else {
+        uint64_t until = time::uptime_ms() + timeout_ms;
+        while (!w.wake.try_wait() && !(interrupted = sched::killed()) && time::uptime_ms() < until) sched::sleep_ms(1);
+    }
+    sync::ScopedLock guard(g_futex_lock);
+    futex_unlink(&w);  // still queued after a timeout or a kill
+    return interrupted ? kErrInterrupted : 0;
+}
+
+int64_t sys_futex_wake(uint64_t address, uint64_t count) {
+    Process* p = current();
+    int64_t woken = 0;
+    sync::ScopedLock guard(g_futex_lock);
+    for (FutexWaiter** pp = &g_futex_waiters; *pp && uint64_t(woken) < count;) {
+        FutexWaiter* w = *pp;
+        if (w->process == p && w->address == address) {
+            *pp = w->next;
+            w->wake.signal();
+            ++woken;
+        } else {
+            pp = &w->next;
+        }
+    }
+    return woken;
+}
+
 int64_t mkdir_op(const char* p) { return vfs::mkdir(p); }
 
 }  // namespace
@@ -881,12 +992,21 @@ int64_t sys_alloc(uint64_t bytes) {
     Process* p = current();
     if (bytes == 0 || bytes > kUserAllocLimit - kUserAllocBase) return kErrBadArgument;
     uint64_t size = mem::align_up(bytes, kPage);
-    uint64_t at;
+    uint64_t at = 0;
     {
         sync::ScopedLock guard(p->lock);  // threads of one process allocate concurrently
-        if (p->alloc_next + size > kUserAllocLimit) return kErrNoMemory;
-        at = p->alloc_next;
-        p->alloc_next += size;
+        for (uint32_t i = 0; i < p->hole_count && !at; ++i) {  // a range given back with unmap, first fit
+            if (p->holes[i].size < size) continue;
+            at = p->holes[i].start;
+            p->holes[i].start += size;
+            p->holes[i].size -= size;
+            if (p->holes[i].size == 0) p->holes[i] = p->holes[--p->hole_count];
+        }
+        if (!at) {
+            if (p->alloc_next + size > kUserAllocLimit) return kErrNoMemory;
+            at = p->alloc_next;
+            p->alloc_next += size;
+        }
     }
     if (!map_pages(p, at, at + size, vmm::PageFlags::Write)) return kErrNoMemory;  // mapped pages are freed at exit
     return int64_t(at);
@@ -960,6 +1080,10 @@ extern "C" void neko_syscall_dispatch(neko::proc::SyscallFrame* f) {
         case Syscall::Rename: r = sys_rename(f->rdi, f->rsi); break;
         case Syscall::Truncate: r = sys_truncate(f->rdi, f->rsi); break;
         case Syscall::Pipe: r = sys_pipe(f->rdi); break;
+        case Syscall::FutexWait: r = sys_futex_wait(f->rdi, f->rsi, f->rdx); break;
+        case Syscall::FutexWake: r = sys_futex_wake(f->rdi, f->rsi); break;
+        case Syscall::Unmap: r = sys_unmap(f->rdi, f->rsi); break;
+        case Syscall::Protect: r = sys_protect(f->rdi, f->rsi, f->rdx); break;
         case Syscall::SetTls:
             if (f->rdi >= kUserEnd) {
                 r = kErrBadAddress;

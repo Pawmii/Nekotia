@@ -192,6 +192,17 @@ int64_t tcp_shutdown(int32_t fd) {
     return sys::call(48, uint64_t(fd));
 }
 
+int64_t futex_wait(uint32_t* address, uint32_t expected, uint64_t timeout_ms) {
+    return sys::call(32, ptr(address), expected, timeout_ms);
+}
+int64_t futex_wake(uint32_t* address, uint32_t count) { return sys::call(33, ptr(address), count); }
+void* map_pages(uint64_t bytes) {
+    int64_t r = sys::call(kAlloc, bytes);
+    return r < 0 ? nullptr : reinterpret_cast<void*>(r);
+}
+int64_t unmap_pages(void* address, uint64_t bytes) { return sys::call(34, ptr(address), bytes); }
+int64_t protect_pages(void* address, uint64_t bytes, uint32_t flags) { return sys::call(35, ptr(address), bytes, flags); }
+
 int64_t pipe(int32_t& read_fd, int32_t& write_fd) {
     int32_t fds[2] = {-1, -1};
     int64_t r = sys::call(kPipe, ptr(fds));
@@ -203,13 +214,22 @@ int64_t pipe(int32_t& read_fd, int32_t& write_fd) {
 // ---------------------------------------------------------------- locks and threads
 
 void Lock::lock() {
-    for (uint32_t spins = 0; __atomic_exchange_n(&value, 1u, __ATOMIC_ACQUIRE); ++spins) {
-        if (spins < 64) __builtin_ia32_pause();
-        else sys::call(kYield);  // the holder may be preempted: let it run
+    uint32_t expected = 0;
+    if (__atomic_compare_exchange_n(&value, &expected, 1u, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return;
+    for (int i = 0; i < 64; ++i) {  // short critical sections: spin a little first
+        __builtin_ia32_pause();
+        expected = 0;
+        if (__atomic_compare_exchange_n(&value, &expected, 1u, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return;
     }
+    // Mark it contended and sleep until the holder wakes us (Drepper's "futexes are tricky", mutex 2).
+    while (__atomic_exchange_n(&value, 2u, __ATOMIC_ACQUIRE) != 0)
+        sys::call(32, reinterpret_cast<uint64_t>(const_cast<uint32_t*>(&value)), 2, 0);
 }
 
-void Lock::unlock() { __atomic_store_n(&value, 0u, __ATOMIC_RELEASE); }
+void Lock::unlock() {
+    if (__atomic_exchange_n(&value, 0u, __ATOMIC_RELEASE) == 2)
+        sys::call(33, reinterpret_cast<uint64_t>(const_cast<uint32_t*>(&value)), 1);
+}
 
 namespace {
 constexpr uint64_t kThreadStack = 64 * 1024;
@@ -240,11 +260,10 @@ uint64_t thread_start(ThreadEntry entry, uint64_t arg) {
 void thread_join(uint64_t handle) {
     auto* t = reinterpret_cast<ThreadControl*>(handle);
     if (!t) return;
-    // `done` is set by the entry stub (crt0.S) right before thread_exit: the stack is no longer used.
-    for (uint32_t i = 0; !__atomic_load_n(&t->done, __ATOMIC_ACQUIRE); ++i) {
-        if (i < 100) sys::call(kYield);
-        else sys::call(kSleep, 1);
-    }
+    // `done` is set by the entry stub (crt0.S) right before thread_exit — which wakes us — and the
+    // stack is no longer used by then.
+    while (!__atomic_load_n(&t->done, __ATOMIC_ACQUIRE))
+        sys::call(32, reinterpret_cast<uint64_t>(&t->done), 0, 0);
     free(t->stack);
     free(t);
 }

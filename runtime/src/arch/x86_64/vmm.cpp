@@ -343,6 +343,33 @@ bool space_map(uint64_t* pml4, uint64_t virt, uint64_t phys, PageFlags flags) {
     return true;
 }
 
+uint64_t space_unmap(uint64_t* pml4, uint64_t virt) {
+    if (virt >= 0x0000800000000000ull) return ~0ull;
+    uint64_t phys;
+    {
+        sync::ScopedLock vm_guard(g_vm_lock);
+        uint64_t* pte = entry_in(pml4, virt & ~(kPage - 1), 0, false);
+        if (!pte || !(*pte & kPresent)) return ~0ull;
+        phys = *pte & kAddress;
+        *pte = 0;
+    }
+    invalidate(virt);
+    smp::tlb_shootdown(virt);  // other threads of the program may run on other CPUs
+    return phys;
+}
+
+bool space_protect(uint64_t* pml4, uint64_t virt, PageFlags flags) {
+    {
+        sync::ScopedLock vm_guard(g_vm_lock);
+        uint64_t* pte = entry_in(pml4, virt & ~(kPage - 1), 0, false);
+        if (!pte || !(*pte & kPresent) || !(*pte & kUser)) return false;
+        *pte = (*pte & kAddress) | leaf_flags(flags | PageFlags::User, false);
+    }
+    invalidate(virt);
+    smp::tlb_shootdown(virt);
+    return true;
+}
+
 void space_add_flags(uint64_t* pml4, uint64_t virt, PageFlags flags) {
     sync::ScopedLock vm_guard(g_vm_lock);
     uint64_t* pte = entry_in(pml4, virt & ~(kPage - 1), 0, false);

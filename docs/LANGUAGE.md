@@ -38,7 +38,7 @@
 | `[CallerFilePath]`, `[CallerLineNumber]`, `[CallerMemberName]` | относительный путь, строка, `Ns.Type.Method` | |
 | `volatile` поля | `volatile T` | |
 | `[Irq(n)]` | регистрация в `neko_kernel_init()` | обработчик IRQ |
-| `[Syscall(n)] static long Read(int fd, byte* buf, ulong len)` | адаптер `(uint64_t×6) → int64_t` + регистрация в `neko_kernel_init()` | системный вызов для программ; до 6 аргументов (целые, bool, enum, указатели); номера 2 и 32–63 |
+| `[Syscall(n)] static long Read(int fd, byte* buf, ulong len)` | адаптер `(uint64_t×6) → int64_t` + регистрация в `neko_kernel_init()` | системный вызов для программ; до 6 аргументов (целые, bool, enum, указатели); номера 40–63 |
 | `static int Main(int argc, byte** argv)` (цель `user`) | `extern "C" int neko_user_main(argc, argv)` | точка входа программы; также `Main()` и `void` |
 
 ### Типы
@@ -177,8 +177,8 @@ C#-обёртка в `sdk/Nekotia.Sdk/`.
 | `Nekotia.User.Net` | `Connect(ip, port)`, `Listen`, `Accept`, `Shutdown`, `UdpOpen`, `SendTo`, `ReceiveFrom`, `Resolve(name)`, `Config`, `WriteIp`, `WriteAll` — сокеты это fd |
 | `Nekotia.User.Path` / `Tool` | `BaseName`, `Join`; `Tool.Fail` — сообщение об ошибке утилиты, `Tool.CopyFile` |
 | `Nekotia.User.Thread` | `Start(&Entry, arg)` → handle, `Join`, `CurrentId`, `Exit`, `Yield` |
-| `Nekotia.User.SpinLock` / `Atomic` | `Lock`/`Unlock` (с `yield`); `Add`, `Load`, `Store`, `CompareExchange` над `long*` |
-| `Nekotia.User.Memory` | `Alloc`, `AllocZeroed`, `Free`, `New<T>`, `NewArray<T>`, `Delete<T>`, `UsedBytes`, `TotalBytes` |
+| `Nekotia.User.SpinLock` / `Atomic` / `Futex` | мьютекс `Lock`/`Unlock` (спин, затем сон на futex); `Add`, `Load`, `Store`, `CompareExchange` над `long*`; `Futex.Wait/Wake` |
+| `Nekotia.User.Memory` | `Alloc`, `AllocZeroed`, `Free`, `New<T>`, `NewArray<T>`, `Delete<T>`, `UsedBytes`, `TotalBytes`; страницы: `MapPages`, `UnmapPages`, `ProtectPages` |
 | `Nekotia.User.Time` | `UptimeMs` |
 
 ## SDK (кратко)

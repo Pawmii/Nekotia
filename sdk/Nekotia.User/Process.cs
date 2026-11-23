@@ -133,6 +133,20 @@ public static unsafe class Memory
     public static T* NewArray<T>(ulong count) where T : unmanaged => (T*)AllocZeroed(count * (ulong)sizeof(T));
 
     public static void Delete<T>(T* value) where T : unmanaged => Free(value);
+
+    /// <summary>Whole zeroed pages straight from the kernel (not from the heap); null when out of memory.</summary>
+    [Native("::neko::user::map_pages")]
+    public static extern void* MapPages(ulong bytes);
+
+    /// <summary>Gives pages from MapPages back to the kernel (their range is reused).</summary>
+    [Native("::neko::user::unmap_pages")]
+    public static extern long UnmapPages(void* address, ulong bytes);
+
+    /// <summary>Page permissions: <see cref="ReadOnly"/>, <see cref="Writable"/>, <see cref="Executable"/> (combinable).</summary>
+    [Native("::neko::user::protect_pages")]
+    public static extern long ProtectPages(void* address, ulong bytes, uint flags);
+
+    public const uint ReadOnly = 0, Writable = 1, Executable = 2;
 }
 
 /// <summary>
@@ -161,12 +175,24 @@ public static unsafe class Thread
     public static extern void Yield();
 }
 
-/// <summary>Spin lock that yields while it waits. Keep it in a static field; in .neko files: <c>lock (_l) { }</c>.</summary>
+/// <summary>Mutex for threads (spins briefly, then sleeps on a futex). Keep it in a static field; in .neko files: <c>lock (_l) { }</c>.</summary>
 [Native("::neko::user::Lock")]
 public struct SpinLock
 {
     [Native("lock")] public extern void Lock();
     [Native("unlock")] public extern void Unlock();
+}
+
+/// <summary>Sleeping on a 32-bit word: the building block of locks and conditions between threads.</summary>
+public static unsafe class Futex
+{
+    /// <summary>Sleeps while *address == expected (timeoutMs 0 = no limit); 0, or ErrBusy when it already differs.</summary>
+    [Native("::neko::user::futex_wait")]
+    public static extern long Wait(uint* address, uint expected, ulong timeoutMs = 0);
+
+    /// <summary>Wakes up to <paramref name="count"/> threads sleeping on <paramref name="address"/>; how many woke.</summary>
+    [Native("::neko::user::futex_wake")]
+    public static extern long Wake(uint* address, uint count);
 }
 
 /// <summary>Sequentially consistent atomic operations on 64-bit integers.</summary>

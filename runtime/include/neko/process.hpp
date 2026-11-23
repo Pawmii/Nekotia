@@ -48,6 +48,11 @@ enum class Syscall : uint32_t {
     ThreadId = 14,     // thread_id()                        → id of the calling thread
     // 15 is unused (was program_info: programs are files in /bin now)
     SetTls = 31,       // set_tls(address)                   → 0; FS base of the calling thread (%fs:0 = its TLS block)
+    FutexWait = 32,    // futex_wait(uint32_t* a, expected, timeout_ms; 0 = none) → 0 when woken, kErrBusy if *a != expected,
+                       //                                    0 after the timeout too (check your condition), kErrInterrupted
+    FutexWake = 33,    // futex_wake(uint32_t* a, count)     → threads woken
+    Unmap = 34,        // unmap(address, length)             → 0; pages from alloc go back to the kernel
+    Protect = 35,      // protect(address, length, flags)    → 0; flags: 1 write, 2 execute (always readable)
     Open = 16,         // open(path, flags)                  → fd (flags: neko/vfs.hpp kRead…)
     Close = 17,        // close(fd)                          → 0
     Seek = 18,         // seek(fd, offset, whence)           → new offset
@@ -65,7 +70,7 @@ enum class Syscall : uint32_t {
     Pipe = 30,         // pipe(int32_t fds[2])               → 0; fds[0] reads what fds[1] writes
 };
 constexpr uint32_t kMaxSyscalls = 64;
-constexpr uint32_t kFirstFreeSyscall = 32;  // numbers below are reserved for the runtime
+constexpr uint32_t kFirstFreeSyscall = 40;  // numbers below are reserved for the runtime (C# [Syscall]: 40–63)
 
 // Errors are negative results.
 enum Error : int64_t {
@@ -126,7 +131,9 @@ struct Process {
     uint32_t threads;    // threads not yet freed; the last one tears the address space down
     bool exiting;        // exit/kill/fault happened: exit_code is final, every thread is being ended
     uint64_t started_ms;
-    sync::SpinLock lock; // alloc_next, user_pages, files
+    sync::SpinLock lock; // alloc_next, user_pages, files, holes
+    struct { uint64_t start, size; } holes[32];  // unmapped ranges below alloc_next, reused by alloc
+    uint32_t hole_count;
     vfs::File* files[kMaxFiles];  // file descriptors
     vfs::Node* cwd;      // working directory
     sync::Semaphore exited;  // signalled once the address space is gone
@@ -218,6 +225,8 @@ uint64_t* space_create();                       // new PML4 sharing the kernel h
 void space_destroy(uint64_t* pml4);             // frees every user page and table (must not be active anywhere)
 bool space_map(uint64_t* pml4, uint64_t virt, uint64_t phys, PageFlags flags);  // user page; false if taken / OOM
 void space_add_flags(uint64_t* pml4, uint64_t virt, PageFlags flags);  // widen a mapped page (segments sharing a page)
+uint64_t space_unmap(uint64_t* pml4, uint64_t virt);          // the frame it had (not freed), or ~0
+bool space_protect(uint64_t* pml4, uint64_t virt, PageFlags flags);  // replace the permissions of a mapped user page
 uint64_t space_translate(uint64_t* pml4, uint64_t virt);  // physical address or ~0
 bool space_check(uint64_t* pml4, uint64_t virt, uint64_t length, bool write);  // user-accessible?
 }

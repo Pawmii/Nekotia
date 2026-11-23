@@ -221,8 +221,8 @@ sealed partial class CppEmitter
                 _diag.Error("NEKO0004", "[Syscall] handlers take at most 6 parameters (rdi, rsi, rdx, r10, r8, r9)", loc);
             else if (m.Parameters.FirstOrDefault(p => p.RefKind != RefKind.None || !IsRegisterType(p.Type)) is { } bad)
                 _diag.Error("NEKO0004", $"[Syscall] parameter '{bad.Name}' must be an integer, bool, enum or pointer passed by value", bad.Locations.FirstOrDefault() ?? loc);
-            else if (number != 2 && number is < 32 or > 63)
-                _diag.Error("NEKO0004", "[Syscall] number must be 2 (read) or 32–63 — the others belong to the runtime (neko/process.hpp)", loc);
+            else if (number is < 40 or > 63)
+                _diag.Error("NEKO0004", "[Syscall] number must be 40–63 — the others belong to the runtime (neko/process.hpp)", loc);
             else if (used.TryGetValue(number, out var other))
                 _diag.Error("NEKO0004", $"syscall {number} already has a handler: {other.ContainingType.Name}.{other.Name}", loc);
             else

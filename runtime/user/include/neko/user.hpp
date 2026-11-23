@@ -48,7 +48,8 @@ void thread_join(uint64_t handle);                        // waits for it, frees
 uint32_t thread_id();
 NEKO_NORETURN void thread_exit();
 
-// Spin lock that yields the CPU while it waits.
+// Mutex for threads of one program: an atomic word, and a futex sleep when it is taken
+// (0 free, 1 taken, 2 taken with sleepers).
 struct Lock {
     volatile uint32_t value;
     void lock();
@@ -110,6 +111,13 @@ int64_t dup(int32_t fd);
 int64_t dup2(int32_t fd, int32_t target);
 int64_t truncate(int32_t fd, uint64_t size);
 int64_t pipe(int32_t& read_fd, int32_t& write_fd);  // read_fd gets what write_fd writes
+
+// ---- futex and page-level memory
+int64_t futex_wait(uint32_t* address, uint32_t expected, uint64_t timeout_ms);  // 0, kErrBusy (-17) if *address != expected
+int64_t futex_wake(uint32_t* address, uint32_t count);                          // threads woken
+void* map_pages(uint64_t bytes);                         // fresh zeroed pages from the kernel (nullptr when out of memory)
+int64_t unmap_pages(void* address, uint64_t bytes);      // give them back (also reused by later map_pages)
+int64_t protect_pages(void* address, uint64_t bytes, uint32_t flags);  // 1 write, 2 execute; 0 = read-only
 
 // ---- network (system calls 40–48, implemented in C# in kernel/Net/Sockets.neko). Sockets are fds.
 int64_t tcp_connect(uint32_t ip, uint16_t port);              // → fd

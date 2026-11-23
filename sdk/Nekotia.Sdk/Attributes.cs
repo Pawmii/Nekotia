@@ -56,7 +56,7 @@ public sealed class IrqAttribute(int line) : Attribute
 /// <c>static</c>, take at most 6 integer, bool, enum or pointer parameters (the registers rdi, rsi, rdx, r10, r8, r9)
 /// and return an integer (negative = error) or void (0). nekoc registers it before interrupts are enabled.
 /// Numbers 0–31 belong to the runtime (neko/process.hpp) except 2 (read), which the kernel provides in C#;
-/// 32–63 are free. Pointer arguments come from the program: check them with <c>UserMemory.CanRead/CanWrite</c>.
+/// 40–63 are free. Pointer arguments come from the program: check them with <c>UserMemory.CanRead/CanWrite</c>.
 /// Sugar: <c>@syscall(32)</c>.
 /// </summary>
 [AttributeUsage(AttributeTargets.Method)]

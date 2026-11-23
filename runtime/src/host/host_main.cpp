@@ -130,6 +130,8 @@ void space_destroy(uint64_t*) {}
 bool space_map(uint64_t*, uint64_t, uint64_t, PageFlags) { return false; }
 void space_add_flags(uint64_t*, uint64_t, PageFlags) {}
 uint64_t space_translate(uint64_t*, uint64_t) { return ~0ull; }
+uint64_t space_unmap(uint64_t*, uint64_t) { return ~0ull; }
+bool space_protect(uint64_t*, uint64_t, PageFlags) { return false; }
 bool space_check(uint64_t*, uint64_t, uint64_t, bool) { return false; }
 }  // namespace neko::vmm
 
