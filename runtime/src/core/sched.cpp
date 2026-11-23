@@ -98,6 +98,7 @@ Thread* new_thread(const char* name, Priority priority) {
     if (!t) return nullptr;
     copy_name(t->name, name);
     t->priority = priority;
+    t->base_priority = priority;
     cpu::InterruptGuard g;
     g_lock.acquire();
     t->id = g_next_id++;
@@ -333,6 +334,7 @@ void exit() {
 
 Thread* current() { return smp::this_cpu()->current; }
 uint32_t current_id() { return current() ? current()->id : 0; }
+Priority current_priority() { return current() ? current()->priority : Priority::Normal; }
 const char* current_name() { return current() ? reinterpret_cast<const char*>(current()->name) : "boot"; }
 
 void block(const char* reason, sync::RawLock* guard) {
@@ -342,6 +344,29 @@ void block(const char* reason, sync::RawLock* guard) {
     t->state = State::Blocked;
     t->blocked_on = reason;
     schedule_locked();
+}
+
+void set_priority(Thread* t, Priority priority) {
+    cpu::InterruptGuard g;
+    g_lock.acquire();
+    if (t->priority != priority) {
+        if (t->state == State::Ready) {  // move it between the ready queues
+            Queue& q = g_ready[uint32_t(t->priority)];
+            Thread* prev = nullptr;
+            for (Thread* x = q.head; x; prev = x, x = x->next) {
+                if (x != t) continue;
+                if (prev) prev->next = t->next;
+                else q.head = t->next;
+                if (q.tail == t) q.tail = prev;
+                break;
+            }
+            t->priority = priority;
+            push(g_ready[uint32_t(priority)], t);
+        } else {
+            t->priority = priority;
+        }
+    }
+    g_lock.release();
 }
 
 void wake(Thread* t) {

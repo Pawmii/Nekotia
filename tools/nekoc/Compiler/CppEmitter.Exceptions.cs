@@ -169,6 +169,9 @@ sealed partial class CppEmitter
         }
         w.Line($"if (!{frame}_caught) ::neko::exc::rethrow({frame}.thrown);");
         w.CloseBrace();
+        // Every path returns or throws (C# proved it), but clang only sees `if (!caught) rethrow` — say so.
+        if (_model.AnalyzeControlFlow(ts) is { Succeeded: true, EndPointIsReachable: false })
+            w.Line("__builtin_unreachable();");
         w.CloseBrace();
     }
 

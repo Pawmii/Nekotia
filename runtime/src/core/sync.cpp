@@ -130,6 +130,7 @@ void Mutex::lock() {
     guard.acquire();
     if (!owner) {
         owner = me;
+        ++me->mutexes_held;
         guard.release();
         return;
     }
@@ -143,15 +144,28 @@ void Mutex::lock() {
     }
     me->waiting_for = this;
     enqueue(head, tail, me);
+    // Priority inheritance: whoever holds it (and whoever they wait for, a few links deep) runs at
+    // least at our priority until they let go — a low thread must not keep a high one waiting
+    // behind medium ones.
+    Thread* holder = owner;
+    for (int depth = 0; holder && depth < 8; ++depth) {
+        if (uint32_t(me->priority) < uint32_t(holder->priority)) sched::set_priority(holder, me->priority);
+        Mutex* next = holder->waiting_for;
+        holder = next ? next->owner : nullptr;
+    }
     sched::block(label ? label : "mutex", &guard);  // releases `guard` under the scheduler lock
     me->waiting_for = nullptr;                      // unlock() handed us the ownership
+    ++me->mutexes_held;
 }
 
 bool Mutex::try_lock() {
     cpu::InterruptGuard g;
     guard.acquire();
     bool ok = !owner;
-    if (ok) owner = sched::current();
+    if (ok) {
+        owner = sched::current();
+        if (owner) ++owner->mutexes_held;
+    }
     guard.release();
     return ok;
 }
@@ -164,9 +178,31 @@ void Mutex::unlock() {
         guard.release();
         crash::fail(crash::StopCode::KernelPanic, "mutex unlocked by a thread that does not own it");
     }
-    Thread* next = dequeue(head, tail);
+    // The most urgent waiter gets it (first among equals); it inherits the urgency of those still waiting.
+    Thread* next = nullptr;
+    Thread* before = nullptr;
+    for (Thread *x = head, *prev = nullptr; x; prev = x, x = x->next) {
+        if (!next || uint32_t(x->priority) < uint32_t(next->priority)) {
+            next = x;
+            before = prev;
+        }
+    }
+    sched::Priority inherited = sched::Priority::Low;
+    if (next) {
+        if (before) before->next = next->next;
+        else head = next->next;
+        if (tail == next) tail = before;
+        next->next = nullptr;
+        inherited = next->priority;
+        for (Thread* x = head; x; x = x->next)
+            if (uint32_t(x->priority) < uint32_t(inherited)) inherited = x->priority;
+    }
     owner = next;
+    Thread* me = sched::current();
+    bool restore = --me->mutexes_held == 0 && me->priority != me->base_priority;
     guard.release();
+    if (restore) sched::set_priority(me, me->base_priority);
+    if (next && uint32_t(inherited) < uint32_t(next->priority)) sched::set_priority(next, inherited);
     if (next) sched::wake(next);
 }
 

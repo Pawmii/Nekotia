@@ -57,6 +57,10 @@ public static unsafe class Thread
     [Native("::neko::sched::current_id")]
     public static extern uint CurrentId();
 
+    /// <summary>The caller's effective priority (raised while it holds a mutex a more urgent thread waits for).</summary>
+    [Native("::neko::sched::current_priority")]
+    public static extern ThreadPriority CurrentPriority();
+
     /// <summary>Index of the CPU executing the caller (0 = bootstrap processor).</summary>
     [Native("::neko::smp::cpu_index")]
     public static extern uint CurrentCpu();

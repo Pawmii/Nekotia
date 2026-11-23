@@ -52,6 +52,8 @@ struct Thread {
     Thread* next;         // run queue / wait queue link
     Thread* all_next;     // list of every thread
     exc::State exc;       // C# try/catch frames and scope guards of this thread
+    Priority base_priority;   // `priority` may be raised above it while it holds a mutex others wait for
+    uint32_t mutexes_held;
     uint64_t fs_base;     // user programs: their thread-local block (set_tls)
 };
 
@@ -72,6 +74,7 @@ NEKO_NORETURN void exit();
 
 Thread* current();
 uint32_t current_id();
+Priority current_priority();  // effective: raised while it holds a mutex a more urgent thread waits for
 const char* current_name();
 
 // Low level, for synchronisation primitives. Interrupts must be disabled by the caller.
@@ -79,6 +82,8 @@ const char* current_name();
 // held by the caller) is released only once the scheduler lock is taken, so no wake-up is lost.
 void block(const char* reason, sync::RawLock* guard);
 void wake(Thread* t);  // Blocked → Ready (callable from interrupt handlers and other CPUs)
+// Effective priority (priority inheritance): a Ready thread moves to the right queue.
+void set_priority(Thread* t, Priority priority);
 
 // Sets t->kill_pending and cuts short what it is waiting for: a sleep, or an interruptible semaphore
 // wait (Semaphore::wait_interruptible returns false). A thread running on another CPU is kicked so it

@@ -79,6 +79,7 @@ public static unsafe class SelfTest
         BuddyBlocks();
         Paging();
         Threads();
+        PriorityInheritance();
         PciBus();
         FileSystem();
         Disks();
@@ -539,6 +540,57 @@ public static unsafe class SelfTest
             _pingPong++;
             _pong.Signal();
         }
+    }
+
+    // ---------------------------------------------------------------- priority inheritance
+
+    static Mutex _piLock;
+    static volatile int _piStage;
+    static volatile int _piInherited, _piAfterUnlock;   // ThreadPriority as int (volatile: read by another thread)
+    static volatile int _piOrder;
+
+    static void PiLow(ulong unused)
+    {
+        _piLock.Lock();
+        _piStage = 1;
+        while (_piStage != 2)
+            Thread.Sleep(1);
+        _piInherited = (int)Thread.CurrentPriority();
+        _piLock.Unlock();
+        _piAfterUnlock = (int)Thread.CurrentPriority();
+        _piStage = 3;
+    }
+
+    static void PiWaiter(ulong rank)
+    {
+        _piLock.Lock();
+        if (_piOrder == 0)
+            _piOrder = (int)rank;   // who got it first
+        _piLock.Unlock();
+    }
+
+    static void PriorityInheritance()
+    {
+        _piStage = 0;
+        _piOrder = 0;
+        _piInherited = _piAfterUnlock = -1;
+        Thread.Start("pi-low", &PiLow, 0, ThreadPriority.Low);
+        while (_piStage != 1)
+            Thread.Sleep(1);
+        Thread.Start("pi-normal", &PiWaiter, 2, ThreadPriority.Normal);   // queued first…
+        Thread.Sleep(5);
+        Thread.Start("pi-high", &PiWaiter, 1, ThreadPriority.High);       // …but more urgent
+        Thread.Sleep(10);
+        _piStage = 2;
+        for int i in 0..500 {
+            if (_piStage == 3 && _piOrder != 0)
+                break;
+            Thread.Sleep(1);
+        }
+        Check(_piInherited == (int)ThreadPriority.High, "mutex: the holder inherits the priority of a high-priority waiter");
+        Check(_piAfterUnlock == (int)ThreadPriority.Low, "mutex: the inherited priority ends with the unlock");
+        Check(_piOrder == 1, "mutex: the most urgent waiter gets the mutex first");
+        Thread.Sleep(20);   // let the waiters finish
     }
 
     static void Threads()
