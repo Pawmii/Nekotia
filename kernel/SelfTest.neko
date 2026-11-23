@@ -521,8 +521,10 @@ public static unsafe class SelfTest
             return;
         Check(Block.Find("vda") >= 0, "disk: virtio-blk found the test disk (vda)");
         Check(Block.Find("sda") >= 0, "disk: AHCI found the SATA test disk (sda)");
+        Check(Block.Find("nvme0n1") >= 0, "disk: NVMe found the test drive (nvme0n1)");
         DiskTest("vda");
         DiskTest("sda");
+        DiskTest("nvme0n1");
         int cd = Block.Find("cd0");
         BlockInfo info = default;
         byte* sector = (byte*)Heap.Alloc(2048);

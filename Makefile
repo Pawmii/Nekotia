@@ -243,6 +243,7 @@ NET_FLAGS  ?= -netdev user,id=net0,hostfwd=tcp::8080-:80,hostfwd=udp::5555-:5555
 TEST_DISK  := $(BUILD)/test-disk.img
 TEST_FAT   := $(BUILD)/test-fat.img
 TEST_SATA  := $(BUILD)/test-sata.img
+TEST_NVME  := $(BUILD)/test-nvme.img
 
 $(DISK):
 	@mkdir -p $(dir $@)
@@ -253,14 +254,15 @@ TEST_FLAGS ?= -M q35 -cpu qemu64,+smep,+smap -m 256M -smp 4 -display none -seria
 TEST_TIMEOUT ?= 60
 
 # vda: raw sectors for the block tests; vdb: formatted as FAT32 by the self test (needs ≥ 33 MiB);
-# sda: a SATA disk on the q35 AHCI controller (the boot CD is cd0 on the same controller).
+# sda: a SATA disk on the q35 AHCI controller (the boot CD is cd0 on the same controller); nvme0n1: NVMe.
 TEST_DISK_FLAGS = -drive file=$(TEST_DISK),if=none,id=disk0,format=raw -device virtio-blk-pci,drive=disk0 \
                   -drive file=$(TEST_FAT),if=none,id=disk1,format=raw -device virtio-blk-pci,drive=disk1 \
                   -drive file=$(TEST_SATA),if=none,id=sata0,format=raw -device ide-hd,drive=sata0,bus=ide.0 \
+                  -drive file=$(TEST_NVME),if=none,id=nvme0,format=raw -device nvme,serial=nekotia-test,drive=nvme0 \
                   -netdev user,id=net0 -device virtio-net-pci,netdev=net0
 
 test: $(BUILD)/nekotia-test.iso
-	@rm -f $(TEST_DISK) $(TEST_FAT); truncate -s 8M $(TEST_DISK); truncate -s 64M $(TEST_FAT); rm -f $(TEST_SATA); truncate -s 8M $(TEST_SATA)
+	@rm -f $(TEST_DISK) $(TEST_FAT); truncate -s 8M $(TEST_DISK); truncate -s 64M $(TEST_FAT); rm -f $(TEST_SATA) $(TEST_NVME); truncate -s 8M $(TEST_SATA); truncate -s 8M $(TEST_NVME)
 	@echo "== QEMU (BIOS)"; timeout $(TEST_TIMEOUT) $(QEMU) $(TEST_FLAGS) $(TEST_DISK_FLAGS) -cdrom $< > $(BUILD)/test-bios.log 2>&1; \
 	  status=$$?; sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' $(BUILD)/test-bios.log | grep -aE '^(  (ok|FAIL)|selftest)'; \
 	  if [ $$status -ne 1 ]; then echo "test (BIOS): FAILED (status $$status, log: $(BUILD)/test-bios.log)"; exit 1; fi

@@ -133,7 +133,8 @@
       устройств (`Block`, `/dev/vda` с побайтовым доступом, RAM-диски); MSI/MSI-X в рантайме; `disks`, MSI в `irq`
 - [x] AHCI (SATA): ATA-диски `sda…` (READ/WRITE DMA EXT, 48-битный LBA, FLUSH), ATAPI `cd0…` только на чтение
       (SCSI READ(10)/READ CAPACITY через PACKET), 8 слотов с DMA-буферами, MSI или опрос, восстановление порта после ошибки
-- [ ] NVMe
+- [x] NVMe: admin-очередь (IDENTIFY контроллера и пространства имён, создание очередей), одна пара очередей
+      ввода-вывода, PRP-списки, бит фазы, MSI-X или опрос; `nvme0n1`, секторы 512 и 4096 байт
 - [x] VFS: дерево узлов с подсчётом ссылок, ramfs, initrd (ustar-модуль Limine, copy-on-write из модуля),
       `/dev/{console,null,zero}`, рабочие каталоги, системные вызовы 16–29; команды `ls/cd/cat/mkdir/rm/mv/write/df`
 - [x] Монтирование ФС в каталоги VFS (`FsOps`: ввод-вывод вне замка VFS, дерево каталогов в памяти)
