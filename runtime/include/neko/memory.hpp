@@ -121,6 +121,7 @@ struct Stats {
     uint64_t text_bytes, rodata_bytes, data_bytes;
     bool nx;                   // EFER.NXE active
     bool write_combining;      // PAT programmed (framebuffer WC)
+    bool global_pages;         // CR4.PGE: kernel mappings survive CR3 switches
 };
 Stats stats();
 

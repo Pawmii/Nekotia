@@ -36,6 +36,7 @@ void send_ipi_all_others(uint8_t vector, bool nmi);
 
 // SMP (smp.cpp)
 void smp_start(void* mp_response);          // limine_mp_response*
+uint32_t smp_started();                     // CPUs smp_start tried to bring up (incl. the BSP)
 void smp_tlb_ipi();                         // handler of kVectorTlb
 void percpu_init_bsp();
 

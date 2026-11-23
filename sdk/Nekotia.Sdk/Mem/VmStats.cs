@@ -13,6 +13,7 @@ public struct VmStats
     [Native("data_bytes")] public ulong DataBytes;
     [Native("nx")] public bool NoExecute;
     [Native("write_combining")] public bool WriteCombining;
+    [Native("global_pages")] public bool GlobalPages;
 
     [Native("::neko::vmm::stats")]
     public static extern VmStats Get();

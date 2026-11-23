@@ -66,6 +66,8 @@ namespace neko::arch {
     sched::run_idle();
 }
 
+uint32_t smp_started() { return smp::g_started ? smp::g_started : 1; }
+
 void smp_tlb_ipi() {
     __asm__ volatile("invlpg (%0)" : : "r"(smp::g_tlb_address) : "memory");
     __atomic_sub_fetch(&smp::g_tlb_pending, 1, __ATOMIC_ACQ_REL);

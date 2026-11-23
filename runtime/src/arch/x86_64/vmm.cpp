@@ -25,6 +25,7 @@ constexpr uint64_t kCacheDisable = 1ull << 4;
 constexpr uint64_t kHuge = 1ull << 7;     // PDE/PDPTE: large page
 constexpr uint64_t kPat4K = 1ull << 7;    // PTE: PAT index bit
 constexpr uint64_t kPat2M = 1ull << 12;   // PDE with kHuge: PAT index bit
+constexpr uint64_t kGlobal = 1ull << 8;     // kernel pages: kept in the TLB across CR3 switches (CR4.PGE)
 constexpr uint64_t kNoExecute = 1ull << 63;
 constexpr uint64_t kAddress = 0x000FFFFFFFFFF000ull;
 constexpr uint64_t kPage = 0x1000;
@@ -64,10 +65,25 @@ uint64_t* new_table(bool soft = false) {
     return static_cast<uint64_t*>(p);
 }
 
+bool g_global = false;
+
+// CR4.PGE, toggled off first: that drops every global entry the bootloader's tables left in the TLB.
+void enable_global_pages() {
+    uint32_t a, b, c, d;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(1), "c"(0));
+    if (!(d & (1u << 13))) return;
+    uint64_t cr4;
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    __asm__ volatile("mov %0, %%cr4" : : "r"(cr4 & ~(1ull << 7)) : "memory");
+    __asm__ volatile("mov %0, %%cr4" : : "r"(cr4 | (1ull << 7)) : "memory");
+    g_global = true;
+}
+
 uint64_t leaf_flags(PageFlags f, bool large) {
     uint64_t v = kPresent;
     if (has(f, PageFlags::Write)) v |= kWritable;
     if (has(f, PageFlags::User)) v |= kUser;
+    else v |= kGlobal;  // the kernel half is the same in every address space
     if (!has(f, PageFlags::Execute) && g_nx) v |= kNoExecute;
     if (has(f, PageFlags::Uncached)) v |= kCacheDisable | kWriteThrough;
     else if (has(f, PageFlags::WriteCombining) && g_wc) v |= large ? kPat2M : kPat4K;
@@ -174,6 +190,7 @@ void init(uint64_t hhdm, uint64_t kernel_phys, const MemoryRange* ranges, size_t
         if (!(g_pml4[i] & kPresent)) g_pml4[i] = pmm::virt_to_phys(new_table()) | kPresent | kWritable;
 
     __asm__ volatile("mov %0, %%cr3" : : "r"(pmm::virt_to_phys(g_pml4)) : "memory");
+    enable_global_pages();
     uint64_t cr0;
     __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
     __asm__ volatile("mov %0, %%cr0" : : "r"(cr0 | (1ull << 16)) : "memory");  // WP: ring 0 honours read-only pages
@@ -187,6 +204,7 @@ uint64_t root_phys() { return pmm::virt_to_phys(g_pml4); }
 void load_on_this_cpu() {
     enable_cpu_features();  // NX and PAT are per-CPU MSRs
     __asm__ volatile("mov %0, %%cr3" : : "r"(root_phys()) : "memory");
+    enable_global_pages();
     uint64_t cr0;
     __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
     __asm__ volatile("mov %0, %%cr0" : : "r"(cr0 | (1ull << 16)) : "memory");
@@ -409,6 +427,7 @@ Stats stats() {
     s.data_bytes = uint64_t(__data_end - __data_start);
     s.nx = g_nx;
     s.write_combining = g_wc;
+    s.global_pages = g_global;
     return s;
 }
 

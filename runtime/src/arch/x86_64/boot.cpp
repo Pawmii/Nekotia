@@ -125,12 +125,39 @@ void init_framebuffer() {
     g_info.Screen.Bpp = fb->bpp;
 }
 
+// Copied out of the bootloader's memory, which is handed to the page allocator later.
+char g_bootloader_name[64], g_bootloader_version[64], g_cmdline[256];
+
 void init_strings() {
     auto* info = bootloader_info_request.response;
-    g_info.BootloaderName = cstr(info ? info->name : "unknown");
-    g_info.BootloaderVersion = cstr(info ? info->version : "");
+    neko::str::copy(g_bootloader_name, info ? info->name : "unknown", sizeof(g_bootloader_name));
+    neko::str::copy(g_bootloader_version, info ? info->version : "", sizeof(g_bootloader_version));
     auto* cmd = cmdline_request.response;
-    g_info.CommandLine = cstr(cmd ? cmd->cmdline : "");
+    neko::str::copy(g_cmdline, cmd ? cmd->cmdline : "", sizeof(g_cmdline));
+    g_info.BootloaderName = cstr(g_bootloader_name);
+    g_info.BootloaderVersion = cstr(g_bootloader_version);
+    g_info.CommandLine = cstr(g_cmdline);
+}
+
+// "Bootloader reclaimable" memory (Limine's page tables, stacks, responses) once nothing needs it:
+// our own tables, GDT, IDT and stacks are in use, every AP runs on its own stack, the strings are
+// copied and the modules (initrd) live in a different region type.
+uint64_t reclaim_bootloader_memory() {
+    auto* map = memmap_request.response;
+    if (!map || neko::smp::online_count() < neko::arch::smp_started()) return 0;
+    struct Range { uint64_t base, length; } ranges[64];
+    uint32_t n = 0;
+    for (uint64_t i = 0; i < map->entry_count && n < 64; ++i) {  // copy first: the map itself is in there
+        limine_memmap_entry* e = map->entries[i];
+        if (e->type == LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE && e->base != 0) ranges[n++] = {e->base, e->length};
+    }
+    uint64_t total = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        neko::pmm::add_region(reinterpret_cast<void*>(ranges[i].base + g_info.HhdmOffset), ranges[i].length);
+        total += ranges[i].length;
+    }
+    g_info.UsableMemory += total;
+    return total;
 }
 
 using Constructor = void (*)();
@@ -198,7 +225,8 @@ uint64_t g_kernel_stack_top = 0;
     neko::term::write(vm.nx ? "on" : "off");
     neko::term::write(", framebuffer ");
     neko::term::write(vm.write_combining ? "write-combining" : "uncached");
-    neko::term::write(", kernel stack with guard page\n");
+    neko::term::write(", kernel stack with guard page");
+    neko::term::write(vm.global_pages ? ", global kernel pages\n" : "\n");
 
     init_interrupts();
     neko::pci::init();
@@ -219,6 +247,10 @@ uint64_t g_kernel_stack_top = 0;
     neko::term::write_udec(mp_request.response ? mp_request.response->cpu_count : 1);
     neko::term::write(" CPU(s) online\n");
     neko::drivers::init();  // needs interrupts (completion IRQs) and the VFS (/dev nodes)
+    uint64_t reclaimed = reclaim_bootloader_memory();
+    neko::term::write("[neko] reclaimed ");
+    neko::term::write_size(reclaimed);
+    neko::term::write(" of bootloader memory\n");
     neko::term::write("[neko] user mode: syscall/sysret, SMEP ");
     neko::term::write(neko::arch::smep_enabled() ? "on" : "off");
     neko::term::write(", SMAP ");
