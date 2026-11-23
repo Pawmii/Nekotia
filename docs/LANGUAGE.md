@@ -168,7 +168,8 @@ C#-обёртка в `sdk/Nekotia.Sdk/`.
 | `Nekotia.Hal.Terminal` | экран + serial: `Write*`, `WriteLine`, `WriteCodepoint`, `SetColor(AnsiColor)`, `Clear`, `Redraw`, курсор |
 | `Nekotia.Hal.Serial` | только serial: `Write`, `WriteLine`, `WriteChar`, `WriteHex`, `WriteDec`, `WriteSize` |
 | `Nekotia.Hal.Time` | `UptimeMs`, `Sleep(ms)`, `TimerHz` |
-| `Nekotia.Hal.Irq` | `Register(line, &Handler)`, `Count(line)` |
+| `Nekotia.Hal.Irq` | `Register(line, &Handler)`, `Count(line)`, `GetMsi(i, …)` |
+| `Nekotia.IO.Block` | `Count`, `GetInfo`, `Find(name)`, `Read/Write(index, lba, count, buffer)`, `ReadBytes/WriteBytes`, `Flush`, `AddRamDisk` |
 | `Nekotia.Hal.Power` / `SysInfo` | `Reboot`, `Shutdown`; `CpuBrand`, `CpuCount`, `CpuMhz` |
 | `Nekotia.Hal.Cpu` | `Halt`, `HaltForever`, `Enable/DisableInterrupts`, `ReadTimestamp`, `ReadCr2/Cr3` |
 | `Nekotia.Hal.Port` | `In8/16/32`, `Out8/16/32`, `Wait` |

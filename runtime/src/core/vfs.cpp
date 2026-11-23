@@ -256,11 +256,17 @@ int64_t resize(Node* n, uint64_t size) {
     return 0;
 }
 
+uint64_t node_size(const Node* n) {
+    if (n->type == Type::Directory) return n->child_count;
+    if (n->type == Type::Device) return n->ops->size ? n->ops->size(n->context) : 0;
+    return n->size;
+}
+
 void fill_stat(const Node* n, Stat& out) {
     mem::set(&out, 0, sizeof(out));
     out.type = n->type;
     out.id = n->id;
-    out.size = n->type == Type::Directory ? n->child_count : n->size;
+    out.size = node_size(n);
     out.created_ms = n->created_ms;
     out.modified_ms = n->modified_ms;
 }
@@ -307,9 +313,9 @@ int64_t zero_read(void*, uint64_t, void* buffer, uint64_t length) {
     return int64_t(length);
 }
 
-const DeviceOps kConsoleOps = {console_read, console_write};
-const DeviceOps kNullOps = {null_read, null_write};
-const DeviceOps kZeroOps = {zero_read, null_write};
+const DeviceOps kConsoleOps = {console_read, console_write, nullptr};
+const DeviceOps kNullOps = {null_read, null_write, nullptr};
+const DeviceOps kZeroOps = {zero_read, null_write, nullptr};
 
 Node* make_dir_locked(Node* dir, const char* name) {
     Node* existing = child(dir, name, uint32_t(str::length(name)));
@@ -518,7 +524,11 @@ int64_t read(File* f, void* buffer, uint64_t length) {
     if (!(f->flags & kRead)) return kErrAccess;
     Node* n = f->node;
     if (n->type == Type::Device) {
-        int64_t r = n->ops->read ? n->ops->read(n->context, f->offset, buffer, length) : kErrNotSupported;
+        if (!n->ops->read) return kErrNotSupported;
+        if (!n->ops->size) return n->ops->read(n->context, 0, buffer, length);
+        uint64_t at = __atomic_load_n(&f->offset, __ATOMIC_ACQUIRE);
+        int64_t r = n->ops->read(n->context, at, buffer, length);
+        if (r > 0) __atomic_store_n(&f->offset, at + uint64_t(r), __ATOMIC_RELEASE);
         return r;
     }
     if (n->type == Type::Directory) return kErrIsDirectory;
@@ -535,7 +545,14 @@ int64_t write(File* f, const void* buffer, uint64_t length) {
     if (!f) return kErrBadFd;
     if (!(f->flags & kWrite)) return kErrAccess;
     Node* n = f->node;
-    if (n->type == Type::Device) return n->ops->write ? n->ops->write(n->context, f->offset, buffer, length) : kErrNotSupported;
+    if (n->type == Type::Device) {
+        if (!n->ops->write) return kErrNotSupported;
+        if (!n->ops->size) return n->ops->write(n->context, 0, buffer, length);
+        uint64_t at = (f->flags & kAppend) ? n->ops->size(n->context) : __atomic_load_n(&f->offset, __ATOMIC_ACQUIRE);
+        int64_t r = n->ops->write(n->context, at, buffer, length);
+        if (r > 0) __atomic_store_n(&f->offset, at + uint64_t(r), __ATOMIC_RELEASE);
+        return r;
+    }
     if (n->type == Type::Directory) return kErrIsDirectory;
     if (length == 0) return 0;
     Locked guard;
@@ -553,13 +570,16 @@ int64_t write(File* f, const void* buffer, uint64_t length) {
 
 int64_t seek(File* f, int64_t offset, int32_t whence) {
     if (!f) return kErrBadFd;
-    if (f->node->type == Type::Device) return kErrNotSupported;
+    Node* n = f->node;
+    bool device = n->type == Type::Device;
+    if (device && !n->ops->size) return kErrNotSupported;
+    uint64_t end = device ? n->ops->size(n->context) : 0;  // outside the lock: drivers may block
     Locked guard;
     int64_t base;
     switch (whence) {
         case kSeekSet: base = 0; break;
         case kSeekCurrent: base = int64_t(f->offset); break;
-        case kSeekEnd: base = int64_t(f->node->size); break;
+        case kSeekEnd: base = int64_t(device ? end : n->size); break;
         default: return kErrBadArgument;
     }
     int64_t to = base + offset;
@@ -593,7 +613,7 @@ int64_t readdir(File* f, uint32_t index, DirEntry& out) {
     mem::set(&out, 0, sizeof(out));
     str::copy(reinterpret_cast<char*>(out.name), c->name, sizeof(out.name));
     out.type = c->type;
-    out.size = c->type == Type::Directory ? c->child_count : c->size;
+    out.size = node_size(c);
     return 1;
 }
 

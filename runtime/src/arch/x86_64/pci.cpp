@@ -238,6 +238,59 @@ uint8_t find_capability(uint32_t index, uint8_t id, uint8_t after) {
     return 0;
 }
 
+namespace {
+volatile uint32_t* msix_table(uint32_t index, uint8_t cap) {
+    uint32_t table = read32(index, uint16_t(cap + 4));
+    uint8_t* bar = static_cast<uint8_t*>(map_bar(index, table & 7));
+    return bar ? reinterpret_cast<volatile uint32_t*>(bar + (table & ~7u)) : nullptr;
+}
+}  // namespace
+
+uint32_t msix_enable(uint32_t index) {
+    uint8_t cap = find_capability(index, 0x11);
+    if (!cap) return 0;
+    uint16_t control = read16(index, uint16_t(cap + 2));
+    uint32_t size = (control & 0x7FF) + 1;
+    volatile uint32_t* table = msix_table(index, cap);
+    if (!table) return 0;
+    enable(index, true, false, false);
+    for (uint32_t i = 0; i < size; ++i) table[i * 4 + 3] = 1;  // masked until routed
+    write16(index, uint16_t(cap + 2), uint16_t((control | 0x8000) & ~0x4000));  // enable, unmask the function
+    write16(index, 0x04, uint16_t(read16(index, 0x04) | 0x400));               // INTx off
+    return size;
+}
+
+bool msix_route(uint32_t index, uint32_t entry, uint8_t vector) {
+    uint8_t cap = find_capability(index, 0x11);
+    if (!cap || entry > (read16(index, uint16_t(cap + 2)) & 0x7FFu)) return false;
+    volatile uint32_t* e = msix_table(index, cap);
+    if (!e) return false;
+    e += entry * 4;
+    uint64_t address = irq::msi_address();
+    e[0] = uint32_t(address);
+    e[1] = uint32_t(address >> 32);
+    e[2] = irq::msi_data(vector);
+    e[3] = 0;  // unmask
+    return true;
+}
+
+bool msi_enable(uint32_t index, uint8_t vector) {
+    uint8_t cap = find_capability(index, 0x05);
+    if (!cap) return false;
+    uint16_t control = read16(index, uint16_t(cap + 2));
+    uint64_t address = irq::msi_address();
+    write32(index, uint16_t(cap + 4), uint32_t(address));
+    uint16_t data_at = uint16_t(cap + 8);
+    if (control & 0x80) {  // 64-bit address
+        write32(index, uint16_t(cap + 8), uint32_t(address >> 32));
+        data_at = uint16_t(cap + 12);
+    }
+    write16(index, data_at, uint16_t(irq::msi_data(vector)));
+    write16(index, uint16_t(cap + 2), uint16_t((control & ~0x70u) | 1));  // one vector, enabled
+    write16(index, 0x04, uint16_t(read16(index, 0x04) | 0x400));         // INTx off
+    return true;
+}
+
 void* map_bar(uint32_t index, uint32_t bar) {
     const Device* d = dev_at(index);
     if (!d || bar >= 6 || (d->bar_flags[bar] & kBarIo) || d->bar_address[bar] == 0) return nullptr;

@@ -23,6 +23,10 @@ public static unsafe class Irq
     /// <summary>How many times IRQ <paramref name="line"/> fired since boot.</summary>
     [Native("::neko::irq::count")]
     public static extern ulong Count(byte line);
+
+    /// <summary>Message-signalled interrupt number <paramref name="index"/> (PCI MSI/MSI-X); false past the end.</summary>
+    [Native("::neko::irq::msi_info")]
+    public static extern bool GetMsi(uint index, out byte vector, out string name, out ulong count);
 }
 
 public static class Power

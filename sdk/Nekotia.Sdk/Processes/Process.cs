@@ -34,7 +34,7 @@ public static unsafe class Process
 
     /// <summary>File errors (<c>neko/vfs.hpp</c>).</summary>
     public const long ErrExists = -10, ErrNotDirectory = -11, ErrIsDirectory = -12, ErrNotEmpty = -13, ErrBadFd = -14,
-        ErrTooManyFiles = -15, ErrNameTooLong = -16, ErrBusy = -17, ErrAccess = -18, ErrNotSupported = -19;
+        ErrTooManyFiles = -15, ErrNameTooLong = -16, ErrBusy = -17, ErrAccess = -18, ErrNotSupported = -19, ErrIo = -20;
 
     /// <summary>Exit codes: Ctrl+C, kill.</summary>
     public const long ExitInterrupted = 130, ExitKilled = 137;
@@ -111,6 +111,7 @@ public static unsafe class Process
         if (error == ErrBusy) return "busy";
         if (error == ErrAccess) return "access denied";
         if (error == ErrNotSupported) return "not supported";
+        if (error == ErrIo) return "I/O error";
         return "unknown error";
     }
 }

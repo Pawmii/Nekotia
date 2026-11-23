@@ -67,6 +67,7 @@ public static unsafe class SelfTest
         Threads();
         PciBus();
         FileSystem();
+        Disks();
         UserMode();
         return _failed;
     }
@@ -493,6 +494,53 @@ public static unsafe class SelfTest
             return;
         Check(Vfs.Statistics().InitrdEntries > 0 && Vfs.Exists("/bin/sh"), "initrd: unpacked at boot (/bin/sh)");
         Check(Get("/etc/motd", buf, 16) == 15 && Str.StartsWith(buf, "Welcome"), "initrd: /etc/motd reads straight from the module");
+    }
+
+    /// The block layer on a RAM disk (host mode) or, under `make test` only, on the scratch virtio disk
+    /// QEMU gets there — a normal boot never writes to a disk.
+    static void Disks()
+    {
+        int disk = -1;
+        if (Kernel.Info->Hosted) {
+            disk = Block.Find("ram0");
+            if (disk < 0)
+                disk = Block.AddRamDisk("ram0", 1024 * 1024);
+        } else if (Str.StartsWith(Kernel.Info->CommandLine, "test")) {
+            disk = Block.Find("vda");
+            Check(disk >= 0, "disk: virtio-blk found the test disk (vda)");
+        }
+        if (disk < 0)
+            return;
+        uint d = (uint)disk;
+        BlockInfo info = default;
+        Check(Block.GetInfo(d, out info) && info.SectorSize == 512 && info.Sectors >= 2048 && !info.ReadOnly, "disk: size and sector size");
+
+        const int Big = 200 * 1024;   // spans several 64 KiB DMA buffers of the virtio driver
+        byte* data = (byte*)Heap.Alloc(Big);
+        byte* back = (byte*)Heap.AllocZeroed(Big);
+        defer Heap.Free(data);
+        defer Heap.Free(back);
+        for int i in 0..Big { data[i] = (byte)(i * 7 + (i >> 9)); }
+        Check(Block.Write(d, 8, Big / 512, data) == 0 && Block.Read(d, 8, Big / 512, back) == 0 && Memory.Compare(data, back, Big) == 0,
+              "disk: 200 KiB written and read back");
+        Check(Block.Read(d, info.Sectors, 1, back) == Process.ErrBadArgument && Block.Read(d, info.Sectors - 1, 1, back) == 0,
+              "disk: the last sector is the end");
+        Check(Block.Flush(d) == 0, "disk: flush");
+
+        // Byte access through /dev: a write across a sector boundary is read-modify-written.
+        byte* path = stackalloc byte[24];
+        Files.Join("/dev", info.Name, path);
+        OpenFile* f = null;
+        Check(Vfs.Open(path, Vfs.Read | Vfs.Write, out f) == 0, "disk: /dev node opens");
+        Vfs.Seek(f, 8 * 512 + 510, Vfs.SeekSet);
+        Check(Vfs.WriteFile(f, Str.Bytes("neko"), 4) == 4, "disk: unaligned write through /dev");
+        Vfs.Seek(f, 8 * 512 + 508, Vfs.SeekSet);
+        Check(Vfs.ReadFile(f, back, 8) == 8 && back[0] == data[508] && back[1] == data[509] && back[2] == 'n' && back[5] == 'o'
+              && back[6] == data[514] && back[7] == data[515], "disk: neighbouring bytes survive");
+        FileStat st = default;
+        Check(Vfs.Stat(f, out st) == 0 && st.Size == info.Sectors * 512 && Vfs.Seek(f, 0, Vfs.SeekEnd) == (long)st.Size,
+              "disk: /dev size and seek to the end");
+        Vfs.Close(f);
     }
 
     static void UserMode()

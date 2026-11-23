@@ -92,6 +92,10 @@ namespace neko::irq {
 // No hardware interrupts in host mode: handlers are accepted and never called.
 bool register_handler(uint8_t line, Handler) { return line < 16; }
 uint64_t count(uint8_t) { return 0; }
+uint8_t allocate_msi(MsiHandler, void*, const char*) { return 0; }
+uint64_t msi_address() { return 0; }
+uint32_t msi_data(uint8_t) { return 0; }
+bool msi_info(uint32_t, uint8_t&, const char*&, uint64_t&) { return false; }
 }  // namespace neko::irq
 
 namespace neko::power {
@@ -147,6 +151,9 @@ void write16(uint32_t, uint16_t, uint16_t) {}
 void enable(uint32_t, bool, bool, bool) {}
 uint8_t find_capability(uint32_t, uint8_t, uint8_t) { return 0; }
 void* map_bar(uint32_t, uint32_t) { return nullptr; }
+uint32_t msix_enable(uint32_t) { return 0; }
+bool msix_route(uint32_t, uint32_t, uint8_t) { return false; }
+bool msi_enable(uint32_t, uint8_t) { return false; }
 }  // namespace neko::pci
 
 namespace neko::arch {

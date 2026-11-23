@@ -126,7 +126,9 @@
 
 - [x] PCI/PCIe перечисление: ECAM через ACPI MCFG (или порты 0xCF8), рекурсивный обход мостов, BAR с размерами,
       capabilities; `Pci` в SDK, команда `lspci [-v]`
-- [ ] virtio-blk, AHCI (SATA), NVMe
+- [x] virtio-blk (virtio 1.x modern PCI, split virtqueue, 8 запросов параллельно, MSI-X или опрос); слой блочных
+      устройств (`Block`, `/dev/vda` с побайтовым доступом, RAM-диски); MSI/MSI-X в рантайме; `disks`, MSI в `irq`
+- [ ] AHCI (SATA), NVMe
 - [x] VFS: дерево узлов с подсчётом ссылок, ramfs, initrd (ustar-модуль Limine, copy-on-write из модуля),
       `/dev/{console,null,zero}`, рабочие каталоги, системные вызовы 16–29; команды `ls/cd/cat/mkdir/rm/mv/write/df`
 - [ ] Каналы (`|` в `sh`), `/proc`, монтирование других ФС в каталоги VFS

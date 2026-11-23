@@ -2,11 +2,12 @@
 // with paging, a GDT and a 64 KiB stack, then jumps to kmain().
 //
 // kmain:      serial → GDT/IDT → buddy allocator → own page tables → heap → kernel stack (guarded)
-// kmain_main: (on the new stack) console → ACPI/APIC → PCI → initrd → C# static init → [Irq] → sti → C# [KernelEntry]
+// kmain_main: (on the new stack) console → ACPI/APIC → PCI → initrd → C# static init → SMP → drivers → [Irq] → sti → C# [KernelEntry]
 #include <limine.h>
 
 #include "arch.hpp"
 
+#include <neko/block.hpp>
 #include <neko/pci.hpp>
 #include <neko/process.hpp>
 #include <neko/sched.hpp>
@@ -217,6 +218,7 @@ uint64_t g_kernel_stack_top = 0;
     neko::term::write(" of ");
     neko::term::write_udec(mp_request.response ? mp_request.response->cpu_count : 1);
     neko::term::write(" CPU(s) online\n");
+    neko::drivers::init();  // needs interrupts (completion IRQs) and the VFS (/dev nodes)
     neko::term::write("[neko] user mode: syscall/sysret, SMEP ");
     neko::term::write(neko::arch::smep_enabled() ? "on" : "off");
     neko::term::write(", SMAP ");

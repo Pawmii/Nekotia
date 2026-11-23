@@ -156,7 +156,7 @@ Welcome to Nekotia — a kernel written in C#, transpiled to C++ by nekoc.
 | `make user` | только программы → `build/user/bin/*` |
 | `make initrd` | `build/initrd.tar`: программы в `/bin` + содержимое `initrd/` |
 | `make iso` | загрузочный гибридный BIOS/UEFI ISO |
-| `make run` / `make run-uefi` | запуск в QEMU (`QEMU_FLAGS=...` чтобы поменять) |
+| `make run` / `make run-uefi` | запуск в QEMU (`QEMU_FLAGS=...` чтобы поменять); диск `build/disk.img` (64 МиБ, `DISK=`, `DISK_SIZE=`) — `/dev/vda` |
 | `make debug` | отладочная `-O0`-сборка в `build/debug`, QEMU на паузе с gdb-сервером `:1234` |
 | `make test` | загрузить тестовый образ в QEMU (BIOS + UEFI), прогнать самотесты, код возврата = результат |
 | `make run-host` | ядро как Linux-процесс с ASan/UBSan — быстрый прогон самотестов (не замена QEMU) |

@@ -13,7 +13,7 @@ namespace Nekotia.OS;
 public static unsafe class Commands
 {
     /// Space-separated, used by Tab completion.
-    public const string Names = "help clear info ps lspci ls cd pwd cat mkdir rm mv write df run progs kill spawn mem vm pages alloc uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
+    public const string Names = "help clear info ps lspci disks ls cd pwd cat mkdir rm mv write df run progs kill spawn mem vm pages alloc uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
 
     public static void Run(byte* cmd, byte* args)
     {
@@ -22,6 +22,7 @@ public static unsafe class Commands
         else if (Is(cmd, "info")) Info();
         else if (Is(cmd, "ps")) Ps();
         else if (Is(cmd, "lspci")) Lspci(args);
+        else if (Is(cmd, "disks")) Files.Disks();
         else if (Is(cmd, "ls")) Files.List(args);
         else if (Is(cmd, "cd")) Files.ChangeDirectory(args);
         else if (Is(cmd, "pwd")) Files.PrintDirectory();
@@ -129,6 +130,7 @@ public static unsafe class Commands
         Line("rm PATH…", "remove files and empty directories");
         Line("mv FROM TO", "rename, or move into a directory");
         Line("df", "file system usage: nodes, open files, heap and initrd bytes");
+        Line("disks", "block devices: size, model, sectors read and written (each is also /dev/NAME)");
         Section("Programs:");
         Line("progs", "user programs in /bin");
         Line("run PROG ARGS", "run a user program in ring 3 (or just type its name or path; `&` at the end: background)");
@@ -585,6 +587,15 @@ public static unsafe class Commands
     {
         Terminal.WriteLine($"timer:      {Time.UptimeMs()} ticks at {Time.TimerHz()} Hz (LAPIC, vector 0x20)");
         Terminal.WriteLine($"keyboard:   {Irq.Count(1)} interrupts (IRQ 1 → IOAPIC → vector 0x31), {Keyboard.DroppedKeys} keys dropped");
+        byte vector = 0;
+        string name = null;
+        ulong count = 0;
+        for (uint i = 0; Irq.GetMsi(i, out vector, out name, out count); i++) {
+            Terminal.Write(name);
+            Terminal.Write(":");
+            Pad((int)Str.Length(name) + 1, 12);
+            Terminal.WriteLine($"{count} interrupts (MSI-X → vector {(ulong)vector:X})");
+        }
     }
 
     static void Layout()

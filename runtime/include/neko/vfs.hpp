@@ -52,9 +52,11 @@ struct DirEntry {
 };
 
 // A device node: calls instead of stored bytes. Called without the VFS lock (they may block).
+// With `size`, the device is seekable (a disk): reads and writes move the file offset.
 struct DeviceOps {
     int64_t (*read)(void* context, uint64_t offset, void* buffer, uint64_t length);
     int64_t (*write)(void* context, uint64_t offset, const void* buffer, uint64_t length);
+    uint64_t (*size)(void* context);
 };
 
 void init();  // the root, /dev, /tmp, /bin, /etc; needs the heap

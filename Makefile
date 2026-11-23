@@ -38,7 +38,8 @@ CS_SOURCES  := $(shell find sdk kernel -type f \( -name '*.cs' -o -name '*.neko'
 NEKOC_SRCS  := $(shell find tools/nekoc -type f \( -name '*.cs' -o -name '*.csproj' \) -not -path '*/bin/*' -not -path '*/obj/*')
 RT_HEADERS  := $(wildcard runtime/include/neko/*.hpp)
 CORE_SRCS   := $(wildcard runtime/src/core/*.cpp)
-KERNEL_SRCS := $(CORE_SRCS) $(wildcard runtime/src/freestanding/*.cpp) $(wildcard runtime/src/arch/x86_64/*.cpp)
+KERNEL_SRCS := $(CORE_SRCS) $(wildcard runtime/src/freestanding/*.cpp) $(wildcard runtime/src/arch/x86_64/*.cpp) \
+               $(wildcard runtime/src/drivers/*.cpp)
 KERNEL_ASM  := $(wildcard runtime/src/arch/x86_64/*.S) $(wildcard runtime/src/core/*.S)
 HOST_SRCS   := $(CORE_SRCS) $(wildcard runtime/src/host/*.cpp)
 CORE_ASM    := $(wildcard runtime/src/core/*.S)
@@ -231,32 +232,46 @@ $(BUILD)/nekotia-test.iso: $(BUILD)/nekotia.elf $(BUILD)/limine.conf $(BUILD)/in
 	sed 's/^\( *cmdline:\).*/\1 test/' $(BUILD)/limine.conf > $(BUILD)/limine-test.conf
 	$(call make-iso,$(BUILD)/limine-test.conf,$@,$(BUILD)/iso_root_test)
 
+# Disks: `make run` attaches build/disk.img (created once, kept between runs) as /dev/vda;
+# `make test` a fresh scratch disk the self test writes to.
+DISK       ?= $(BUILD)/disk.img
+DISK_SIZE  ?= 64M
+DISK_FLAGS  = -drive file=$(DISK),if=none,id=disk0,format=raw -device virtio-blk-pci,drive=disk0
+TEST_DISK  := $(BUILD)/test-disk.img
+
+$(DISK):
+	@mkdir -p $(dir $@)
+	truncate -s $(DISK_SIZE) $@
+
 TEST_FLAGS ?= -M q35 -cpu qemu64,+smep,+smap -m 256M -smp 4 -display none -serial stdio -no-reboot \
               -device isa-debug-exit,iobase=0xf4,iosize=0x04
 TEST_TIMEOUT ?= 60
 
+TEST_DISK_FLAGS = -drive file=$(TEST_DISK),if=none,id=disk0,format=raw -device virtio-blk-pci,drive=disk0
+
 test: $(BUILD)/nekotia-test.iso
-	@echo "== QEMU (BIOS)"; timeout $(TEST_TIMEOUT) $(QEMU) $(TEST_FLAGS) -cdrom $< > $(BUILD)/test-bios.log 2>&1; \
+	@rm -f $(TEST_DISK); truncate -s 8M $(TEST_DISK)
+	@echo "== QEMU (BIOS)"; timeout $(TEST_TIMEOUT) $(QEMU) $(TEST_FLAGS) $(TEST_DISK_FLAGS) -cdrom $< > $(BUILD)/test-bios.log 2>&1; \
 	  status=$$?; sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' $(BUILD)/test-bios.log | grep -aE '^(  (ok|FAIL)|selftest)'; \
 	  if [ $$status -ne 1 ]; then echo "test (BIOS): FAILED (status $$status, log: $(BUILD)/test-bios.log)"; exit 1; fi
-	@if [ -n "$(OVMF)" ]; then echo "== QEMU (UEFI)"; timeout $(TEST_TIMEOUT) $(QEMU) $(TEST_FLAGS) -bios $(OVMF) -cdrom $< > $(BUILD)/test-uefi.log 2>&1; \
+	@if [ -n "$(OVMF)" ]; then echo "== QEMU (UEFI)"; timeout $(TEST_TIMEOUT) $(QEMU) $(TEST_FLAGS) $(TEST_DISK_FLAGS) -bios $(OVMF) -cdrom $< > $(BUILD)/test-uefi.log 2>&1; \
 	  status=$$?; sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' $(BUILD)/test-uefi.log | grep -aE '^selftest'; \
 	  if [ $$status -ne 1 ]; then echo "test (UEFI): FAILED (status $$status, log: $(BUILD)/test-uefi.log)"; exit 1; fi; fi
 	@echo "test: all passed (BIOS$(if $(OVMF), + UEFI))"
 
-run: $(BUILD)/nekotia.iso
-	$(QEMU) $(QEMU_FLAGS) -cdrom $<
+run: $(BUILD)/nekotia.iso $(DISK)
+	$(QEMU) $(QEMU_FLAGS) $(DISK_FLAGS) -cdrom $<
 
-run-uefi: $(BUILD)/nekotia.iso
+run-uefi: $(BUILD)/nekotia.iso $(DISK)
 	@test -n "$(OVMF)" || { echo "OVMF firmware not found (install edk2-ovmf)"; exit 1; }
-	$(QEMU) $(QEMU_FLAGS) -bios $(OVMF) -cdrom $<
+	$(QEMU) $(QEMU_FLAGS) $(DISK_FLAGS) -bios $(OVMF) -cdrom $<
 
 # Separate -O0 build in build/debug so breakpoints on C# lines map 1:1 to code.
-debug:
+debug: $(DISK)
 	@$(MAKE) --no-print-directory BUILD=$(DEBUG_BUILD) OPT=-O0 $(DEBUG_BUILD)/nekotia.iso
 	@echo "nekotia: starting QEMU paused, gdb server on :1234"
 	@( sleep 1; echo "nekotia: QEMU is waiting for gdb on :1234 (symbols: $(DEBUG_BUILD)/nekotia.elf)" ) &
-	$(QEMU) $(QEMU_FLAGS) -cdrom $(DEBUG_BUILD)/nekotia.iso -s -S
+	$(QEMU) $(QEMU_FLAGS) $(DISK_FLAGS) -cdrom $(DEBUG_BUILD)/nekotia.iso -s -S
 
 # ---------------------------------------------------------------- misc
 

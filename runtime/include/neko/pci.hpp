@@ -59,4 +59,10 @@ uint8_t find_capability(uint32_t index, uint8_t id, uint8_t after = 0);
 // Maps memory BAR `bar` uncached and returns its virtual address (nullptr for I/O or empty BARs).
 void* map_bar(uint32_t index, uint32_t bar);
 
+// Message-signalled interrupts (vectors from irq::allocate_msi). Both turn legacy INTx off.
+// MSI-X: enables the table with every entry masked; returns its size (0 = no MSI-X).
+uint32_t msix_enable(uint32_t index);
+bool msix_route(uint32_t index, uint32_t entry, uint8_t vector);  // points `entry` at `vector` and unmasks it
+bool msi_enable(uint32_t index, uint8_t vector);                  // plain MSI, one vector
+
 }  // namespace neko::pci

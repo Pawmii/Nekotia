@@ -20,6 +20,15 @@ using Handler = void (*)();
 bool register_handler(uint8_t line, Handler handler);
 uint64_t count(uint8_t line);  // how many times the line fired
 
+// Message-signalled interrupts (PCI MSI / MSI-X): a free vector whose handler gets `context`.
+// The device is programmed with msi_address() / msi_data(vector). Returns the vector, 0 when none is left.
+using MsiHandler = void (*)(void* context);
+uint8_t allocate_msi(MsiHandler handler, void* context, const char* name);
+uint64_t msi_address();          // the boot CPU's local APIC
+uint32_t msi_data(uint8_t vector);  // edge-triggered, fixed delivery
+// Statistics of the allocated vectors, for `irq`: false past the end.
+bool msi_info(uint32_t index, uint8_t& vector, const char*& name, uint64_t& count);
+
 }  // namespace neko::irq
 
 namespace neko::power {

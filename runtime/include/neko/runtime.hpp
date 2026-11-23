@@ -2,6 +2,7 @@
 #pragma once
 
 #include <neko/types.hpp>
+#include <neko/block.hpp>
 #include <neko/boot.hpp>
 #include <neko/console.hpp>
 #include <neko/crash.hpp>

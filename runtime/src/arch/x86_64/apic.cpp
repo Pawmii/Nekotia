@@ -37,6 +37,18 @@ uint32_t g_cpu_count = 1;
 uint32_t g_lapic_per_ms = 0;
 
 irq::Handler g_handlers[16];
+
+// MSI vectors 0x40…0xEF.
+constexpr uint8_t kMsiFirst = 0x40, kMsiEnd = 0xF0;
+struct MsiSlot {
+    irq::MsiHandler handler;
+    void* context;
+    const char* name;
+    uint64_t count;
+};
+MsiSlot g_msi[kMsiEnd - kMsiFirst];
+uint32_t g_msi_used = 0;
+sync::SpinLock g_msi_lock;
 volatile uint64_t g_irq_counts[16];
 
 uint32_t lapic_read(uint32_t reg) { return g_lapic[reg / 4]; }
@@ -179,6 +191,10 @@ void irq_dispatch(uint8_t vector) {
             uint8_t line = vector - kVectorIrqBase;
             g_irq_counts[line] = g_irq_counts[line] + 1;
             if (g_handlers[line]) g_handlers[line]();
+        } else if (vector >= kMsiFirst && vector < kMsiEnd) {
+            MsiSlot& slot = g_msi[vector - kMsiFirst];
+            slot.count = slot.count + 1;
+            if (slot.handler) slot.handler(slot.context);
         }
         lapic_write(kLapicEoi, 0);
     }
@@ -215,6 +231,31 @@ bool register_handler(uint8_t line, Handler handler) {
 }
 
 uint64_t count(uint8_t line) { return line < 16 ? arch::g_irq_counts[line] : 0; }
+
+uint8_t allocate_msi(MsiHandler handler, void* context, const char* name) {
+    using namespace neko::arch;
+    if (!g_apic_ready || !handler) return 0;
+    sync::ScopedLock guard(g_msi_lock);
+    if (g_msi_used >= uint32_t(kMsiEnd - kMsiFirst)) return 0;
+    MsiSlot& slot = g_msi[g_msi_used];
+    slot.context = context;
+    slot.name = name ? name : "msi";
+    slot.count = 0;
+    __atomic_store_n(&slot.handler, handler, __ATOMIC_RELEASE);
+    return uint8_t(kMsiFirst + g_msi_used++);
+}
+
+uint64_t msi_address() { return 0xFEE00000ull | (uint64_t(arch::g_bsp_apic_id) << 12); }
+uint32_t msi_data(uint8_t vector) { return vector; }
+
+bool msi_info(uint32_t index, uint8_t& vector, const char*& name, uint64_t& count) {
+    using namespace neko::arch;
+    if (index >= g_msi_used) return false;
+    vector = uint8_t(kMsiFirst + index);
+    name = g_msi[index].name;
+    count = g_msi[index].count;
+    return true;
+}
 
 }  // namespace neko::irq
 

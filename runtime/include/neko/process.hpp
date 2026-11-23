@@ -87,6 +87,7 @@ enum Error : int64_t {
     kErrBusy = -17,        // e.g. moving a directory into itself
     kErrAccess = -18,      // writing a file opened read-only, reading a write-only one
     kErrNotSupported = -19,
+    kErrIo = -20,          // the device reported an error
 };
 
 // Exit code of a process killed by a CPU exception: 128 + vector (like a Unix signal number).

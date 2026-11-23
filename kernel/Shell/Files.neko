@@ -238,6 +238,25 @@ public static unsafe class Files
             Fail("write", args, e);
     }
 
+    public static void Disks()
+    {
+        BlockInfo d = default;
+        uint n = 0;
+        for (uint i = 0; Block.GetInfo(i, out d); i++) {
+            Terminal.SetColor(AnsiColor.BrightCyan);
+            Terminal.Write("  /dev/");
+            Terminal.Write(d.Name);
+            Terminal.ResetColor();
+            for int pad in ((int)Str.Length(d.Name) + 7)..16 { Terminal.WriteChar((byte)' '); }
+            Terminal.Write($"{d.Sectors * d.SectorSize:size}  ");
+            Terminal.Write(d.Model);
+            Terminal.WriteLine($", {d.SectorSize}-byte sectors{(d.ReadOnly ? ", read-only" : "")}, {d.ReadSectors} read, {d.WrittenSectors} written");
+            n++;
+        }
+        if (n == 0)
+            Terminal.WriteLine("no disks (QEMU: -drive file=disk.img,if=virtio,format=raw — `make run` attaches build/disk.img)");
+    }
+
     public static void Usage()
     {
         VfsStats s = Vfs.Statistics();
