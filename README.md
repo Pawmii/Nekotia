@@ -126,7 +126,7 @@ lower
 Программа — каталог `user/NAME` с `nekotia.json` (`"target": "user"`) и C#-кодом со `static int Main(int argc, byte** argv)`;
 API — `sdk/Nekotia.User` (`Console`, `Process`, `File`, `Path`, `Memory`, `Time`). `make` сам найдёт новый каталог,
 соберёт ELF и положит его в `/bin` initrd (`build/initrd.tar`, туда же попадает всё из `initrd/`). Программы: `sh`
-(shell в ring 3: `cd`, `pwd`, `> FILE`, `>> FILE`, `< FILE`, запуск по пути), `ls`, `cat`, `cp`, `mkdir`, `rm`, `mv`, `ps`,
+(shell в ring 3: `cd`, `pwd`, `> FILE`, `>> FILE`, `< FILE`, конвейеры `a | b`, запуск по пути), `ls`, `cat`, `cp`, `mkdir`, `rm`, `mv`, `grep`, `wc`, `head`, `ps`,
 `echo`, `kill`, `primes` (простые числа в N потоках — видно ускорение на нескольких CPU), `hello`, `guess` (читает
 клавиатуру), `usertest` (проверки ABI для `make test`).
 **Ctrl+C** завершает программу на переднем плане; `init=sh` в `cmdline` (`boot/limine.conf`) загружает сразу в `sh`.
@@ -138,9 +138,10 @@ sh /$ primes 3000000 4
 1 thread: 805 ms, 4 threads: 211 ms — x3.82
 sh /$ cd /tmp
 sh /tmp$ echo hello > a.txt
-sh /tmp$ cat a.txt /etc/motd
+sh /tmp$ ls /bin | grep s | wc
+       6      12     150
+sh /tmp$ cat a.txt
 hello
-Welcome to Nekotia — a kernel written in C#, transpiled to C++ by nekoc.
 ```
 
 Файлы живут в памяти (ramfs): `/bin`, `/etc`, `/home` приходят из initrd (файлы initrd читаются прямо из модуля,

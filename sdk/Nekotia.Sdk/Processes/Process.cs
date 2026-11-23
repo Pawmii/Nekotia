@@ -34,10 +34,10 @@ public static unsafe class Process
 
     /// <summary>File errors (<c>neko/vfs.hpp</c>).</summary>
     public const long ErrExists = -10, ErrNotDirectory = -11, ErrIsDirectory = -12, ErrNotEmpty = -13, ErrBadFd = -14,
-        ErrTooManyFiles = -15, ErrNameTooLong = -16, ErrBusy = -17, ErrAccess = -18, ErrNotSupported = -19, ErrIo = -20;
+        ErrTooManyFiles = -15, ErrNameTooLong = -16, ErrBusy = -17, ErrAccess = -18, ErrNotSupported = -19, ErrIo = -20, ErrBrokenPipe = -21;
 
     /// <summary>Exit codes: Ctrl+C, kill.</summary>
-    public const long ExitInterrupted = 130, ExitKilled = 137;
+    public const long ExitInterrupted = 130, ExitKilled = 137, ExitBrokenPipe = 141;
 
     /// <summary>A process killed by CPU exception <c>v</c> exits with <c>KilledBase + v</c> (142 = page fault).</summary>
     public const long KilledBase = 128;
@@ -112,6 +112,7 @@ public static unsafe class Process
         if (error == ErrAccess) return "access denied";
         if (error == ErrNotSupported) return "not supported";
         if (error == ErrIo) return "I/O error";
+        if (error == ErrBrokenPipe) return "broken pipe";
         return "unknown error";
     }
 }

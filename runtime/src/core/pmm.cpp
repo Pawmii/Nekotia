@@ -5,6 +5,9 @@
 // frame of a free block, 0 otherwise. Free blocks of each order are kept in a
 // doubly linked list stored inside the blocks themselves (through the HHDM).
 //
+// One spin lock guards the lists and the metadata: every CPU allocates and frees (process exit on
+// one CPU while another maps pages for its program). Zeroing happens outside it.
+//
 // Blocks are aligned to their size in *physical* addresses (buddy of frame n at
 // order k is n ^ 2^k), so alloc_order(4) gives 64 KiB that is also 64 KiB aligned —
 // what DMA engines want.
@@ -34,6 +37,7 @@ uint64_t g_free_blocks[kMaxOrder + 1];
 uint64_t g_free_pages = 0;
 uint64_t g_total_pages = 0;
 uint64_t g_hhdm = 0;
+sync::SpinLock g_lock;
 
 uint64_t pfn_of(const void* virt) { return virt_to_phys(virt) / kPageSize; }
 FreeBlock* block_at(uint64_t pfn) { return static_cast<FreeBlock*>(phys_to_virt(pfn * kPageSize)); }
@@ -69,7 +73,14 @@ void release(uint64_t pfn, uint32_t order) {
     Zone* z = zone_of(pfn);
     if (!z || order > kMaxOrder || (pfn & ((1ull << order) - 1)) != 0)
         crash::fail(crash::StopCode::HeapCorruption, "pmm: free of a block that was never allocated here");
-    if (z->meta[pfn - z->first_pfn] & kFreeHead) crash::fail(crash::StopCode::HeapCorruption, "pmm: double free of a page");
+    // Already free: the head of a free block, or inside a bigger one (any aligned head covering pfn).
+    for (uint32_t k = 0; k <= kMaxOrder; ++k) {
+        uint64_t head = pfn & ~((1ull << k) - 1);
+        if (head < z->first_pfn) break;
+        uint8_t m = z->meta[head - z->first_pfn];
+        if ((m & kFreeHead) && (m & 0x7F) >= k)
+            crash::fail(crash::StopCode::HeapCorruption, "pmm: double free of a page");
+    }
 
     while (order < kMaxOrder) {
         uint64_t buddy = pfn ^ (1ull << order);
@@ -93,6 +104,7 @@ uint32_t order_for(uint64_t pages) {
 void init(uint64_t hhdm_offset) { g_hhdm = hhdm_offset; }
 
 void add_region(void* virt_base, size_t size) {
+    sync::ScopedLock guard(g_lock);
     if (g_zone_count == kMaxZones) return;
     uint64_t start = mem::align_up(virt_to_phys(virt_base), kPageSize) / kPageSize;
     uint64_t end = mem::align_down(virt_to_phys(virt_base) + size, kPageSize) / kPageSize;
@@ -122,16 +134,19 @@ void add_region(void* virt_base, size_t size) {
 
 void* alloc_order(uint32_t order) {
     if (order > kMaxOrder) return nullptr;
-    uint32_t o = order;
-    while (o <= kMaxOrder && !g_free[o]) ++o;
-    if (o > kMaxOrder) return nullptr;
-
-    uint64_t pfn = pfn_of(g_free[o]);
-    Zone* z = zone_of(pfn);
-    unlink(*z, pfn, o);
-    while (o > order) {  // split, keep the lower half, free the upper one
-        --o;
-        push(*z, pfn + (1ull << o), o);
+    uint64_t pfn;
+    {
+        sync::ScopedLock guard(g_lock);
+        uint32_t o = order;
+        while (o <= kMaxOrder && !g_free[o]) ++o;
+        if (o > kMaxOrder) return nullptr;
+        pfn = pfn_of(g_free[o]);
+        Zone* z = zone_of(pfn);
+        unlink(*z, pfn, o);
+        while (o > order) {  // split, keep the lower half, free the upper one
+            --o;
+            push(*z, pfn + (1ull << o), o);
+        }
     }
     void* p = phys_to_virt(pfn * kPageSize);
     mem::set(p, 0, kPageSize << order);
@@ -142,6 +157,7 @@ void free_order(void* block, uint32_t order) {
     if (!block) return;
     if ((reinterpret_cast<uintptr_t>(block) & (kPageSize - 1)) != 0)
         crash::fail(crash::StopCode::HeapCorruption, "pmm: free of an unaligned address");
+    sync::ScopedLock guard(g_lock);
     release(pfn_of(block), order);
 }
 
@@ -155,6 +171,7 @@ uint64_t total_pages() { return g_total_pages; }
 uint64_t free_blocks(uint32_t order) { return order <= kMaxOrder ? g_free_blocks[order] : 0; }
 
 uint32_t largest_free_order() {
+    sync::ScopedLock guard(g_lock);
     for (uint32_t o = kMaxOrder + 1; o-- > 0;)
         if (g_free[o]) return o;
     return ~0u;

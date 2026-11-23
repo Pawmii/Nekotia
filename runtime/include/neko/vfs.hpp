@@ -53,10 +53,14 @@ struct DirEntry {
 
 // A device node: calls instead of stored bytes. Called without the VFS lock (they may block).
 // With `size`, the device is seekable (a disk): reads and writes move the file offset.
+// `close` runs when an open file of the device goes away (with its open flags), `release` when the
+// node itself does; both are optional and must not block.
 struct DeviceOps {
     int64_t (*read)(void* context, uint64_t offset, void* buffer, uint64_t length);
     int64_t (*write)(void* context, uint64_t offset, const void* buffer, uint64_t length);
     uint64_t (*size)(void* context);
+    void (*close)(void* context, uint32_t flags);
+    void (*release)(void* context);
 };
 
 void init();  // the root, /dev, /tmp, /bin, /etc; needs the heap
@@ -77,6 +81,10 @@ int64_t fstat(File* f, Stat& out);
 // Entry number `index` of an open directory: 1, 0 past the end, or an Error.
 int64_t readdir(File* f, uint32_t index, DirEntry& out);
 File* dup(File* f);  // one more reference to the same open file (shared offset)
+// A pipe: what is written to `write_end` comes out of `read_end` (64 KiB buffer). Reads block while it is
+// empty and return 0 once every write end is closed; writes block while it is full and fail with
+// kErrBrokenPipe once every read end is closed. Both waits end early when the caller is killed.
+int64_t pipe(File*& read_end, File*& write_end);
 void close(File* f);
 uint32_t flags(File* f);
 

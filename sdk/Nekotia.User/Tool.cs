@@ -79,4 +79,66 @@ public static unsafe class Tool
         File.Close((int)dst);
         return result;
     }
+
+    /// <summary>Opens argv[index] for reading, or returns 0 (stdin) when there is no such argument or it is "-".</summary>
+    public static long OpenInput(int argc, byte** argv, int index)
+    {
+        if (index >= argc || Str.Equals(argv[index], "-"))
+            return 0;
+        return File.Open(argv[index], File.Read);
+    }
+}
+
+/// <summary>Reads a file descriptor line by line (lines longer than the buffer are split).</summary>
+public unsafe struct LineReader
+{
+    int _fd;
+    byte* _buffer;
+    int _length;
+    int _position;
+    bool _end;
+
+    public const int Size = 4096;
+
+    public void Open(int fd)
+    {
+        _fd = fd;
+        _buffer = (byte*)Memory.Alloc(Size);
+        _length = 0;
+        _position = 0;
+        _end = false;
+    }
+
+    public void Close() => Memory.Free(_buffer);
+
+    /// <summary>Copies the next line (without '\n', NUL-terminated) into <paramref name="line"/>; its length, or -1 at the end.</summary>
+    public long Next(byte* line, int capacity)
+    {
+        int n = 0;
+        bool any = false;
+        while (true)
+        {
+            if (_position == _length)
+            {
+                if (_end)
+                    break;
+                long got = File.ReadBytes(_fd, _buffer, Size);
+                if (got <= 0)
+                {
+                    _end = true;
+                    break;
+                }
+                _length = (int)got;
+                _position = 0;
+            }
+            any = true;
+            byte c = _buffer[_position++];
+            if (c == '\n')
+                break;
+            if (n < capacity - 1)
+                line[n++] = c;
+        }
+        line[n] = 0;
+        return any ? n : -1;
+    }
 }

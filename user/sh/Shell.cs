@@ -1,5 +1,6 @@
 // sh — a shell in ring 3. Runs programs from /bin (NAME ARGS…) or by path (./prog, /tmp/prog);
-// `&` at the end runs in the background; `> FILE`, `>> FILE` and `< FILE` redirect stdout / stdin.
+// `&` at the end runs in the background; `> FILE`, `>> FILE` and `< FILE` redirect stdout / stdin;
+// `a | b | c` connects them with pipes.
 // Built-ins: help, cd [DIR], pwd, exit [CODE], wait PID, pid. Ctrl+C ends the program in the
 // foreground, Ctrl+D ends sh.
 using Nekotia;
@@ -32,6 +33,11 @@ public static unsafe class Program
                 name++;
             if (*name == 0)
                 continue;
+            if (HasPipe(name))
+            {
+                RunPipeline(name);
+                continue;
+            }
             byte* args = name;
             while (*args != 0 && *args != ' ')
                 args++;
@@ -76,6 +82,7 @@ public static unsafe class Program
         Console.WriteLine("built-ins: help, cd [DIR], pwd, exit [CODE], wait PID, pid");
         Console.WriteLine("programs:  NAME ARGS…   (/bin/NAME, or a path like ./prog; `ls /bin` lists them)");
         Console.WriteLine("           `&` at the end: background;  > FILE, >> FILE: stdout to FILE;  < FILE: stdin from FILE");
+        Console.WriteLine("           A | B | C: pipes, e.g.  ls /bin | grep s | wc   ·   cat /etc/motd | head -n 2");
         Console.WriteLine("Ctrl+C ends the program in the foreground, Ctrl+D (on an empty line) leaves sh.");
     }
 
@@ -238,6 +245,148 @@ public static unsafe class Program
             Console.WriteLine($"[{pid}]");
         else
             Report(name, Process.Wait((uint)pid));
+    }
+
+    static bool HasPipe(byte* s)
+    {
+        for (; *s != 0; s++)
+        {
+            if (*s == '|')
+                return true;
+        }
+        return false;
+    }
+
+    const int MaxStages = 8;
+
+    /// A | B | C: every stage starts with stdin from the previous pipe and stdout into the next one
+    /// (the shell's own 0/1 are switched around each spawn and put back), then the shell waits for all.
+    static void RunPipeline(byte* line)
+    {
+        TrimEnd(line);
+        int n = (int)Str.Length(line);
+        bool background = n > 0 && line[n - 1] == '&';
+        if (background)
+        {
+            line[n - 1] = 0;
+            TrimEnd(line);
+        }
+
+        byte** stages = stackalloc byte*[MaxStages];
+        int count = 0;
+        stages[count++] = line;
+        for (byte* p = line; *p != 0; p++)
+        {
+            if (*p != '|')
+                continue;
+            if (count == MaxStages)
+            {
+                Console.WriteLine(Ansi.Red, "sh: at most 8 commands in a pipeline");
+                return;
+            }
+            *p = 0;
+            stages[count++] = p + 1;
+        }
+
+        long* pids = stackalloc long[MaxStages];
+        byte** names = stackalloc byte*[MaxStages];
+        long savedIn = File.Duplicate(0);
+        long savedOut = File.Duplicate(1);
+        int previousRead = -1;
+        bool ok = true;
+        for (int i = 0; i < count; i++)
+        {
+            pids[i] = -1;
+            byte* name = stages[i];
+            while (*name == ' ')
+                name++;
+            byte* args = name;
+            while (*args != 0 && *args != ' ')
+                args++;
+            if (*args != 0)
+            {
+                *args = 0;
+                args++;
+            }
+            names[i] = name;
+            TrimEnd(args);
+            if (*name == 0 || !ParseRedirections(args))
+            {
+                Console.WriteLine(Ansi.Red, "sh: empty command or a redirection without a file in the pipeline");
+                ok = false;
+            }
+            TrimEnd(args);
+
+            int readEnd = -1, writeEnd = -1;
+            if (ok && i < count - 1 && File.Pipe(out readEnd, out writeEnd) < 0)
+            {
+                Console.WriteLine(Ansi.Red, "sh: cannot create a pipe");
+                ok = false;
+            }
+            if (ok)
+            {
+                // stdin: the previous stage, or `< FILE`; stdout: the next stage, or `> FILE`.
+                long input = previousRead >= 0 ? previousRead : -1;
+                if (_stdinPath != null)
+                    input = File.Open(_stdinPath, File.Read);
+                long output = writeEnd >= 0 ? writeEnd : -1;
+                if (_stdoutPath != null)
+                    output = File.Open(_stdoutPath, File.Write | File.Create | (_append ? File.Append : File.Truncate));
+                if ((_stdinPath != null && input < 0) || (_stdoutPath != null && output < 0))
+                {
+                    Tool.Fail("sh", _stdinPath != null && input < 0 ? _stdinPath : _stdoutPath, input < 0 ? input : output);
+                    ok = false;
+                }
+                else
+                {
+                    if (input >= 0)
+                        File.Redirect((int)input, 0);
+                    if (output >= 0)
+                        File.Redirect((int)output, 1);
+                    pids[i] = Process.Start(name, args);
+                    File.Redirect((int)savedIn, 0);
+                    File.Redirect((int)savedOut, 1);
+                    if (pids[i] < 0)
+                    {
+                        Console.Write(Ansi.Red);
+                        Console.Write("sh: ");
+                        Console.Write(name);
+                        Console.Write(": ");
+                        Console.Write(pids[i] == Process.ErrNotFound ? "not found" : Process.ErrorText(pids[i]));
+                        Console.WriteLine(Ansi.Reset);
+                    }
+                }
+                if (_stdinPath != null && input >= 0)
+                    File.Close((int)input);
+                if (_stdoutPath != null && output >= 0)
+                    File.Close((int)output);
+            }
+            // The children hold their own ends now: ours must go, or readers would never see the end.
+            if (previousRead >= 0)
+                File.Close(previousRead);
+            if (writeEnd >= 0)
+                File.Close(writeEnd);
+            previousRead = readEnd;
+        }
+        if (previousRead >= 0)
+            File.Close(previousRead);
+        File.Close((int)savedIn);
+        File.Close((int)savedOut);
+
+        for (int i = 0; i < count; i++)
+        {
+            if (pids[i] < 0)
+                continue;
+            if (background)
+            {
+                Console.WriteLine($"[{pids[i]}]");
+                continue;
+            }
+            long code = Process.Wait((uint)pids[i]);
+            // A writer that outlived its reader ends with 141 (broken pipe): normal for `… | head`.
+            if (code != Process.ExitBrokenPipe || i == count - 1)
+                Report(names[i], code);
+        }
     }
 
     static void Report(byte* name, long code)

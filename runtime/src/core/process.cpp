@@ -822,6 +822,29 @@ int64_t sys_truncate(uint64_t fd, uint64_t size) {
     return r;
 }
 
+int64_t sys_pipe(uint64_t out) {
+    if (!check_write(reinterpret_cast<void*>(out), 8)) return kErrBadAddress;
+    vfs::File *r, *w;
+    if (int64_t e = vfs::pipe(r, w)) return e;
+    int64_t rfd = install(r);
+    if (rfd < 0) {
+        vfs::close(w);
+        return rfd;
+    }
+    int64_t wfd = install(w);
+    if (wfd < 0) {
+        sys_close(uint64_t(rfd));
+        return wfd;
+    }
+    int32_t fds[2] = {int32_t(rfd), int32_t(wfd)};
+    if (!copy_to_user(reinterpret_cast<void*>(out), fds, sizeof(fds))) {
+        sys_close(uint64_t(rfd));
+        sys_close(uint64_t(wfd));
+        return kErrBadAddress;
+    }
+    return 0;
+}
+
 int64_t mkdir_op(const char* p) { return vfs::mkdir(p); }
 int64_t remove_op(const char* p) { return vfs::remove(p); }
 int64_t chdir_op(const char* p) { return vfs::chdir(p); }
@@ -884,7 +907,10 @@ extern "C" void neko_syscall_dispatch(neko::proc::SyscallFrame* f) {
     if (f->rip >= kUserEnd) exit_current(kErrBadAddress);  // sysret to a non-canonical rip would fault in ring 0
     switch (Syscall(f->rax)) {
         case Syscall::Exit: exit_current(int64_t(f->rdi));
-        case Syscall::Write: r = sys_write(f->rdi, f->rsi, f->rdx); break;
+        case Syscall::Write:
+            r = sys_write(f->rdi, f->rsi, f->rdx);
+            if (r == kErrBrokenPipe) exit_current(kExitBrokenPipe);  // the reader is gone: like SIGPIPE
+            break;
         case Syscall::Read: r = sys_read(f->rdi, f->rsi, f->rdx); break;
         case Syscall::GetPid: r = current()->pid; break;
         case Syscall::Yield: sched::yield(); r = 0; break;
@@ -912,6 +938,7 @@ extern "C" void neko_syscall_dispatch(neko::proc::SyscallFrame* f) {
         case Syscall::GetCwd: r = sys_getcwd(f->rdi, f->rsi); break;
         case Syscall::Rename: r = sys_rename(f->rdi, f->rsi); break;
         case Syscall::Truncate: r = sys_truncate(f->rdi, f->rsi); break;
+        case Syscall::Pipe: r = sys_pipe(f->rdi); break;
         default:
             if (f->rax < kMaxSyscalls && g_syscalls[f->rax]) r = g_syscalls[f->rax](f->rdi, f->rsi, f->rdx, f->r10, f->r8, f->r9);
             break;

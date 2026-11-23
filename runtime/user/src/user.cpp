@@ -29,7 +29,7 @@ enum : uint64_t {
     kSpawn = 7, kWait = 8, kAlloc = 9, kProcessInfo = 10, kKill = 11, kThreadCreate = 12,
     kThreadExit = 13, kThreadId = 14,
     kOpen = 16, kClose = 17, kSeek = 18, kStat = 19, kFStat = 20, kReadDir = 21, kMakeDir = 22, kRemove = 23,
-    kDup = 24, kDup2 = 25, kChangeDir = 26, kGetCwd = 27, kRename = 28, kTruncate = 29,
+    kDup = 24, kDup2 = 25, kChangeDir = 26, kGetCwd = 27, kRename = 28, kTruncate = 29, kPipe = 30,
 };
 
 Lock g_out_lock;
@@ -149,6 +149,13 @@ int64_t dup2(int32_t fd, int32_t target) {
     return sys::call(kDup2, uint64_t(fd), uint64_t(target));
 }
 int64_t truncate(int32_t fd, uint64_t size) { return sys::call(kTruncate, uint64_t(fd), size); }
+int64_t pipe(int32_t& read_fd, int32_t& write_fd) {
+    int32_t fds[2] = {-1, -1};
+    int64_t r = sys::call(kPipe, ptr(fds));
+    read_fd = fds[0];
+    write_fd = fds[1];
+    return r;
+}
 
 // ---------------------------------------------------------------- locks and threads
 

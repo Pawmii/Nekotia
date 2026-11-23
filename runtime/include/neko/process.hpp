@@ -61,6 +61,7 @@ enum class Syscall : uint32_t {
     GetCwd = 27,       // getcwd(buffer, capacity)           → length (NUL-terminated)
     Rename = 28,       // rename(from, to)                   → 0
     Truncate = 29,     // truncate(fd, size)                 → 0
+    Pipe = 30,         // pipe(int32_t fds[2])               → 0; fds[0] reads what fds[1] writes
 };
 constexpr uint32_t kMaxSyscalls = 64;
 constexpr uint32_t kFirstFreeSyscall = 32;  // numbers below are reserved for the runtime
@@ -88,12 +89,14 @@ enum Error : int64_t {
     kErrAccess = -18,      // writing a file opened read-only, reading a write-only one
     kErrNotSupported = -19,
     kErrIo = -20,          // the device reported an error
+    kErrBrokenPipe = -21,  // writing to a pipe nobody reads any more
 };
 
 // Exit code of a process killed by a CPU exception: 128 + vector (like a Unix signal number).
 constexpr int64_t kKilledBase = 128;
 constexpr int64_t kExitInterrupted = 130;  // Ctrl+C
 constexpr int64_t kExitKilled = 137;       // kill
+constexpr int64_t kExitBrokenPipe = 141;   // wrote to a pipe without readers (like SIGPIPE)
 constexpr uint32_t kMaxThreads = 64;       // per process
 constexpr uint32_t kMaxFiles = 32;         // open file descriptors per process
 

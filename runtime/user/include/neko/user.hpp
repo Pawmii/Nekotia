@@ -107,6 +107,7 @@ int64_t getcwd(uint8_t* buffer, uint64_t capacity);
 int64_t dup(int32_t fd);
 int64_t dup2(int32_t fd, int32_t target);
 int64_t truncate(int32_t fd, uint64_t size);
+int64_t pipe(int32_t& read_fd, int32_t& write_fd);  // read_fd gets what write_fd writes
 
 // ---- console (fd 1 = stdout, 2 = stderr, 0 = keyboard — unless redirected)
 int64_t write(int32_t fd, const void* data, uint64_t length);

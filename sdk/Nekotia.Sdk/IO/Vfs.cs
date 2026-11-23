@@ -114,6 +114,10 @@ public static unsafe class Vfs
     [Native("::neko::vfs::close")]
     public static extern void Close(OpenFile* file);
 
+    /// <summary>A pipe: what is written to <paramref name="writeEnd"/> comes out of <paramref name="readEnd"/>.</summary>
+    [Native("::neko::vfs::pipe")]
+    public static extern long Pipe(out OpenFile* readEnd, out OpenFile* writeEnd);
+
     [Native("::neko::vfs::stat")]
     public static extern long Stat(string path, out FileStat stat);
 

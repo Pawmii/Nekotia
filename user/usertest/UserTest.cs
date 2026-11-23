@@ -6,6 +6,9 @@
 //   usertest parent                  waits for a `usertest sleep` child forever
 //   usertest texit | tfault          a second thread calls exit(9) / dereferences null
 //   usertest cwd                     prints its working directory (for the inheritance check)
+//   usertest flood                   writes to stdout forever (broken-pipe check)
+//   usertest churn                   maps fresh memory in a loop, for many copies at once (allocator stress)
+//   usertest piperead                waits on a pipe nobody writes to (kill check)
 using Nekotia;
 using Nekotia.User;
 
@@ -59,6 +62,32 @@ public static unsafe class Program
                 Thread.Start(Str.Equals(mode, "texit") ? &ExitFromThread : &FaultInThread);
                 while (true) { Process.Sleep(100000); }
             }
+            if (Str.Equals(mode, "churn"))
+            {
+                for (int round = 0; round < 40; round++)
+                {
+                    byte* p = (byte*)Memory.Alloc(64 * 1024 + (ulong)round * 4096);   // grows: new pages from the kernel
+                    if (p == null)
+                        return 1;
+                    for (int i = 0; i < 64 * 1024; i += 4096)
+                        p[i] = (byte)i;
+                    Memory.Free(p);
+                }
+                return 0;
+            }
+            if (Str.Equals(mode, "flood"))
+            {
+                byte* chunk = stackalloc byte[512];
+                while (true)
+                    File.WriteBytes(1, chunk, 512);
+            }
+            if (Str.Equals(mode, "piperead"))
+            {
+                int r = 0, w = 0;
+                File.Pipe(out r, out w);
+                byte* b = stackalloc byte[4];
+                return (int)File.ReadBytes(r, b, 4);
+            }
             if (Str.Equals(mode, "cwd"))
             {
                 byte* cwd = stackalloc byte[File.MaxPath];
@@ -76,6 +105,7 @@ public static unsafe class Program
         Children();
         Threads();
         Files();
+        Pipes();
 
         if (_verbose || _failed > 0)
             Console.WriteLine($"usertest: {_passed} passed, {_failed} failed");
@@ -250,6 +280,82 @@ public static unsafe class Program
         Check(File.Delete("f") == 0 && File.Delete("out") == 0 && File.Delete("cwd.txt") == 0 && File.ChangeDirectory("/") == 0
               && File.Delete("/tmp/usertest") == 0, "remove files and the directory");
         Check(ReadAll(Str.Bytes("/etc/motd"), buf, 8) == 7 && Str.StartsWith(buf, "Things "), "read a file from the initrd");
+    }
+
+    // ---------------------------------------------------------------- pipes
+
+    const int PipeBytes = 200000;   // more than the 64 KiB buffer: the writer has to wait (whole 1000-byte chunks)
+    static int _pipeWriter;
+
+    static void PipeWriter(ulong unused)
+    {
+        byte* chunk = stackalloc byte[1000];
+        for (int sent = 0; sent < PipeBytes; sent += 1000)
+        {
+            for (int i = 0; i < 1000; i++)
+                chunk[i] = (byte)((sent + i) * 7);
+            File.WriteBytes(_pipeWriter, chunk, 1000);
+        }
+        File.Close(_pipeWriter);
+    }
+
+    static void Pipes()
+    {
+        byte* buf = stackalloc byte[4096];
+        int r = 0, w = 0;
+        Check(File.Pipe(out r, out w) == 0 && r >= 3 && w > r, "pipe() gives two new fds");
+        Check(File.WriteBytes(w, Str.Bytes("hey"), 3) == 3 && File.ReadBytes(r, buf, 16) == 3 && buf[2] == 'y', "write → read");
+
+        // A child's stdout into the pipe.
+        long saved = File.Duplicate(1);
+        File.Redirect(w, 1);
+        long child = Process.Start("echo", "through a pipe");
+        File.Redirect((int)saved, 1);
+        File.Close((int)saved);
+        File.Close(w);   // the child holds the only write end now
+        long got = 0;
+        while (true)
+        {
+            long n = File.ReadBytes(r, buf + got, 64);
+            if (n <= 0)
+                break;
+            got += n;
+        }
+        buf[got] = 0;
+        Check(child > 0 && Process.Wait((uint)child) == 0 && got == 15 && Str.StartsWith(buf, "through a pipe"),
+              "a child's output arrives through a pipe, then end of input");
+        File.Close(r);
+
+        // 200 KiB from a second thread: the writer blocks on the full buffer, the reader drains it.
+        File.Pipe(out r, out _pipeWriter);
+        ulong t = Thread.Start(&PipeWriter);
+        long total = 0;
+        bool same = true;
+        while (true)
+        {
+            long n = File.ReadBytes(r, buf, 4096);
+            if (n <= 0)
+                break;
+            for (long i = 0; i < n; i++)
+                same &= buf[i] == (byte)((total + i) * 7);
+            total += n;
+        }
+        Thread.Join(t);
+        File.Close(r);
+        if (total != PipeBytes || !same)
+            Console.WriteLine($"  pipe: got {total} bytes, in order: {(same ? 1 : 0)}");
+        Check(total == PipeBytes && same, "200 KB through a 64 KiB pipe, in order");
+
+        // Nobody reads: the writer is ended with 141 (like SIGPIPE).
+        File.Pipe(out r, out w);
+        File.Close(r);
+        saved = File.Duplicate(1);
+        File.Redirect(w, 1);
+        child = Process.Start("usertest", "flood");
+        File.Redirect((int)saved, 1);
+        File.Close((int)saved);
+        File.Close(w);
+        Check(child > 0 && Process.Wait((uint)child) == Process.ExitBrokenPipe, "writing to a pipe without readers ends the writer (141)");
     }
 
     static void ExitFromThread(ulong arg)

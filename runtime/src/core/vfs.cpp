@@ -107,6 +107,7 @@ void release(Node* n) {
     if (--n->refs > 0) return;
     drop_data(n);
     if (n->fs_ops && n->fs_data && !n->mount_root) n->fs_ops->release(n->fs, n->fs_data);
+    if (n->type == Type::Device && n->ops->release) n->ops->release(n->context);
     heap::free(n);
     --g_nodes;
 }
@@ -330,9 +331,102 @@ int64_t zero_read(void*, uint64_t, void* buffer, uint64_t length) {
     return int64_t(length);
 }
 
-const DeviceOps kConsoleOps = {console_read, console_write, nullptr};
-const DeviceOps kNullOps = {null_read, null_write, nullptr};
-const DeviceOps kZeroOps = {zero_read, null_write, nullptr};
+const DeviceOps kConsoleOps = {console_read, console_write, nullptr, nullptr, nullptr};
+const DeviceOps kNullOps = {null_read, null_write, nullptr, nullptr, nullptr};
+const DeviceOps kZeroOps = {zero_read, null_write, nullptr, nullptr, nullptr};
+
+// ---------------------------------------------------------------- pipes
+
+constexpr uint32_t kPipeSize = 64 * 1024;
+
+struct Pipe {
+    sync::SpinLock lock;
+    uint8_t* data;
+    uint32_t head;   // next byte to read
+    uint32_t count;  // bytes buffered
+    uint32_t readers, writers;  // open ends
+    uint32_t waiting_readers, waiting_writers;
+    sync::Semaphore readable, writable;  // "something changed" for the waiters
+};
+
+// Wakes everyone waiting on one side (pipe lock held); they re-check and wait again if needed.
+void wake(sync::Semaphore& s, uint32_t& waiting) {
+    while (waiting) {
+        --waiting;
+        s.signal();
+    }
+}
+
+int64_t pipe_read(void* context, uint64_t, void* buffer, uint64_t length) {
+    auto* p = static_cast<Pipe*>(context);
+    auto* out = static_cast<uint8_t*>(buffer);
+    if (length == 0) return 0;
+    for (;;) {
+        p->lock.lock();
+        if (p->count > 0) {
+            uint64_t n = p->count < length ? p->count : length;
+            for (uint64_t i = 0; i < n; ++i) out[i] = p->data[(p->head + i) % kPipeSize];
+            p->head = uint32_t((p->head + n) % kPipeSize);
+            p->count -= uint32_t(n);
+            wake(p->writable, p->waiting_writers);
+            p->lock.unlock();
+            return int64_t(n);
+        }
+        if (p->writers == 0) {
+            p->lock.unlock();
+            return 0;  // end of input
+        }
+        ++p->waiting_readers;
+        p->lock.unlock();
+        if (!p->readable.wait_interruptible()) return kErrInterrupted;
+    }
+}
+
+int64_t pipe_write(void* context, uint64_t, const void* buffer, uint64_t length) {
+    auto* p = static_cast<Pipe*>(context);
+    auto* in = static_cast<const uint8_t*>(buffer);
+    uint64_t done = 0;
+    while (done < length) {
+        p->lock.lock();
+        if (p->readers == 0) {
+            p->lock.unlock();
+            return kErrBrokenPipe;
+        }
+        if (p->count < kPipeSize) {
+            uint64_t n = kPipeSize - p->count;
+            if (n > length - done) n = length - done;
+            uint32_t tail = (p->head + p->count) % kPipeSize;
+            for (uint64_t i = 0; i < n; ++i) p->data[(tail + i) % kPipeSize] = in[done + i];
+            p->count += uint32_t(n);
+            done += n;
+            wake(p->readable, p->waiting_readers);
+            p->lock.unlock();
+            continue;
+        }
+        ++p->waiting_writers;
+        p->lock.unlock();
+        if (!p->writable.wait_interruptible()) return done ? int64_t(done) : kErrInterrupted;
+    }
+    return int64_t(done);
+}
+
+void pipe_close(void* context, uint32_t flags) {
+    auto* p = static_cast<Pipe*>(context);
+    p->lock.lock();
+    if (flags & kRead) --p->readers;
+    if (flags & kWrite) --p->writers;
+    wake(p->readable, p->waiting_readers);  // readers see the end, writers see the broken pipe
+    wake(p->writable, p->waiting_writers);
+    p->lock.unlock();
+}
+
+void pipe_release(void* context) {
+    auto* p = static_cast<Pipe*>(context);
+    heap::free(p->data);
+    heap::free(p);
+}
+
+const DeviceOps kPipeOps = {pipe_read, pipe_write, nullptr, pipe_close, pipe_release};
 
 Node* make_dir_locked(Node* dir, const char* name) {
     Node* existing = child(dir, name, uint32_t(str::length(name)));
@@ -690,6 +784,8 @@ File* dup(File* f) {
 
 void close(File* f) {
     if (!f || __atomic_sub_fetch(&f->refs, 1, __ATOMIC_ACQ_REL) > 0) return;
+    Node* n = f->node;
+    if (n->type == Type::Device && n->ops->close) n->ops->close(n->context, f->flags);
     {
         Locked guard;
         release(f->node);
@@ -699,6 +795,38 @@ void close(File* f) {
 }
 
 uint32_t flags(File* f) { return f ? f->flags : 0; }
+
+int64_t pipe(File*& read_end, File*& write_end) {
+    read_end = write_end = nullptr;
+    auto* p = static_cast<Pipe*>(heap::alloc_zeroed(sizeof(Pipe)));
+    uint8_t* data = static_cast<uint8_t*>(heap::alloc(kPipeSize));
+    if (!p || !data) {
+        heap::free(p);
+        heap::free(data);
+        return kErrNoMemory;
+    }
+    p->data = data;
+    p->readers = p->writers = 1;
+    Locked guard;
+    Node* n = new_node("pipe", 4, Type::Device);  // anonymous: never linked into the tree
+    if (!n) {
+        pipe_release(p);
+        return kErrNoMemory;
+    }
+    n->ops = &kPipeOps;
+    n->context = p;
+    read_end = new_file(n, kRead);
+    write_end = new_file(n, kWrite);
+    if (!read_end || !write_end) {  // undo without the close callbacks (nothing waits yet)
+        if (read_end) { --n->refs; --g_open_files; heap::free(read_end); }
+        if (write_end) { --n->refs; --g_open_files; heap::free(write_end); }
+        read_end = write_end = nullptr;
+        release(n);
+        return kErrNoMemory;
+    }
+    release(n);  // the creation reference: the two open files keep it alive
+    return 0;
+}
 
 // ---------------------------------------------------------------- names
 

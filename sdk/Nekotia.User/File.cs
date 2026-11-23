@@ -109,6 +109,11 @@ public static unsafe class File
     [Native("::neko::user::dup2")]
     public static extern long Redirect(int fd, int target);
 
+    /// <summary>A pipe: <paramref name="readFd"/> gets what is written to <paramref name="writeFd"/> (64 KiB buffer).
+    /// Reads return 0 once every write end is closed; a write after every read end is closed ends the program (141).</summary>
+    [Native("::neko::user::pipe")]
+    public static extern long Pipe(out int readFd, out int writeFd);
+
     [Native("::neko::user::truncate")]
     public static extern long SetLength(int fd, ulong size);
 

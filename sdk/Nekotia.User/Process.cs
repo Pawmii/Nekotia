@@ -25,10 +25,10 @@ public static unsafe class Process
 
     /// <summary>File errors.</summary>
     public const long ErrExists = -10, ErrNotDirectory = -11, ErrIsDirectory = -12, ErrNotEmpty = -13, ErrBadFd = -14,
-        ErrTooManyFiles = -15, ErrNameTooLong = -16, ErrBusy = -17, ErrAccess = -18, ErrNotSupported = -19, ErrIo = -20;
+        ErrTooManyFiles = -15, ErrNameTooLong = -16, ErrBusy = -17, ErrAccess = -18, ErrNotSupported = -19, ErrIo = -20, ErrBrokenPipe = -21;
 
     /// <summary>Exit codes set by the kernel: Ctrl+C, kill; a CPU exception gives 128 + vector (142 = page fault).</summary>
-    public const long ExitInterrupted = 130, ExitKilled = 137;
+    public const long ExitInterrupted = 130, ExitKilled = 137, ExitBrokenPipe = 141;
 
     /// <summary>Ends the program with <paramref name="code"/> (what Main returning does too).</summary>
     [Native("::neko::user::exit")]
@@ -95,6 +95,7 @@ public static unsafe class Process
         if (error == ErrAccess) return "access denied";
         if (error == ErrNotSupported) return "not supported";
         if (error == ErrIo) return "I/O error";
+        if (error == ErrBrokenPipe) return "broken pipe";
         return "error";
     }
 
