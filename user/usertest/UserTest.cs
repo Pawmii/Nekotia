@@ -249,7 +249,7 @@ public static unsafe class Program
         Check(entries == 3, "readdir lists f, out, cwd.txt");
         Check(File.Delete("f") == 0 && File.Delete("out") == 0 && File.Delete("cwd.txt") == 0 && File.ChangeDirectory("/") == 0
               && File.Delete("/tmp/usertest") == 0, "remove files and the directory");
-        Check(ReadAll(Str.Bytes("/etc/motd"), buf, 8) == 7 && Str.StartsWith(buf, "Welcome"), "read a file from the initrd");
+        Check(ReadAll(Str.Bytes("/etc/motd"), buf, 8) == 7 && Str.StartsWith(buf, "Things "), "read a file from the initrd");
     }
 
     static void ExitFromThread(ulong arg)

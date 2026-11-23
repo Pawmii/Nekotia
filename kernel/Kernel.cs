@@ -26,6 +26,7 @@ public static unsafe class Kernel
         }
         SelfTest.Run(false);
         MountDisk();
+        Motd();
         Keyboard.Init();
         RunInit((byte*)info->CommandLine);
         Shell.Run();
@@ -74,10 +75,32 @@ public static unsafe class Kernel
         if (Block.Find(dev) < 0)
             return;
         if (!Fat.Probe(dev)) {
+            // A brand-new disk (first sector all zeros, like the fresh build/disk.img) is formatted on the spot;
+            // anything else might be someone's data and is left alone.
+            byte* first = stackalloc byte[512];
+            bool blank = Block.ReadBytes((uint)Block.Find(dev), 0, first, 512) == 512;
+            for (int i = 0; i < 512; i++) {
+                if (first[i] != 0)
+                    blank = false;
+            }
+            if (!blank || Fat.Format(dev, Str.Bytes("NEKOTIA")) < 0) {
+                Terminal.SetColor(AnsiColor.Gray);
+                Terminal.WriteLine("disk: /dev/vda has no FAT32 file system — `mkfs vda` (erases it), then `mount vda /mnt`");
+                Terminal.ResetColor();
+                return;
+            }
             Terminal.SetColor(AnsiColor.Gray);
-            Terminal.WriteLine("disk: /dev/vda has no FAT32 file system — `mkfs vda`, then `mount vda /mnt`");
+            Terminal.WriteLine("disk: /dev/vda was empty — formatted as FAT32");
             Terminal.ResetColor();
-            return;
+            if (Fat.Mount(dev, Str.Bytes("/mnt")) == 0) {
+                OpenFile* f = null;
+                if (Vfs.Open("/mnt/readme.txt", Vfs.Write | Vfs.Create, out f) == 0) {
+                    string text = "This file lives on build/disk.img (FAT32). Everything you put in /mnt survives a reboot.\n";
+                    Vfs.WriteFile(f, Str.Bytes(text), Str.Length(text));
+                    Vfs.Close(f);
+                }
+                Vfs.Unmount(Str.Bytes("/mnt"));
+            }
         }
         long e = Fat.Mount(dev, Str.Bytes("/mnt"));
         if (e < 0) {
@@ -89,6 +112,24 @@ public static unsafe class Kernel
         Vfs.GetMount(0, out m);
         Terminal.SetColor(AnsiColor.Gray);
         Terminal.WriteLine($"disk: /dev/vda (FAT32) mounted on /mnt, {m.FreeBytes:size} free of {m.TotalBytes:size}");
+        Terminal.ResetColor();
+    }
+
+    /// /etc/motd from the initrd, if there is one.
+    static void Motd()
+    {
+        OpenFile* f = null;
+        if (Vfs.Open("/etc/motd", Vfs.Read, out f) < 0)
+            return;
+        byte* buffer = stackalloc byte[1025];
+        long n = Vfs.ReadFile(f, buffer, 1024);
+        Vfs.Close(f);
+        if (n <= 0)
+            return;
+        buffer[n] = 0;
+        Terminal.WriteLine();
+        Terminal.SetColor(AnsiColor.Cyan);
+        Terminal.Write(buffer);
         Terminal.ResetColor();
     }
 

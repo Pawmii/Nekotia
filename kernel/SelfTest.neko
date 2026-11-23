@@ -494,7 +494,7 @@ public static unsafe class SelfTest
         if (Kernel.Info->Hosted)
             return;
         Check(Vfs.Statistics().InitrdEntries > 0 && Vfs.Exists("/bin/sh"), "initrd: unpacked at boot (/bin/sh)");
-        Check(Get("/etc/motd", buf, 16) == 15 && Str.StartsWith(buf, "Welcome"), "initrd: /etc/motd reads straight from the module");
+        Check(Get("/etc/motd", buf, 16) == 15 && Str.StartsWith(buf, "Things to try"), "initrd: /etc/motd reads straight from the module");
     }
 
     /// The block layer on a RAM disk (host mode) or, under `make test` only, on the scratch virtio disk
