@@ -9,7 +9,7 @@ namespace Nekotia.OS;
 
 public static unsafe class Kernel
 {
-    public const string Version = "0.3.0";
+    public const string Version = "0.4.0";
 
     /// Boot information from the runtime, valid for the whole lifetime of the kernel.
     public static BootInfo* Info;
