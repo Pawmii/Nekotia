@@ -52,7 +52,7 @@ GEN_CPP     := $(GEN)/nekotia.gen.cpp
 OPT        ?= -O2
 
 COMMON_FLAGS := -std=c++20 $(OPT) -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable \
-                -Wno-unused-but-set-variable -Wno-parentheses-equality -Wno-deprecated-volatile -fwrapv \
+                -Wno-unused-but-set-variable -Wno-parentheses-equality -Wno-deprecated-volatile -fwrapv -fno-finite-loops \
                 -Iruntime/include -I$(GEN) -MMD -MP
 
 KERNEL_FLAGS := $(COMMON_FLAGS) --target=x86_64-unknown-none-elf -ffreestanding -fno-exceptions -fno-rtti \
@@ -131,7 +131,7 @@ USER_SDK      := $(shell find sdk/Nekotia.User -name '*.cs') $(wildcard sdk/Neko
 USER_RT_SRCS  := runtime/user/src/user.cpp runtime/src/core/math.cpp runtime/src/freestanding/libc.cpp runtime/user/src/crt0.S \
                  runtime/src/common/exceptions.cpp runtime/src/common/jump.S
 USER_FLAGS := -std=c++20 $(OPT) -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable \
-              -Wno-unused-but-set-variable -Wno-parentheses-equality -Wno-deprecated-volatile -fwrapv -MMD -MP \
+              -Wno-unused-but-set-variable -Wno-parentheses-equality -Wno-deprecated-volatile -fwrapv -fno-finite-loops -MMD -MP \
               -Iruntime/user/include -Iruntime/include --target=x86_64-unknown-none-elf -ffreestanding \
               -fno-exceptions -fno-rtti -fno-stack-protector -fno-stack-check -fno-pic -fno-pie \
               -fno-threadsafe-statics -fno-asynchronous-unwind-tables -fno-unwind-tables -mno-mmx -mno-avx \
