@@ -1,5 +1,5 @@
 /* Interrupt stubs for all 256 vectors: normalise the stack (vector + error code),
-   save GPRs, call neko_isr_dispatch(frame). Generated layout, see idt.cpp. */
+   save GPRs and the FPU/SSE state, call neko_isr_dispatch(frame). Generated layout, see idt.cpp. */
 
 .section .text
 
@@ -289,9 +289,13 @@ isr_common:
     pushq %r13
     pushq %r14
     pushq %r15
-    movq %rsp, %rdi
+    movq %rsp, %rdi            /* crash::CpuState* — the GPRs above */
+    subq $512, %rsp            /* FPU/SSE state of the interrupted code (stack is 16-byte aligned here) */
+    fxsave (%rsp)
     cld
     call neko_isr_dispatch
+    fxrstor (%rsp)
+    addq $512, %rsp
     popq %r15
     popq %r14
     popq %r13

@@ -39,6 +39,10 @@ public static unsafe class Terminal
     [Native("::neko::term::write_size")]
     public static extern void WriteSize(ulong bytes);
 
+    /// <summary>Fixed notation with <paramref name="decimals"/> digits. In <c>$"..."</c>: <c>{x}</c> (3 digits) or <c>{x:F2}</c>.</summary>
+    [Native("::neko::term::write_float")]
+    public static extern void WriteFloat(double value, int decimals = 3);
+
     [Native("::neko::console::columns")]
     public static extern uint Columns();
 

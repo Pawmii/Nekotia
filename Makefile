@@ -54,7 +54,7 @@ COMMON_FLAGS := -std=c++20 $(OPT) -g -Wall -Wextra -Wno-unused-parameter -Wno-un
 KERNEL_FLAGS := $(COMMON_FLAGS) --target=x86_64-unknown-none-elf -ffreestanding -fno-exceptions -fno-rtti \
                 -fno-stack-protector -fno-stack-check -fno-pic -fno-pie -fno-threadsafe-statics \
                 -fno-asynchronous-unwind-tables -fno-unwind-tables -mno-red-zone -mcmodel=kernel \
-                -mgeneral-regs-only -mno-80387 -mno-mmx -mno-sse -mno-sse2 \
+                -mno-mmx -mno-avx -fno-math-errno \
                 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -fno-optimize-sibling-calls \
                 -fno-delete-null-pointer-checks \
                 -Iruntime/third_party/limine -DNEKO_HOSTED=0 -DNEKO_HEAP_SIZE=$(HEAP_SIZE)

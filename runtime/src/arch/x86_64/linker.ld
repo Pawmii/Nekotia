@@ -1,6 +1,6 @@
 /* Higher-half kernel image for the Limine boot protocol. */
 OUTPUT_FORMAT(elf64-x86-64)
-ENTRY(kmain)
+ENTRY(neko_entry)
 
 PHDRS
 {

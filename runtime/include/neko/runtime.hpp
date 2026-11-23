@@ -6,6 +6,7 @@
 #include <neko/console.hpp>
 #include <neko/crash.hpp>
 #include <neko/cpu.hpp>
+#include <neko/math.hpp>
 #include <neko/memory.hpp>
 #include <neko/serial.hpp>
 #include <neko/platform.hpp>

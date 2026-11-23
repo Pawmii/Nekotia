@@ -82,6 +82,27 @@ void put_codepoint(Sink put, uint32_t cp) {
     }
 }
 
+void put_float(Sink put, double v, int32_t decimals) {
+    if (v != v) return put_str(put, "NaN");
+    if (v < 0 || (v == 0 && __builtin_signbit(v))) {
+        put('-');
+        v = -v;
+    }
+    if (v > 1.8e19) return put_str(put, "∞");  // beyond uint64: good enough for kernel output
+    if (decimals < 0) decimals = 0;
+    if (decimals > 9) decimals = 9;
+    uint64_t scale = 1;
+    for (int i = 0; i < decimals; ++i) scale *= 10;
+    uint64_t whole = uint64_t(v);
+    uint64_t frac = uint64_t((v - double(whole)) * double(scale) + 0.5);
+    if (frac >= scale) ++whole, frac -= scale;  // rounding carried into the integer part
+    put_udec(put, whole);
+    if (decimals == 0) return;
+    put('.');
+    for (uint64_t d = scale / 10; d > 1 && frac < d; d /= 10) put('0');
+    put_udec(put, frac);
+}
+
 void term_put(uint8_t c) {
     serial::write_char(c);
     console::put_byte(c);
@@ -107,6 +128,7 @@ void write_hex(uint64_t value) { put_hex(term_put, value); }
 void write_dec(int64_t value) { put_dec(term_put, value); }
 void write_udec(uint64_t value) { put_udec(term_put, value); }
 void write_size(uint64_t bytes) { put_size(term_put, bytes); }
+void write_float(double value, int32_t decimals) { put_float(term_put, value, decimals); }
 }  // namespace term
 
 namespace str {

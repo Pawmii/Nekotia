@@ -37,7 +37,9 @@ sealed partial class CppEmitter
             return text;
         if (info.ConvertedType.TypeKind == TypeKind.Enum && TypeMapper.IsNumeric(info.Type))
             return $"(({Map(info.ConvertedType, e)})({text}))"; // C# lets the literal 0 convert to any enum
-        if (!TypeMapper.IsNumeric(info.Type) || !TypeMapper.IsNumeric(info.ConvertedType))
+        bool numeric = (TypeMapper.IsNumeric(info.Type) || TypeMapper.IsFloating(info.Type)) &&
+                       (TypeMapper.IsNumeric(info.ConvertedType) || TypeMapper.IsFloating(info.ConvertedType));
+        if (!numeric)
             return text;
         var cv = _model.GetConstantValue(e);
         if (cv.HasValue && cv.Value is char or byte or ushort or uint or ulong ||
@@ -508,8 +510,15 @@ sealed partial class CppEmitter
     string NumericLiteral(LiteralExpressionSyntax lit)
     {
         var type = TypeOf(lit);
-        if (type?.SpecialType is SpecialType.System_Single or SpecialType.System_Double or SpecialType.System_Decimal)
-            return Map(type, lit); // reports the floating point error
+        if (type?.SpecialType is SpecialType.System_Decimal)
+            return Map(type, lit); // reports the error
+        if (TypeMapper.IsFloating(type))
+        {
+            var f = lit.Token.Text.TrimEnd('f', 'F', 'd', 'D').Replace("_", "");
+            if (!f.Contains('.') && !f.Contains('e') && !f.Contains('E'))
+                f += ".0";
+            return type!.SpecialType == SpecialType.System_Single ? f + "f" : f;
+        }
 
         var text = lit.Token.Text.TrimEnd('u', 'U', 'l', 'L').Replace('_', '\'');
         text = text.Replace("0x'", "0x").Replace("0X'", "0X").Replace("0b'", "0b").Replace("0B'", "0B");
@@ -547,6 +556,10 @@ sealed partial class CppEmitter
                 return l == long.MinValue ? "(-9223372036854775807L - 1)" : l.ToString(CultureInfo.InvariantCulture) + "L";
             case ulong ul:
                 return ul.ToString(CultureInfo.InvariantCulture) + "UL";
+            case float f:
+                return FloatConstant(f, "f");
+            case double d:
+                return FloatConstant(d, "");
             case sbyte or byte or short or ushort:
                 return Convert.ToInt32(value, CultureInfo.InvariantCulture).ToString(CultureInfo.InvariantCulture);
             default:
@@ -647,6 +660,13 @@ sealed partial class CppEmitter
                 case { SpecialType: SpecialType.System_Boolean }:
                     parts.Add(Call(writeString, $"(({value}) ? \"true\" : \"false\")", hole, "a bool"));
                     break;
+                case { SpecialType: SpecialType.System_Single or SpecialType.System_Double }:
+                    var digits = format is { Length: 2 } && format[0] is 'F' or 'f' && char.IsDigit(format[1]) ? format[1] - '0' : 3;
+                    var writeFloat = type.GetMembers("WriteFloat").OfType<IMethodSymbol>().FirstOrDefault();
+                    parts.Add(writeFloat is null
+                        ? Unsupported(hole, "interpolating a floating-point value", $"'{type.Name}' has no WriteFloat(double, int)")
+                        : $"{Symbols.NativeName(writeFloat) ?? Qualified(type) + "::WriteFloat"}((double)({value}), {digits})");
+                    break;
                 case { SpecialType: SpecialType.System_Char }:
                     parts.Add(Call(Find("WriteCodepoint", SpecialType.System_UInt32) ?? Find("WriteChar", SpecialType.System_Byte), value, hole, "a char"));
                     break;
@@ -683,6 +703,16 @@ sealed partial class CppEmitter
     IMethodSymbol? FindPointerWrite(INamedTypeSymbol type) =>
         type.GetMembers("Write").OfType<IMethodSymbol>().FirstOrDefault(m =>
             m.Parameters is [{ Type: IPointerTypeSymbol { PointedAtType.SpecialType: SpecialType.System_Byte } }]);
+
+    static string FloatConstant(double v, string suffix)
+    {
+        if (double.IsNaN(v)) return suffix == "f" ? "__builtin_nanf(\"\")" : "__builtin_nan(\"\")";
+        if (double.IsInfinity(v)) return (v < 0 ? "-" : "") + (suffix == "f" ? "__builtin_inff()" : "__builtin_inf()");
+        var text = suffix == "f" ? ((float)v).ToString("R", CultureInfo.InvariantCulture) : v.ToString("R", CultureInfo.InvariantCulture);
+        if (!text.Contains('.') && !text.Contains('E'))
+            text += ".0";
+        return text + suffix;
+    }
 
     static string CharLiteral(char c) => c is >= ' ' and <= '~' and not '\'' and not '\\'
         ? $"u'{c}'"

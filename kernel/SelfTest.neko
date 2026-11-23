@@ -156,6 +156,16 @@ public static unsafe class SelfTest
         Arch.Pause();
         Check(true, "asm block compiles");
 
+        double root2 = Maths.Sqrt(2.0);
+        float half = 0.5f;
+        int whole = 7;
+        double mixed = whole / 2.0 + half;   // int → double promotion like C#
+        Check(Maths.Abs(root2 - 1.41421356237) < 1e-9 && mixed == 4.0, "float/double arithmetic (SSE)");
+        Check(Maths.Abs(Maths.Sin(Maths.Pi / 6) - 0.5) < 1e-12 && Maths.Abs(Maths.Cos(Maths.Pi) + 1) < 1e-12 &&
+              Maths.Abs(Maths.Log(Maths.Exp(3.0)) - 3.0) < 1e-12 && Maths.Pow(2.0, 10.0) == 1024.0,
+              "Maths: sin, cos, exp, log, pow");
+        Check((int)(-2.7) == -2 && Maths.Floor(-2.5) == -3.0 && Maths.Atan2(1.0, 1.0) - Maths.Pi / 4 < 1e-12, "float → int truncation, floor, atan2");
+
         const string table = "aй€";
         Check(table.Length == 3 && table[1] == 'й' && table[2] == 0x20AC, "constant string indexing (UTF-16 semantics)");
     }

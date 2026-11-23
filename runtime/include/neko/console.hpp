@@ -42,5 +42,6 @@ void write_hex(uint64_t value);
 void write_dec(int64_t value);
 void write_udec(uint64_t value);
 void write_size(uint64_t bytes);
+void write_float(double value, int32_t decimals);  // fixed notation, e.g. 3.142
 
 }  // namespace neko::term

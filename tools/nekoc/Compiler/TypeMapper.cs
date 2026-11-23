@@ -48,10 +48,11 @@ sealed class TypeMapper(DiagnosticSink diag)
             case SpecialType.System_IntPtr: return "intptr_t";
             case SpecialType.System_UIntPtr: return "uintptr_t";
             case SpecialType.System_String: return "const char*";
-            case SpecialType.System_Single:
-            case SpecialType.System_Double:
-                diag.Error("NEKO0201", "floating point is not available in the kernel yet (SSE state is not saved) — see ROADMAP phase 4", at?.GetLocation());
-                return "int32_t";
+            case SpecialType.System_Single: return "float";
+            case SpecialType.System_Double: return "double";
+            case SpecialType.System_Decimal:
+                diag.Error("NEKO0201", "decimal is not supported — use double or fixed-point integers", at?.GetLocation());
+                return "double";
         }
 
         if (type is INamedTypeSymbol named)
@@ -75,6 +76,8 @@ sealed class TypeMapper(DiagnosticSink diag)
         var ns = Symbols.NamespacePath(type.ContainingNamespace);
         return ns.Length == 0 ? "::" + Symbols.Escape(type.Name) : $"::{ns}::{Symbols.Escape(type.Name)}";
     }
+
+    public static bool IsFloating(ITypeSymbol? t) => t?.SpecialType is SpecialType.System_Single or SpecialType.System_Double;
 
     public static bool IsNumeric(ITypeSymbol? t) => t?.SpecialType is
         SpecialType.System_SByte or SpecialType.System_Byte or SpecialType.System_Int16 or SpecialType.System_UInt16 or
