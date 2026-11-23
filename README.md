@@ -135,6 +135,9 @@ shell, сетевой стек, `/proc`, драйвер клавиатуры, с
 
 - **Экран смерти** показывает тип исключения в терминах .NET (`NullReferenceException`, `StackOverflowException`…),
   место в C#-файле, стек вызовов и регистры. Проверить все варианты: `crash null|div|throw|assert|pf|gp|ud|stack|nx|wp|deadlock`.
+- **Расширение VS Code** (`make vscode-ext`) с language server `nekoc lsp`: автодополнение, подсказки, переход к
+  определению — для `[Native]`-методов прямо в C++-рантайм, ссылки, переименование, ошибки nekoc на лету, и всё это
+  в `.neko` тоже. Сервер стандартный (LSP по stdio), подключается и к Neovim, Helix, Zed.
 - **F5 в VS Code** собирает отладочное ядро, запускает QEMU с gdb и останавливается на точках останова прямо в `.cs` и
   `.neko`. Без VS Code: `make debug` и `gdb build/debug/nekotia.elf -ex 'target remote :1234'`.
 - **`make run-host`** запускает ядро как обычный Linux-процесс с ASan/UBSan — быстрый прогон самотестов.
@@ -150,7 +153,8 @@ shell, сетевой стек, `/proc`, драйвер клавиатуры, с
 | `make debug` | отладочная сборка, QEMU ждёт gdb на `:1234` |
 | `make iso`, `make kernel`, `make user`, `make initrd` | отдельные этапы сборки |
 | `make check` | только диагностика nekoc |
-| `make vscode-ext` | расширение VS Code: подсветка `.neko`, сниппеты, ошибки nekoc, «показать C++ для строки» |
+| `make vscode-ext` | расширение VS Code: language server, подсветка `.neko`, сниппеты, «показать C++ для метода» |
+| `make test-lsp` | тесты language server и клиента VS Code |
 | `make doctor`, `make clean` | проверить инструменты, удалить `build/` |
 
 ## Структура репозитория
@@ -177,7 +181,7 @@ shell, сетевой стек, `/proc`, драйвер клавиатуры, с
 | 4. Многозадачность | ✅ потоки, SMP, мьютексы и семафоры, обнаружение deadlock |
 | 5. Пользовательский режим | ✅ процессы, ELF, системные вызовы на C#, SMEP/SMAP, futex, TLS |
 | 6. Драйверы и файловые системы | ✅ PCI, virtio, AHCI, NVMe, xHCI, VFS, FAT32, `/proc`, каналы, TCP/IP |
-| 7. Инструменты разработчика | ⏳ language server, отладка в один клик |
+| 7. Инструменты разработчика | 🚧 language server ✅; дальше — отладка в один клик, шаблоны, документация SDK |
 | 8. Графика | ⏳ композитор окон, шрифты, GUI-программы |
 
 Подробный план и то, что осталось в каждой фазе, — в [ROADMAP.md](ROADMAP.md).

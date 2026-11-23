@@ -1,7 +1,10 @@
 // Nekotia VS Code extension — plain JavaScript, no dependencies (no npm needed).
 //
 //  * .neko language: C# grammar + sugar injection (syntaxes/)
-//  * nekoc diagnostics on save (nekoc check --format json)
+//  * the nekoc language server (`nekoc lsp`, lsp-client.js): completion, hover, go to definition (into the
+//    C++ runtime for [Native]), references, rename, outline, semantic highlighting, live diagnostics
+//    including nekoc's own checks, "C++" lenses
+//  * without the server: nekoc diagnostics on save (nekoc check --format json)
 //  * commands: build / run in QEMU / host mode / gdb, show desugared C#, jump to generated C++
 //  * hover docs for the sugar keywords
 'use strict';
@@ -10,6 +13,7 @@ const vscode = require('vscode');
 const cp = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { LspClient } = require('./lsp-client');
 
 let diagnostics;
 let output;
@@ -17,6 +21,8 @@ let checkTimer;
 let checkRunning = false;
 let checkQueued = false;
 let warnedMissingNekoc = false;
+let lsp;
+let lspDiagnostics;
 
 function activate(context) {
     diagnostics = vscode.languages.createDiagnosticCollection('nekoc');
@@ -33,9 +39,10 @@ function activate(context) {
         vscode.commands.registerCommand('nekotia.check', () => runCheck(true)),
         vscode.commands.registerCommand('nekotia.showDesugared', showDesugared),
         vscode.commands.registerCommand('nekotia.showGeneratedCpp', showGeneratedCpp),
+        vscode.commands.registerCommand('nekotia.restartLanguageServer', () => restartLanguageServer(true)),
         vscode.languages.registerHoverProvider('nekotia', { provideHover }),
         vscode.workspace.onDidSaveTextDocument((doc) => {
-            if (!config().get('checkOnSave')) return;
+            if (lsp || !config().get('checkOnSave')) return;   // the server checks continuously
             if (doc.languageId === 'nekotia' || doc.fileName.endsWith('.cs')) scheduleCheck();
         }),
     );
@@ -47,10 +54,92 @@ function activate(context) {
     context.subscriptions.push(status);
     if (workspaceRoot()) status.show();
 
-    if (workspaceRoot() && config().get('checkOnSave')) scheduleCheck();
+    lspDiagnostics = vscode.languages.createDiagnosticCollection('nekoc-lsp');
+    context.subscriptions.push(
+        lspDiagnostics,
+        vscode.workspace.onDidOpenTextDocument((doc) => lsp && lsp.didOpen(doc)),
+        vscode.workspace.onDidChangeTextDocument((e) => lsp && lsp.didChange(e)),
+        vscode.workspace.onDidCloseTextDocument((doc) => lsp && lsp.didClose(doc)),
+        vscode.workspace.onDidChangeConfiguration((e) => {
+            if (e.affectsConfiguration('nekotia.languageServer')) restartLanguageServer(false);
+        }),
+    );
+    const root = workspaceRoot();
+    if (root) {
+        const sources = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, '**/*.{cs,neko}'));
+        const forward = (type) => (uri) => {
+            if (lsp && !uri.fsPath.startsWith(path.join(root, 'build') + path.sep)) lsp.fileChanged(uri, type);
+        };
+        sources.onDidCreate(forward(1));
+        sources.onDidChange(forward(2));
+        sources.onDidDelete(forward(3));
+        // `make tools` rebuilt nekoc: run the new server.
+        const dll = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, config().get('nekocPath')));
+        let rebuilt;
+        const onDll = () => {
+            clearTimeout(rebuilt);
+            rebuilt = setTimeout(() => restartLanguageServer(false), 1500);
+        };
+        dll.onDidChange(onDll);
+        dll.onDidCreate(onDll);
+        context.subscriptions.push(sources, dll);
+    }
+
+    if (!startLanguageServer() && root && config().get('checkOnSave')) scheduleCheck();
 }
 
-function deactivate() {}
+function deactivate() {
+    return lsp ? lsp.stop() : undefined;
+}
+
+// ---------------------------------------------------------------- language server
+
+/** .cs files go to the server too unless the C# extension already serves them (setting: auto). */
+function serverTakesCsharp() {
+    const mode = config().get('languageServer.csharpFiles');
+    if (mode === 'always') return true;
+    if (mode === 'never') return false;
+    return !vscode.extensions.getExtension('ms-dotnettools.csharp');
+}
+
+function startLanguageServer() {
+    const root = workspaceRoot();
+    if (!root || !config().get('languageServer.enabled')) return false;
+    const nekoc = nekocCommand(root);
+    if (!nekoc.exists) {
+        output.appendLine(`nekoc lsp: ${nekoc.dll} is not built yet — run \`make tools\`; the server starts by itself afterwards.`);
+        return false;
+    }
+    const csharp = serverTakesCsharp();
+    const inRoot = (uri) => uri.scheme === 'file' && uri.fsPath.startsWith(root + path.sep) && !uri.fsPath.startsWith(path.join(root, 'build') + path.sep);
+    lsp = new LspClient({
+        command: nekoc.dotnet,
+        args: [nekoc.dll, 'lsp'],
+        cwd: root,
+        root,
+        output,
+        diagnostics: lspDiagnostics,
+        wantsDocument: (doc) => inRoot(doc.uri) && (doc.languageId === 'nekotia' || (csharp && doc.languageId === 'csharp')),
+        // With the C# extension, Roslyn's own errors in .cs files are already shown: keep only nekoc's.
+        filterDiagnostic: (uri, d) => csharp || !uri.fsPath.endsWith('.cs') || d.source === 'nekoc',
+    });
+    const selector = [{ language: 'nekotia', scheme: 'file' }];
+    if (csharp) selector.push({ language: 'csharp', scheme: 'file' });
+    lsp.start().then(() => lsp && lsp.register(selector)).catch((e) => output.appendLine(`nekoc lsp: ${e.message}`));
+    diagnostics.clear();   // the CLI check's results are superseded
+    return true;
+}
+
+async function restartLanguageServer(explicit) {
+    if (lsp) {
+        const old = lsp;
+        lsp = undefined;
+        await old.stop();
+        lspDiagnostics.clear();
+    }
+    const started = startLanguageServer();
+    if (explicit) vscode.window.setStatusBarMessage(started ? '$(sync) nekoc language server restarted' : '$(warning) nekoc is not built — run make tools', 4000);
+}
 
 // ---------------------------------------------------------------- helpers
 
@@ -188,19 +277,23 @@ function showDesugared() {
  * Opens build/gen/nekotia.gen.cpp at the C++ generated for the current C# line.
  * nekoc writes `#line N "file"` before every statement, so we look for the closest one.
  */
-async function showGeneratedCpp() {
+async function showGeneratedCpp(uriArg, lineArg) {
     const editor = vscode.window.activeTextEditor;
     const root = requireRoot();
-    if (!editor || !root) return;
+    if (!root || (!editor && !uriArg)) return;
+    const source = uriArg ? vscode.Uri.parse(uriArg).fsPath : editor.document.fileName;
+    const wanted = lineArg || editor.selection.active.line + 1;
 
-    const genPath = path.join(root, 'build', 'gen', 'nekotia.gen.cpp');
+    // user/<name>/… is a program with its own generated C++; everything else is the kernel.
+    const rel = path.relative(root, source).split(path.sep);
+    const genPath = rel[0] === 'user' && rel.length > 2
+        ? path.join(root, 'build', 'user', rel[1], 'gen', 'nekotia.gen.cpp')
+        : path.join(root, 'build', 'gen', 'nekotia.gen.cpp');
     if (!fs.existsSync(genPath)) {
         vscode.window.showWarningMessage('Nekotia: no generated C++ yet — run `make gen` (or Nekotia: Build Kernel).');
         return;
     }
 
-    const source = editor.document.fileName;
-    const wanted = editor.selection.active.line + 1;
     const lines = fs.readFileSync(genPath, 'utf8').split('\n');
     const re = /^#line (\d+) "(.*)"$/;
     let best = -1;

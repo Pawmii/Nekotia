@@ -28,6 +28,9 @@ jobs:
       - name: nekoc tests
         run: make test-nekoc
 
+      - name: language server tests
+        run: make test-lsp
+
       - name: Diagnostics (kernel and programs)
         run: make check
 

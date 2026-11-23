@@ -6,6 +6,7 @@ using Nekotia.Compiler.Sugar;
 //   nekoc build   [--config nekotia.json] [--format text|json]
 //   nekoc check   [--config nekotia.json] [--format text|json]
 //   nekoc desugar <file.neko>
+//   nekoc lsp      (Language Server Protocol over stdio, for editors)
 //   nekoc version
 
 var argList = args.ToList();
@@ -23,6 +24,9 @@ string format = TakeOption(argList, "--format") ?? "text";
 
 switch (command)
 {
+    case "lsp":
+        return new Nekotia.Compiler.Lsp.LanguageServer(Console.OpenStandardInput(), Console.OpenStandardOutput()).Run();
+
     case "version":
         Console.WriteLine($"nekoc {typeof(Driver).Assembly.GetName().Version?.ToString(3)}");
         return 0;
@@ -98,6 +102,7 @@ static void PrintUsage()
           nekoc build   [--config nekotia.json] [--format text|json]   transpile the kernel to C++
           nekoc check   [--config nekotia.json] [--format text|json]   only report diagnostics
           nekoc desugar <file.neko> [--out file.cs]                    print a .neko file as plain C#
+          nekoc lsp                                                     language server for editors (stdio)
           nekoc version
         """);
 }

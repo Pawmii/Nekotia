@@ -70,7 +70,7 @@ HOST_FLAGS := $(COMMON_FLAGS) -O1 -DNEKO_HOSTED=1 $(HOST_SAN)
 KERNEL_OBJS := $(patsubst %,$(BUILD)/kernel/%.o,$(KERNEL_SRCS) $(KERNEL_ASM)) $(BUILD)/kernel/gen.o
 HOST_OBJS   := $(patsubst %,$(BUILD)/host/%.o,$(HOST_SRCS) $(CORE_ASM)) $(BUILD)/host/gen.o
 
-.PHONY: all kernel gen check test-nekoc host run-host iso run run-uefi debug test doctor tools clean vscode-ext user initrd
+.PHONY: all kernel gen check test-nekoc test-lsp host run-host iso run run-uefi debug test doctor tools clean vscode-ext user initrd
 
 all: kernel
 
@@ -90,6 +90,12 @@ $(GEN_CPP): $(NEKOC_DLL) $(CS_SOURCES) nekotia.json
 # nekoc's own tests: expected diagnostics, and valid code whose C++ must compile (tests/nekoc/).
 test-nekoc: $(NEKOC_DLL)
 	@python3 -I tests/nekoc/run.py
+
+# The language server: an editor session over stdio (python), then the VS Code client against it
+# (node, or VS Code's own node when only VS Code is installed).
+test-lsp: $(NEKOC_DLL)
+	@python3 -I tests/lsp/run.py
+	@scripts/run-js.sh tests/lsp/client-test.js
 
 check: $(NEKOC_DLL)
 	$(NEKOC) check

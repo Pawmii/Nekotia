@@ -2,7 +2,7 @@
   "name": "vscode-nekotia",
   "displayName": "Nekotia",
   "description": "Nekotia OS tooling: .neko syntax (C# + kernel sugar), nekoc diagnostics, build / QEMU commands, jump to generated C++.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "nekotia",
   "license": "MIT",
   "engines": {
@@ -112,6 +112,39 @@
         "title": "Show Generated C++ for This Line",
         "category": "Nekotia",
         "icon": "$(go-to-file)"
+      },
+      {
+        "command": "nekotia.restartLanguageServer",
+        "title": "Restart Language Server",
+        "category": "Nekotia"
+      }
+    ],
+    "semanticTokenModifiers": [
+      {
+        "id": "native",
+        "description": "Implemented in the C++ runtime ([Native] / extern)"
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "nekotia",
+        "scopes": {
+          "method.native": ["support.function.native.neko"],
+          "function.native": ["support.function.native.neko"],
+          "struct.native": ["support.type.native.neko"],
+          "class.native": ["support.class.native.neko"],
+          "enum.native": ["support.type.native.neko"]
+        }
+      },
+      {
+        "language": "csharp",
+        "scopes": {
+          "method.native": ["support.function.native.neko"],
+          "function.native": ["support.function.native.neko"],
+          "struct.native": ["support.type.native.neko"],
+          "class.native": ["support.class.native.neko"],
+          "enum.native": ["support.type.native.neko"]
+        }
       }
     ],
     "menus": {
@@ -156,7 +189,28 @@
         "nekotia.checkOnSave": {
           "type": "boolean",
           "default": true,
-          "description": "Run `nekoc check` when a .neko / .cs file is saved and show its diagnostics."
+          "description": "Without the language server: run `nekoc check` when a .neko / .cs file is saved and show its diagnostics."
+        },
+        "nekotia.languageServer.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run the nekoc language server (`nekoc lsp`): completion, go to definition (also into the C++ runtime), references, rename, semantic highlighting and live diagnostics in .neko files."
+        },
+        "nekotia.languageServer.csharpFiles": {
+          "type": "string",
+          "enum": ["auto", "always", "never"],
+          "default": "auto",
+          "enumDescriptions": [
+            "Serve .cs files only when the C# extension is not installed (nekoc's own diagnostics are shown either way)",
+            "Always serve .cs files too (features may be duplicated with the C# extension)",
+            "Only .neko files"
+          ],
+          "description": "Whether the nekoc language server also handles .cs files."
+        },
+        "nekotia.codeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a \"C++\" lens above every method that opens the C++ nekoc generated for it."
         }
       }
     }
