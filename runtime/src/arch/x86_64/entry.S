@@ -19,4 +19,22 @@ neko_entry:
     ud2
 .size neko_entry, . - neko_entry
 
+/* Application processors start here (Limine MP): rdi = limine_mp_info*. */
+.global neko_ap_entry
+.type neko_ap_entry, @function
+neko_ap_entry:
+    movq %cr0, %rax
+    andq $~(1 << 2), %rax
+    orq $(1 << 1), %rax
+    movq %rax, %cr0
+    movq %cr4, %rax
+    orq $(3 << 9), %rax
+    movq %rax, %cr4
+    fninit
+    andq $-16, %rsp
+    xorl %ebp, %ebp
+    call neko_ap_main
+    ud2
+.size neko_ap_entry, . - neko_ap_entry
+
 .section .note.GNU-stack, "", @progbits

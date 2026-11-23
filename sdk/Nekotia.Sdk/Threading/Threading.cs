@@ -19,6 +19,8 @@ public unsafe struct ThreadInfo
     [Native("cpu_ms")] public ulong CpuMs;
     [Native("switches")] public ulong Switches;
     [Native("stack_kib")] public ulong StackKib;
+    /// <summary>CPU the thread last ran on.</summary>
+    [Native("cpu")] public uint Cpu;
     /// <summary>What a blocked thread waits for ("sleep", "semaphore", a mutex name), or "".</summary>
     [Native("blocked_on")] public string BlockedOn;
 }
@@ -48,6 +50,10 @@ public static unsafe class Thread
 
     [Native("::neko::sched::current_id")]
     public static extern uint CurrentId();
+
+    /// <summary>Index of the CPU executing the caller (0 = bootstrap processor).</summary>
+    [Native("::neko::smp::cpu_index")]
+    public static extern uint CurrentCpu();
 
     [Native("::neko::sched::current_name")]
     public static extern string CurrentName();

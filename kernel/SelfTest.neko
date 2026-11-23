@@ -293,6 +293,24 @@ public static unsafe class SelfTest
         _done.Signal();
     }
 
+    static volatile uint _cpuMask;
+
+    static void CpuProbe(ulong ms)
+    {
+        ulong until = Time.UptimeMs() + ms;
+        while (Time.UptimeMs() < until)
+            _cpuMask = _cpuMask | (1u << (int)Thread.CurrentCpu());
+        _done.Signal();
+    }
+
+    static int Bits(uint v)
+    {
+        int n = 0;
+        for (; v != 0; v &= v - 1)
+            n++;
+        return n;
+    }
+
     static void Ponger(ulong rounds)
     {
         for ulong i in 0ul..rounds {
@@ -334,6 +352,13 @@ public static unsafe class SelfTest
             _stop = true;
             _done.Wait();
             Check(seen > 0, "threads: preemption (a thread that never yields gets interrupted)");
+        }
+
+        if (SysInfo.CpuCount() > 1) {
+            _cpuMask = 0;
+            for int i in 0..4 { Thread.Start("selftest-cpu", &CpuProbe, 40); }
+            for int i in 0..4 { _done.Wait(); }
+            Check(Bits(_cpuMask) > 1, "smp: busy threads run on several CPUs at once");
         }
     }
 

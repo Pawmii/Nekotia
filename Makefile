@@ -26,7 +26,7 @@ XORRISO    ?= xorriso
 LIMINE     ?= limine
 LIMINE_DIR ?= $(firstword $(wildcard /usr/share/limine third_party/limine-bin))
 OVMF       ?= $(firstword $(wildcard /usr/share/edk2/x64/OVMF.4m.fd /usr/share/edk2-ovmf/x64/OVMF.fd /usr/share/ovmf/x64/OVMF.fd /usr/share/OVMF/OVMF_CODE.fd))
-QEMU_FLAGS ?= -M q35 -m 256M -serial stdio -no-reboot -no-shutdown
+QEMU_FLAGS ?= -M q35 -m 256M -smp 4 -serial stdio -no-reboot -no-shutdown
 # make debug builds an -O0 kernel in build/debug for faithful C# line stepping in gdb
 HEAP_SIZE  ?= 4194304  # initial kernel heap; it grows on demand
 

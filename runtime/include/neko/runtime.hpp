@@ -11,6 +11,7 @@
 #include <neko/serial.hpp>
 #include <neko/platform.hpp>
 #include <neko/sched.hpp>
+#include <neko/smp.hpp>
 
 namespace neko {
 

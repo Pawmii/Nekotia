@@ -39,6 +39,8 @@ NEKO_NORETURN void fail(StopCode code, const char* message);
 // CPU exception from the IDT.
 NEKO_NORETURN void cpu_exception(const CpuState* state);
 
+bool in_progress();  // a stop screen is being drawn (other CPUs halt on the NMI it sends)
+
 // Symbolization (uses the table embedded at link time; empty in the first link pass and in host mode).
 struct Symbol {
     const char* function;  // nullptr when unknown

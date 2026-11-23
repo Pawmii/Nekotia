@@ -13,6 +13,7 @@
 #include <neko/crash.hpp>
 #include <neko/runtime.hpp>
 #include <neko/sched.hpp>
+#include <neko/smp.hpp>
 
 // ---------------------------------------------------------------- embedded symbol table (scripts/gen-symbols.py)
 
@@ -460,6 +461,7 @@ NEKO_NORETURN void show(Report& r) {
         platform::stop_after_panic();
     }
     g_crashing = true;
+    smp::halt_others();  // NMI: the other CPUs stop where they are
 
     if (r.cpu) classify(r);
     title(r);
@@ -552,6 +554,8 @@ void cpu_exception(const CpuState* state) {
     r.frame = state->rbp;
     show(r);
 }
+
+bool in_progress() { return g_crashing; }
 
 Symbol symbolize(uint64_t address) {
     Symbol s{nullptr, 0, nullptr, 0};

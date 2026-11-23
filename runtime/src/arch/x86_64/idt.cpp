@@ -37,6 +37,7 @@ extern "C" void* neko_isr_table[256];
 
 // isr.S pushes exactly the layout of crash::CpuState.
 extern "C" void neko_isr_dispatch(crash::CpuState* f) {
+    if (f->vector == 2 && crash::in_progress()) cpu::halt_forever();  // another CPU is drawing the stop screen
     if (f->vector < 32) crash::cpu_exception(f);
     irq_dispatch(static_cast<uint8_t>(f->vector));
 }
@@ -54,6 +55,10 @@ void idt_init() {
         e.zero = 0;
     }
 
+    idt_load();
+}
+
+void idt_load() {
     IdtPointer ptr = {sizeof(g_idt) - 1, reinterpret_cast<uint64_t>(g_idt)};
     __asm__ volatile("lidt %0" : : "m"(ptr));
 }

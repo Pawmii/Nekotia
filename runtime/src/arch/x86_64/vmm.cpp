@@ -7,6 +7,9 @@
 // then enables EFER.NXE and CR0.WP and switches CR3. Limine's tables are not used afterwards.
 #include "arch.hpp"
 
+#include <neko/sched.hpp>
+#include <neko/smp.hpp>
+
 extern "C" char __kernel_start[], __text_start[], __text_end[], __rodata_start[], __rodata_end[];
 extern "C" char __data_start[], __data_end[], __symbols_start[], __symbols_end[];
 
@@ -41,6 +44,7 @@ uint64_t g_stack_next = kStackBase;
 uint64_t g_stack_guards[64];
 uint32_t g_stack_count = 0;
 uint64_t g_kernel_phys = 0;
+sync::SpinLock g_vm_lock;  // recursive: the heap grower maps pages while holding it
 
 bool has(PageFlags f, PageFlags bit) { return (f & bit) != PageFlags::None; }
 
@@ -166,7 +170,18 @@ void init(uint64_t hhdm, uint64_t kernel_phys, const MemoryRange* ranges, size_t
 
 bool ready() { return g_ready; }
 
+uint64_t root_phys() { return pmm::virt_to_phys(g_pml4); }
+
+void load_on_this_cpu() {
+    enable_cpu_features();  // NX and PAT are per-CPU MSRs
+    __asm__ volatile("mov %0, %%cr3" : : "r"(root_phys()) : "memory");
+    uint64_t cr0;
+    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+    __asm__ volatile("mov %0, %%cr0" : : "r"(cr0 | (1ull << 16)) : "memory");
+}
+
 bool map(uint64_t virt, uint64_t phys, PageFlags flags) {
+    sync::ScopedLock vm_guard(g_vm_lock);
     uint64_t* pte = entry(virt & ~(kPage - 1), 0, true);
     if (!pte || (*pte & kPresent)) return false;
     *pte = (phys & kAddress) | leaf_flags(flags, false);
@@ -175,18 +190,22 @@ bool map(uint64_t virt, uint64_t phys, PageFlags flags) {
 }
 
 bool unmap(uint64_t virt) {
+    sync::ScopedLock vm_guard(g_vm_lock);
     uint64_t* pte = entry(virt, 0, false);
     if (!pte || !(*pte & kPresent)) return false;
     *pte = 0;
     invalidate(virt);
+    smp::tlb_shootdown(virt);
     return true;
 }
 
 bool protect(uint64_t virt, PageFlags flags) {
+    sync::ScopedLock vm_guard(g_vm_lock);
     uint64_t* pte = entry(virt, 0, false);
     if (!pte || !(*pte & kPresent)) return false;
     *pte = (*pte & kAddress) | leaf_flags(flags, false);
     invalidate(virt);
+    smp::tlb_shootdown(virt);
     return true;
 }
 
@@ -206,6 +225,7 @@ uint64_t translate(uint64_t virt) {
 }
 
 bool map_fresh(uint64_t virt, size_t size, PageFlags flags) {
+    sync::ScopedLock vm_guard(g_vm_lock);
     uint64_t pages = (size + kPage - 1) / kPage;
     for (uint64_t i = 0; i < pages; ++i) {
         void* frame = pmm::alloc_page();
@@ -224,6 +244,7 @@ bool map_fresh(uint64_t virt, size_t size, PageFlags flags) {
 }
 
 void* map_mmio(uint64_t phys, size_t size) {
+    sync::ScopedLock vm_guard(g_vm_lock);
     uint64_t first = phys & ~(kPage - 1);
     uint64_t last = (phys + size + kPage - 1) & ~(kPage - 1);
     for (uint64_t p = first; p < last; p += kPage) {
@@ -236,6 +257,7 @@ void* map_mmio(uint64_t phys, size_t size) {
 }
 
 bool grow_heap(size_t min_bytes) {
+    sync::ScopedLock vm_guard(g_vm_lock);
     uint64_t chunk = (min_bytes > kHeapChunk ? min_bytes : kHeapChunk);
     chunk = (chunk + kPage - 1) & ~(kPage - 1);
     if (g_heap_end + chunk > kHeapBase + kHeapLimit) return false;
@@ -246,6 +268,7 @@ bool grow_heap(size_t min_bytes) {
 }
 
 uint64_t create_stack(size_t size) {
+    sync::ScopedLock vm_guard(g_vm_lock);
     size = (size + kPage - 1) & ~(kPage - 1);
     if (g_stack_count == 64) return 0;
     uint64_t guard = g_stack_next;

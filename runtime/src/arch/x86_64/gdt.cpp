@@ -6,6 +6,8 @@
 //   0x00 null   0x08 kernel code   0x10 kernel data   0x18 user data   0x20 user code   0x28 TSS (16 bytes)
 #include "arch.hpp"
 
+#include <neko/smp.hpp>
+
 namespace neko::arch {
 namespace {
 
@@ -27,20 +29,24 @@ struct __attribute__((packed)) GdtPointer {
 
 constexpr size_t kIstStackSize = 16 * 1024;
 
-alignas(16) uint64_t g_gdt[7];
-alignas(16) Tss g_tss;
-alignas(16) uint8_t g_ist_stacks[3][kIstStackSize];
+// One GDT/TSS per CPU: the TSS holds that CPU's IST stacks.
+alignas(16) uint64_t g_gdts[smp::kMaxCpus][7];
+alignas(16) Tss g_tsses[smp::kMaxCpus];
+alignas(16) uint8_t g_ist_stacks[smp::kMaxCpus][3][kIstStackSize];
 
 }  // namespace
 
-void gdt_init() {
+void gdt_init(uint32_t cpu) {
+    uint64_t* g_gdt = g_gdts[cpu];
+    Tss& g_tss = g_tsses[cpu];
+    uint8_t (*ist)[kIstStackSize] = g_ist_stacks[cpu];
     g_gdt[0] = 0;
     g_gdt[1] = 0x00AF9A000000FFFF;  // kernel code, 64-bit
     g_gdt[2] = 0x00CF92000000FFFF;  // kernel data
     g_gdt[3] = 0x00CFF2000000FFFF;  // user data (DPL 3)
     g_gdt[4] = 0x00AFFA000000FFFF;  // user code, 64-bit (DPL 3)
 
-    for (int i = 0; i < 3; ++i) g_tss.ist[i] = reinterpret_cast<uint64_t>(g_ist_stacks[i] + kIstStackSize);
+    for (int i = 0; i < 3; ++i) g_tss.ist[i] = reinterpret_cast<uint64_t>(ist[i] + kIstStackSize);
     g_tss.iomap_base = sizeof(Tss);
 
     uint64_t base = reinterpret_cast<uint64_t>(&g_tss);
@@ -49,7 +55,7 @@ void gdt_init() {
                (((base >> 24) & 0xFF) << 56);
     g_gdt[6] = base >> 32;
 
-    GdtPointer ptr = {sizeof(g_gdt) - 1, reinterpret_cast<uint64_t>(g_gdt)};
+    GdtPointer ptr = {sizeof(g_gdts[0]) - 1, reinterpret_cast<uint64_t>(g_gdt)};
     __asm__ volatile(
         "lgdt %0\n\t"
         "pushq %1\n\t"

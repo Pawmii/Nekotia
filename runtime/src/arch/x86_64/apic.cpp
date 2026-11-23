@@ -5,6 +5,7 @@
 #include "arch.hpp"
 
 #include <neko/sched.hpp>
+#include <neko/smp.hpp>
 
 namespace neko::arch {
 namespace {
@@ -18,6 +19,8 @@ constexpr uint32_t kLapicLvtTimer = 0x320;
 constexpr uint32_t kLapicInitialCount = 0x380;
 constexpr uint32_t kLapicCurrentCount = 0x390;
 constexpr uint32_t kLapicDivide = 0x3E0;
+constexpr uint32_t kLapicIcrLow = 0x300;
+constexpr uint32_t kLapicIcrHigh = 0x310;
 constexpr uint32_t kMasked = 1u << 16;
 constexpr uint32_t kPeriodic = 1u << 17;
 
@@ -31,6 +34,7 @@ bool g_apic_ready = false;
 volatile uint64_t g_ticks = 0;
 uint64_t g_tsc_per_ms = 0;
 uint32_t g_cpu_count = 1;
+uint32_t g_lapic_per_ms = 0;
 
 irq::Handler g_handlers[16];
 volatile uint64_t g_irq_counts[16];
@@ -119,22 +123,57 @@ void apic_init(const MadtInfo& madt) {
     lapic_write(kLapicSvr, 0x100 | kVectorSpurious);  // software enable
     mask_all_ioapic_lines();
 
-    uint32_t lapic_per_ms = 0;
-    calibrate(lapic_per_ms, g_tsc_per_ms);
-    if (lapic_per_ms == 0) panic("apic: timer calibration failed");
+    calibrate(g_lapic_per_ms, g_tsc_per_ms);
+    if (g_lapic_per_ms == 0) panic("apic: timer calibration failed");
 
     lapic_write(kLapicLvtTimer, kVectorTimer | kPeriodic);
     lapic_write(kLapicDivide, 0x3);
-    lapic_write(kLapicInitialCount, lapic_per_ms * 1000 / kTimerHz);
+    lapic_write(kLapicInitialCount, g_lapic_per_ms * 1000 / kTimerHz);
     g_apic_ready = true;
+}
+
+void lapic_init_this_cpu() {
+    lapic_write(kLapicTpr, 0);
+    lapic_write(kLapicSvr, 0x100 | kVectorSpurious);
+    lapic_write(kLapicLvtTimer, kVectorTimer | kPeriodic);
+    lapic_write(kLapicDivide, 0x3);
+    lapic_write(kLapicInitialCount, g_lapic_per_ms * 1000 / kTimerHz);  // same bus clock on every core
+}
+
+uint32_t lapic_id() { return g_lapic ? lapic_read(kLapicId) >> 24 : 0; }
+
+namespace {
+void wait_icr() {
+    for (int i = 0; i < 1000000 && (lapic_read(kLapicIcrLow) & (1u << 12)); ++i) cpu::pause();
+}
+}  // namespace
+
+void send_ipi(uint32_t lapic, uint8_t vector) {
+    if (!g_lapic) return;
+    wait_icr();
+    lapic_write(kLapicIcrHigh, lapic << 24);
+    lapic_write(kLapicIcrLow, vector);  // fixed delivery, physical destination
+}
+
+void send_ipi_all_others(uint8_t vector, bool nmi) {
+    if (!g_lapic) return;
+    wait_icr();
+    lapic_write(kLapicIcrHigh, 0);
+    lapic_write(kLapicIcrLow, (3u << 18) | (nmi ? (4u << 8) : vector));  // shorthand: all excluding self
 }
 
 void irq_dispatch(uint8_t vector) {
     if (vector == kVectorSpurious) return;  // no EOI for spurious interrupts
     if (vector == kVectorTimer) {
-        g_ticks = g_ticks + 1;
+        if (smp::cpu_index() == 0) g_ticks = g_ticks + 1;  // uptime: one clock, the BSP's
         lapic_write(kLapicEoi, 0);
         sched::tick();
+    } else if (vector == kVectorKick) {
+        lapic_write(kLapicEoi, 0);
+        smp::this_cpu()->need_resched = true;
+    } else if (vector == kVectorTlb) {
+        smp_tlb_ipi();
+        lapic_write(kLapicEoi, 0);
     } else {
         if (vector >= kVectorIrqBase && vector < kVectorIrqBase + 16) {
             uint8_t line = vector - kVectorIrqBase;
@@ -210,7 +249,7 @@ const char* cpu_brand() {
     return p;
 }
 
-uint32_t cpu_count() { return arch::g_cpu_count; }
+uint32_t cpu_count() { return smp::online_count(); }
 uint64_t cpu_mhz() { return arch::g_tsc_per_ms / 1000; }
 bool apic_available() { return arch::g_apic_ready; }
 

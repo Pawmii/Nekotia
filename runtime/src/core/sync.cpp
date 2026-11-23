@@ -1,6 +1,7 @@
 // SpinLock, Mutex (with deadlock detection) and Semaphore.
 #include <neko/runtime.hpp>
 #include <neko/sched.hpp>
+#include <neko/smp.hpp>
 
 namespace neko::sync {
 namespace {
@@ -100,11 +101,14 @@ bool cycle(Thread* me, Mutex* m) {
 
 void SpinLock::lock() {
     uint64_t flags = cpu::save_and_disable_interrupts();
-    if (locked && depth > 0) {  // recursion on this CPU (single CPU: whoever holds it is us)
+    uint32_t me = smp::cpu_index() + 1;
+    if (__atomic_load_n(&owner, __ATOMIC_RELAXED) == me) {  // recursion on this CPU
         ++depth;
         return;
     }
-    while (__atomic_exchange_n(&locked, 1u, __ATOMIC_ACQUIRE)) cpu::pause();
+    while (__atomic_exchange_n(&locked, 1u, __ATOMIC_ACQUIRE))
+        while (__atomic_load_n(&locked, __ATOMIC_RELAXED)) cpu::pause();
+    owner = me;
     depth = 1;
     saved_flags = flags;
 }
@@ -112,6 +116,7 @@ void SpinLock::lock() {
 void SpinLock::unlock() {
     if (--depth > 0) return;
     uint64_t flags = saved_flags;
+    owner = 0;
     __atomic_store_n(&locked, 0u, __ATOMIC_RELEASE);
     cpu::restore_interrupts(flags);
 }
@@ -122,57 +127,79 @@ void Mutex::lock() {
     cpu::InterruptGuard g;
     Thread* me = sched::current();
     if (!sched::running() || !me) return;  // before the scheduler: single flow, nothing to protect
+    guard.acquire();
     if (!owner) {
         owner = me;
+        guard.release();
         return;
     }
-    if (owner == me) deadlock_self(this);
-    if (cycle(me, this)) deadlock_cycle(me, this);
+    if (owner == me) {
+        guard.release();
+        deadlock_self(this);
+    }
+    if (cycle(me, this)) {
+        guard.release();
+        deadlock_cycle(me, this);
+    }
     me->waiting_for = this;
     enqueue(head, tail, me);
-    sched::block(label ? label : "mutex");
-    me->waiting_for = nullptr;  // unlock() handed us the ownership
+    sched::block(label ? label : "mutex", &guard);  // releases `guard` under the scheduler lock
+    me->waiting_for = nullptr;                      // unlock() handed us the ownership
 }
 
 bool Mutex::try_lock() {
     cpu::InterruptGuard g;
-    if (owner) return false;
-    owner = sched::current();
-    return true;
+    guard.acquire();
+    bool ok = !owner;
+    if (ok) owner = sched::current();
+    guard.release();
+    return ok;
 }
 
 void Mutex::unlock() {
     cpu::InterruptGuard g;
     if (!sched::running()) return;
-    if (owner != sched::current()) crash::fail(crash::StopCode::KernelPanic, "mutex unlocked by a thread that does not own it");
-    owner = dequeue(head, tail);
-    if (owner) sched::wake(owner);
+    guard.acquire();
+    if (owner != sched::current()) {
+        guard.release();
+        crash::fail(crash::StopCode::KernelPanic, "mutex unlocked by a thread that does not own it");
+    }
+    Thread* next = dequeue(head, tail);
+    owner = next;
+    guard.release();
+    if (next) sched::wake(next);
 }
 
 // ---------------------------------------------------------------- Semaphore
 
 void Semaphore::wait() {
     cpu::InterruptGuard g;
+    guard.acquire();
     if (count > 0) {
         --count;
+        guard.release();
         return;
     }
-    Thread* me = sched::current();
-    enqueue(head, tail, me);
-    sched::block("semaphore");
+    enqueue(head, tail, sched::current());
+    sched::block("semaphore", &guard);
 }
 
 bool Semaphore::try_wait() {
     cpu::InterruptGuard g;
-    if (count <= 0) return false;
-    --count;
-    return true;
+    guard.acquire();
+    bool ok = count > 0;
+    if (ok) --count;
+    guard.release();
+    return ok;
 }
 
 void Semaphore::signal() {
     cpu::InterruptGuard g;
-    if (Thread* t = dequeue(head, tail)) sched::wake(t);  // hand the unit straight to a waiter
-    else ++count;
+    guard.acquire();
+    Thread* t = dequeue(head, tail);  // hand the unit straight to a waiter
+    if (!t) ++count;
+    guard.release();
+    if (t) sched::wake(t);
 }
 
 }  // namespace neko::sync

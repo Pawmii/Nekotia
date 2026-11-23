@@ -8,6 +8,7 @@
 #include "arch.hpp"
 
 #include <neko/sched.hpp>
+#include <neko/smp.hpp>
 
 #ifndef NEKO_HEAP_SIZE
 #define NEKO_HEAP_SIZE (4u * 1024 * 1024)  // initial heap; it grows on demand
@@ -45,6 +46,9 @@ volatile limine_rsdp_request rsdp_request = {.id = LIMINE_RSDP_REQUEST_ID, .revi
 
 __attribute__((used, section(".limine_requests")))
 volatile limine_executable_address_request executable_address_request = {.id = LIMINE_EXECUTABLE_ADDRESS_REQUEST_ID, .revision = 0, .response = nullptr};
+
+__attribute__((used, section(".limine_requests")))
+volatile limine_mp_request mp_request = {.id = LIMINE_MP_REQUEST_ID, .revision = 0, .response = nullptr, .flags = 0};
 
 __attribute__((used, section(".limine_requests_end")))
 volatile uint64_t limine_requests_end[] = LIMINE_REQUESTS_END_MARKER;
@@ -183,6 +187,13 @@ uint64_t g_kernel_stack_top = 0;
     neko_kernel_init();
     neko::cpu::enable_interrupts();
 
+    if (neko::sysinfo::apic_available()) neko::arch::smp_start(mp_request.response);
+    neko::term::write("[neko] SMP: ");
+    neko::term::write_udec(neko::smp::online_count());
+    neko::term::write(" of ");
+    neko::term::write_udec(mp_request.response ? mp_request.response->cpu_count : 1);
+    neko::term::write(" CPU(s) online\n");
+
     neko::term::write("[neko] heap ");
     neko::term::write_size(neko::heap::total_bytes());
     neko::term::write(" (grows on demand), ");
@@ -205,7 +216,8 @@ extern "C" NEKO_NORETURN void kmain() {
     neko::serial::init();
     if (!LIMINE_BASE_REVISION_SUPPORTED(limine_base_revision)) neko::panic("bootloader does not support Limine base revision 3");
 
-    neko::arch::gdt_init();
+    neko::arch::gdt_init(0);
+    neko::arch::percpu_init_bsp();
     neko::arch::idt_init();
     init_physical_memory();
     init_virtual_memory();

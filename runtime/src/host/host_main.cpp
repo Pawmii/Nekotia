@@ -156,6 +156,16 @@ void neko_sched_idle() {
     neko::sched::preempt_if_needed();
 }
 
+namespace neko::smp {
+Cpu g_cpus[kMaxCpus];
+bool g_percpu_ready = true;
+uint32_t online_count() { return 1; }
+uint32_t cpu_count() { return 1; }
+void tlb_shootdown(uint64_t) {}
+void halt_others() {}
+void kick(uint32_t) {}
+}  // namespace neko::smp
+
 namespace neko::sysinfo {
 const char* cpu_brand() { return "host CPU (Linux process)"; }
 uint32_t cpu_count() { return 1; }
@@ -187,6 +197,8 @@ int main(int argc, char** argv) {
     g_info.CommandLine = reinterpret_cast<const uint8_t*>(argc > 1 ? argv[1] : "");
     g_info.Hosted = true;
 
+    neko::smp::g_cpus[0].self = &neko::smp::g_cpus[0];
+    neko::smp::g_cpus[0].online = true;
     neko::sched::init(0, 0);
     neko::console::init(g_info.Screen);
     neko::term::write("[neko-host] running the kernel as a Linux process\n");

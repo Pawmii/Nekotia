@@ -14,8 +14,24 @@ constexpr uint8_t kVectorTimer = 0x20;
 constexpr uint8_t kVectorIrqBase = 0x30;  // ISA IRQ n → 0x30 + n
 constexpr uint8_t kVectorSpurious = 0xFF;
 
-void gdt_init();  // own GDT + TSS with IST stacks for #DF, NMI, #MC
-void idt_init();  // exception + IRQ gates
+void gdt_init(uint32_t cpu);  // own GDT + TSS with IST stacks for #DF, NMI, #MC (per CPU)
+void idt_init();              // builds the shared IDT and loads it
+void idt_load();              // loads it on an AP
+
+// Interrupt vectors for inter-processor interrupts
+constexpr uint8_t kVectorKick = 0xF0;      // reschedule
+constexpr uint8_t kVectorTlb = 0xF1;       // TLB shootdown
+
+// Local APIC helpers (apic.cpp)
+void lapic_init_this_cpu();                 // APs: enable LAPIC + periodic timer (BSP calibration)
+uint32_t lapic_id();
+void send_ipi(uint32_t lapic_id, uint8_t vector);
+void send_ipi_all_others(uint8_t vector, bool nmi);
+
+// SMP (smp.cpp)
+void smp_start(void* mp_response);          // limine_mp_response*
+void smp_tlb_ipi();                         // handler of kVectorTlb
+void percpu_init_bsp();
 
 struct MadtInfo {
     uint64_t lapic_phys = 0xFEE00000;
@@ -54,5 +70,9 @@ void init(uint64_t hhdm, uint64_t kernel_phys, const MemoryRange* ranges, size_t
 
 // Heap grower installed after init.
 bool grow_heap(size_t min_bytes);
+
+// APs: same CPU features (NX, PAT, WP) and CR3 as the BSP.
+void load_on_this_cpu();
+uint64_t root_phys();
 
 }  // namespace neko::vmm

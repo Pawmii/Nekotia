@@ -119,7 +119,7 @@ public static unsafe class Commands
     {
         ulong up = Time.UptimeMs();
         if (up == 0) up = 1;
-        Terminal.WriteLine(AnsiColor.BrightCyan, "  ID  NAME                 STATE     PRI     CPU ms   CPU%  SWITCHES  STACK  WAITS FOR");
+        Terminal.WriteLine(AnsiColor.BrightCyan, "  ID  NAME                 STATE     PRI    CPU    CPU ms   CPU%  SWITCHES  STACK  WAITS FOR");
         ThreadInfo info = default;
         for (uint i = 0; Thread.GetInfo(i, out info); i++) {
             Terminal.Write($"  {info.Id}");
@@ -129,6 +129,8 @@ public static unsafe class Commands
             Terminal.Write(StateName(info.State));
             Pad((int)Str.Length(StateName(info.State)), 10);
             Terminal.Write(info.Priority == ThreadPriority.High ? "high   " : info.Priority == ThreadPriority.Normal ? "normal " : "low    ");
+            Terminal.Write($"{info.Cpu}");
+            Pad(Digits(info.Cpu), 3);
             Pad(Digits(info.CpuMs), 9);
             Terminal.Write($"{info.CpuMs}");
             double share = info.CpuMs * 100.0 / up;
@@ -140,7 +142,8 @@ public static unsafe class Commands
             Terminal.Write($"{info.StackKib} KiB  ");
             Terminal.WriteLine(info.BlockedOn);
         }
-        Terminal.WriteLine($"{Thread.Count()} threads, {Thread.ContextSwitches()} context switches, idle {Thread.IdleMs() * 100.0 / up:F1}% of {up} ms");
+        uint cpus = SysInfo.CpuCount();
+        Terminal.WriteLine($"{Thread.Count()} threads on {cpus} CPU(s), {Thread.ContextSwitches()} context switches, idle {Thread.IdleMs() * 100.0 / (up * cpus):F1}%");
     }
 
     static string StateName(ThreadState state)

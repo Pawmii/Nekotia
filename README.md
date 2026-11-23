@@ -185,7 +185,7 @@ nekotia.json            проект nekoc: исходники и каталог
 - **Фаза 2** (основное): своя GDT/TSS с IST, ACPI MADT, LAPIC-таймер 1 кГц, IOAPIC, IRQ из C#, консоль во фреймбуфере,
   PS/2 клавиатура с EN/RU, командная строка, экран смерти.
 - **Фаза 3** (основное): свои таблицы страниц с NX/W^X, buddy-аллокатор, растущая куча, стек ядра с guard-страницей.
-- **Фаза 4** (без SMP): потоки, вытесняющий планировщик с приоритетами, Mutex/Semaphore/SpinLock, обнаружение deadlock,
-  FPU/SSE (`float`/`double` в C#), `make test`.
+- **Фаза 4**: потоки, вытесняющий планировщик с приоритетами на нескольких CPU (SMP, QEMU `-smp 4`),
+  Mutex/Semaphore/SpinLock, обнаружение deadlock, FPU/SSE (`float`/`double` в C#), `make test`.
 
-Дальше — SMP (фаза 4), userspace (фаза 5). См. [ROADMAP.md](ROADMAP.md).
+Дальше — userspace (фаза 5): ring 3, системные вызовы, процессы и ELF. См. [ROADMAP.md](ROADMAP.md).
