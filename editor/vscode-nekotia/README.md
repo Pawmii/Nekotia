@@ -5,7 +5,7 @@ Editor support for the [Nekotia](../../README.md) OS project.
 ## Features
 
 - **`.neko` language** — C# highlighting plus the Nekotia sugar: `asm { }` blocks with
-  instruction/register highlighting, `defer`, `unless`, `loop`, `for T i in a..b`, `@entry` / `@packed` / `@native(...)`.
+  instruction/register highlighting, `defer`, `unless`, `loop`, `for T i in a..b`, `@entry` / `@packed` / `@native(...)` / `@irq(n)`.
 - **nekoc diagnostics** on save (`NEKO0xxx` errors such as "foreach is not supported"), for `.neko` and `.cs`.
 - **Commands** (Ctrl+Shift+P → "Nekotia"): Build Kernel, Run in QEMU (BIOS / UEFI), Run as Linux Process,
   Start QEMU Paused for gdb, Check, Show Desugared C#, Show Generated C++ for This Line.
@@ -16,7 +16,7 @@ Editor support for the [Nekotia](../../README.md) OS project.
 
 ```sh
 make vscode-ext          # builds build/vscode-nekotia-<version>.vsix
-code --install-extension build/vscode-nekotia-0.1.0.vsix
+code --install-extension build/vscode-nekotia-0.2.0.vsix
 ```
 
 Then reload the window (Ctrl+Shift+P → "Developer: Reload Window").

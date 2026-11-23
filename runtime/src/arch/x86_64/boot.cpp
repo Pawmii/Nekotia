@@ -1,15 +1,12 @@
 // x86_64 entry point. Limine loads the ELF in the higher half, already in long mode
 // with paging, a GDT and a 64 KiB stack, then jumps to kmain().
 #include <limine.h>
-#include <neko/runtime.hpp>
+
+#include "arch.hpp"
 
 #ifndef NEKO_HEAP_SIZE
 #define NEKO_HEAP_SIZE (16u * 1024 * 1024)
 #endif
-
-namespace neko::arch {
-void idt_init();
-}
 
 namespace {
 
@@ -35,6 +32,9 @@ volatile limine_bootloader_info_request bootloader_info_request = {.id = LIMINE_
 
 __attribute__((used, section(".limine_requests")))
 volatile limine_executable_cmdline_request cmdline_request = {.id = LIMINE_EXECUTABLE_CMDLINE_REQUEST_ID, .revision = 0, .response = nullptr};
+
+__attribute__((used, section(".limine_requests")))
+volatile limine_rsdp_request rsdp_request = {.id = LIMINE_RSDP_REQUEST_ID, .revision = 0, .response = nullptr};
 
 __attribute__((used, section(".limine_requests_end")))
 volatile uint64_t limine_requests_end[] = LIMINE_REQUESTS_END_MARKER;
@@ -108,6 +108,16 @@ using Constructor = void (*)();
 extern "C" Constructor __init_array_start[];
 extern "C" Constructor __init_array_end[];
 
+void init_interrupts() {
+    neko::arch::MadtInfo madt;
+    void* rsdp = rsdp_request.response ? rsdp_request.response->address : nullptr;
+    if (!neko::arch::acpi_init(rsdp, g_info.HhdmOffset, madt)) {
+        neko::term::write("[neko] \x1b[93mwarning:\x1b[0m no ACPI MADT — timer and IRQs are unavailable\n");
+        return;
+    }
+    neko::arch::apic_init(madt);
+}
+
 }  // namespace
 
 namespace neko::platform {
@@ -116,27 +126,38 @@ void stop_after_panic() { cpu::halt_forever(); }
 
 extern "C" NEKO_NORETURN void kmain() {
     neko::serial::init();
-    neko::serial::write("[neko] runtime: x86_64, Limine protocol\n");
-
     if (!LIMINE_BASE_REVISION_SUPPORTED(limine_base_revision)) neko::panic("bootloader does not support Limine base revision 3");
 
+    neko::arch::gdt_init();
     neko::arch::idt_init();
     init_memory();
     init_framebuffer();
     init_strings();
     g_info.Hosted = false;
 
-    // Dynamic initialisers of generated static fields.
-    for (Constructor* c = __init_array_start; c != __init_array_end; ++c) (*c)();
+    bool screen = neko::console::init(g_info.Screen);
+    neko::term::write("[neko] runtime: x86_64, Limine protocol, ");
+    neko::term::write(screen ? "framebuffer console\n" : "serial only (no framebuffer)\n");
 
-    neko::serial::write("[neko] heap ");
-    neko::serial::write_size(neko::heap::total_bytes());
-    neko::serial::write(", ");
-    neko::serial::write_udec(neko::pmm::free_pages());
-    neko::serial::write(" free pages — entering C# kernel\n");
+    init_interrupts();
+
+    // Dynamic initialisers of generated static fields, then [Irq] handler registration.
+    for (Constructor* c = __init_array_start; c != __init_array_end; ++c) (*c)();
+    neko_kernel_init();
+    neko::cpu::enable_interrupts();
+
+    neko::term::write("[neko] heap ");
+    neko::term::write_size(neko::heap::total_bytes());
+    neko::term::write(", ");
+    neko::term::write_udec(neko::pmm::free_pages());
+    neko::term::write(" free pages, ");
+    neko::term::write_udec(neko::sysinfo::cpu_count());
+    neko::term::write(" CPU(s) @ ");
+    neko::term::write_udec(neko::sysinfo::cpu_mhz());
+    neko::term::write(" MHz — entering C# kernel\n");
 
     neko_kernel_main(&g_info);
 
-    neko::serial::write("[neko] kernel entry returned, halting\n");
+    neko::term::write("[neko] kernel entry returned, halting\n");
     neko::cpu::halt_forever();
 }

@@ -15,7 +15,7 @@ namespace Nekotia.Compiler.Sugar;
 ///   unless (cond) stmt     inverse if                           → if (!(cond)) stmt
 ///   loop { ... }           infinite loop                        → while (true) { ... }
 ///   for [T] i in a..b {    half-open range loop (..= inclusive) → for (T i = a; i < b; i++) {
-///   @entry @packed @inline @noreturn @native("x") @align(n)     → [KernelEntry] ...
+///   @entry @packed @inline @noreturn @native("x") @align(n) @irq(n) → [KernelEntry] ...
 /// </summary>
 public static partial class Desugarer
 {
@@ -171,6 +171,7 @@ public static partial class Desugarer
         ["noreturn"] = "global::Nekotia.NoReturn",
         ["native"] = "global::Nekotia.Native",
         ["align"] = "global::Nekotia.Align",
+        ["irq"] = "global::Nekotia.Irq",
     };
 
     static string RewriteAttributes(string text)

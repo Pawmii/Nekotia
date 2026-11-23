@@ -7,18 +7,11 @@ namespace Nekotia.OS;
 
 public static unsafe class Graphics
 {
-    public static void DrawSplash(Framebuffer* fb)
+    /// Draws over the whole screen; call Terminal.Redraw() to get the console back.
+    public static bool DrawSplash(Framebuffer* fb)
     {
-        unless (fb->Address != null && fb->Bpp == 32) {
-            Serial.WriteLine("graphics: no 32-bpp framebuffer, skipping the splash");
-            return;
-        }
-
-        Serial.Write("graphics: ");
-        Serial.WriteDec(fb->Width);
-        Serial.Write("x");
-        Serial.WriteDec(fb->Height);
-        Serial.WriteLine(" framebuffer");
+        unless (fb->Address != null && fb->Bpp == 32)
+            return false;
         defer Serial.WriteLine("graphics: splash drawn");
 
         // Background gradient.
@@ -42,6 +35,7 @@ public static unsafe class Graphics
         FillRect(fb, new Rect { Origin = new Point(cx - 60, cy - 25), Width = 24, Height = 32 }, Colors.Black);
         FillRect(fb, new Rect { Origin = new Point(cx + 36, cy - 25), Width = 24, Height = 32 }, Colors.Black);
         FillRect(fb, new Rect { Origin = new Point(cx - 10, cy + 20), Width = 20, Height = 12 }, Colors.Pink);
+        return true;
     }
 
     public static void FillRect(Framebuffer* fb, Rect r, uint color)

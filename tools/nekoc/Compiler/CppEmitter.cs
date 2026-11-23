@@ -27,6 +27,7 @@ sealed partial class CppEmitter
     readonly List<INamedTypeSymbol> _structs = [];
     readonly List<INamedTypeSymbol> _staticClasses = [];
     IMethodSymbol? _entry;
+    readonly List<(IMethodSymbol Method, int Line)> _irqHandlers = [];
 
     SemanticModel _model = null!;
     bool _inFunction;
@@ -56,6 +57,7 @@ sealed partial class CppEmitter
     {
         Collect();
         FindEntry();
+        FindIrqHandlers();
 
         var header = new CodeWriter();
         var source = new CodeWriter();
@@ -124,7 +126,20 @@ sealed partial class CppEmitter
     }
 
     static bool IsSkipped(INamedTypeSymbol type) =>
-        Symbols.NativeName(type) is not null || Symbols.IsIntrinsicType(type) || Symbols.IsAttributeType(type);
+        Symbols.NativeName(type) is not null || Symbols.IsIntrinsicType(type) || Symbols.IsAttributeType(type) ||
+        type.TypeKind == TypeKind.Class && Symbols.IsExceptionType(type);
+
+    /// <summary>Repository-relative path with forward slashes, for messages shown on the stop screen.</summary>
+    string RelativePath(string path) => Path.GetRelativePath(_config.RootDirectory, path).Replace('\\', '/');
+
+    /// <summary>"Nekotia.OS.Commands.Crash" for the method containing <paramref name="node"/>.</summary>
+    string EnclosingMember(SyntaxNode node)
+    {
+        var symbol = _model.GetEnclosingSymbol(node.SpanStart);
+        while (symbol is IMethodSymbol { MethodKind: MethodKind.LocalFunction or MethodKind.AnonymousFunction })
+            symbol = symbol.ContainingSymbol;
+        return symbol is null ? "?" : $"{symbol.ContainingType?.ToDisplayString()}.{symbol.Name}";
+    }
 
     void FindEntry()
     {
@@ -155,6 +170,28 @@ sealed partial class CppEmitter
             return;
         }
         _entry = entry;
+    }
+
+    void FindIrqHandlers()
+    {
+        var used = new Dictionary<int, IMethodSymbol>();
+        foreach (var m in AllTypes().SelectMany(t => t.GetMembers().OfType<IMethodSymbol>()))
+        {
+            if (Symbols.Attr(m, "Irq") is not { ConstructorArguments: [{ Value: int line }, ..] })
+                continue;
+            var loc = m.Locations.FirstOrDefault();
+            if (!m.IsStatic || !m.ReturnsVoid || m.Parameters.Length != 0 || m.IsGenericMethod)
+                _diag.Error("NEKO0003", "[Irq] handlers must be `static void Name()`", loc);
+            else if (line is < 0 or > 15)
+                _diag.Error("NEKO0003", "[Irq] line must be a legacy ISA IRQ 0–15", loc);
+            else if (used.TryGetValue(line, out var other))
+                _diag.Error("NEKO0003", $"IRQ {line} already has a handler: {other.ContainingType.Name}.{other.Name}", loc);
+            else
+            {
+                used[line] = m;
+                _irqHandlers.Add((m, line));
+            }
+        }
     }
 
     IEnumerable<INamedTypeSymbol> AllTypes() => _structs.Concat(_staticClasses);
@@ -349,9 +386,10 @@ sealed partial class CppEmitter
             w.Line($"{Map(elem.PointedAtType, at)} {name}[{f.FixedSize}]{{}};");
             return;
         }
+        var vol = f.IsVolatile ? "volatile " : "";
         if (f.IsStatic)
         {
-            w.Line($"static {Map(f.Type, at)} {name};");
+            w.Line($"static {vol}{Map(f.Type, at)} {name};");
             return;
         }
 
@@ -366,7 +404,7 @@ sealed partial class CppEmitter
             else
                 _diag.Error("NEKO0101", "instance field initializers must be constants", initializer.GetLocation());
         }
-        w.Line($"{Map(f.Type, at)} {name}{init};");
+        w.Line($"{vol}{Map(f.Type, at)} {name}{init};");
     }
 
     void EmitPropertyDeclaration(CodeWriter w, IPropertySymbol p)
@@ -463,6 +501,16 @@ sealed partial class CppEmitter
         ForEachInNamespace(w, AllTypes(), EmitMemberDefinitions);
         w.Line();
 
+        w.Line("// ---- [Irq] handlers (registered before interrupts are enabled)");
+        w.OpenBrace("extern \"C\" void neko_kernel_init()");
+        foreach (var (method, line) in _irqHandlers)
+        {
+            var target = $"{Qualified(method.ContainingType)}::{Symbols.Escape(method.Name)}";
+            w.Line($"if (!::neko::irq::register_handler({line}, &{target})) ::neko::term::write(\"[neko] warning: IRQ {line} handler {method.ContainingType.Name}.{method.Name} not installed\\n\");");
+        }
+        w.CloseBrace();
+        w.Line();
+
         w.Line("// ---- entry point (called by runtime/src/arch/*/boot.cpp)");
         w.OpenBrace("extern \"C\" void neko_kernel_main(::neko::BootInfo* info)");
         if (_entry is not null)
@@ -481,7 +529,8 @@ sealed partial class CppEmitter
             if (member is IFieldSymbol { IsStatic: true, IsConst: false, IsImplicitlyDeclared: false } f && Symbols.NativeName(f) is null)
             {
                 var decl = f.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() as VariableDeclaratorSyntax;
-                w.Line($"{Map(f.Type, decl)} {typeName}::{FieldName(f)}{StaticInitializer(decl?.Initializer?.Value)};");
+                var vol = f.IsVolatile ? "volatile " : "";
+                w.Line($"{vol}{Map(f.Type, decl)} {typeName}::{FieldName(f)}{StaticInitializer(decl?.Initializer?.Value)};");
             }
             else if (member is IPropertySymbol { IsStatic: true } p && IsAutoProperty(p))
             {

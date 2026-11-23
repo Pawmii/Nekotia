@@ -40,6 +40,17 @@ public sealed class InlineAttribute : Attribute { }
 [AttributeUsage(AttributeTargets.Method)]
 public sealed class NoReturnAttribute : Attribute { }
 
+/// <summary>
+/// Interrupt handler for legacy ISA IRQ <paramref name="line"/> (1 = PS/2 keyboard, 4 = COM1, 12 = PS/2 mouse…).
+/// nekoc registers it before interrupts are enabled. The method must be <c>static void Name()</c>, runs with
+/// interrupts disabled, must be short and must not use the heap. Sugar: <c>@irq(1)</c>.
+/// </summary>
+[AttributeUsage(AttributeTargets.Method)]
+public sealed class IrqAttribute(int line) : Attribute
+{
+    public int Line { get; } = line;
+}
+
 /// <summary>Compiler-internal: the type is handled by nekoc itself and never emitted.</summary>
 [AttributeUsage(AttributeTargets.Class)]
 public sealed class IntrinsicAttribute : Attribute { }

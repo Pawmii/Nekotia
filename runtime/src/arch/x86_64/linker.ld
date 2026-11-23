@@ -8,6 +8,7 @@ PHDRS
     text            PT_LOAD FLAGS((1 << 0) | (1 << 2)); /* RX */
     rodata          PT_LOAD FLAGS((1 << 2));            /* R  */
     data            PT_LOAD FLAGS((1 << 1) | (1 << 2)); /* RW */
+    symbols         PT_LOAD FLAGS((1 << 2));            /* R: stop-screen symbol table, added in link pass 2 */
 }
 
 SECTIONS
@@ -46,6 +47,12 @@ SECTIONS
         *(.bss .bss.*)
         *(COMMON)
     } :data
+
+    /* Last, so adding it in the second link pass moves nothing (scripts/gen-symbols.py --verify). */
+    . = ALIGN(CONSTANT(MAXPAGESIZE));
+    .neko_symbols : {
+        KEEP(*(.neko_symbols))
+    } :symbols
 
     /DISCARD/ : {
         *(.eh_frame*)

@@ -75,7 +75,7 @@
       ]
     },
     "attribute-shorthand": {
-      "match": "(@)(entry|packed|inline|noreturn|native|align)\\b",
+      "match": "(@)(entry|packed|inline|noreturn|native|align|irq)\\b",
       "captures": {
         "1": { "name": "punctuation.definition.decorator.neko" },
         "2": { "name": "entity.name.function.decorator.neko storage.modifier.attribute.neko" }

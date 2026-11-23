@@ -58,11 +58,41 @@ src/host/                 host_main.cpp — платформа «Linux-проц�
 
 ### Загрузка (x86_64)
 
-1. Limine (BIOS или UEFI) загружает ELF по адресу `0xffffffff80000000`, включает long mode и paging, отображает всю
+1. Limine (BIOS или UEFI) загружает ELF по адресу `0xffffffff80000000`, включает long mode и paging, отображает
    физическую память в HHDM, даёт 64 KiB стека и передаёт управление `kmain`.
-2. `kmain`: COM1 → проверка base revision → IDT (исключения 0–31) → память → framebuffer → строки загрузчика →
-   `__init_array` (динамические инициализаторы сгенерированных статических полей) → `neko_kernel_main(&info)`.
+2. `kmain`: COM1 → base revision → своя GDT/TSS (IST для #DF/NMI/#MC) → IDT (256 векторов) → память (куча, фреймы) →
+   framebuffer-консоль → ACPI (RSDP → XSDT → MADT) → APIC: 8259 замаскирован, LAPIC включён, таймер 1 кГц откалиброван
+   по PIT, линии IOAPIC замаскированы → `__init_array` → `neko_kernel_init()` (регистрация `[Irq]`) → `sti` →
+   `neko_kernel_main(&info)`.
 3. Сгенерированный `neko_kernel_main` вызывает C#-метод с `[KernelEntry]`.
+
+### Прерывания
+
+| Векторы | Что |
+|---|---|
+| 0x00–0x1F | исключения CPU → `crash::cpu_exception` (экран смерти) |
+| 0x20 | LAPIC-таймер 1 кГц → `time::uptime_ms` |
+| 0x30–0x3F | ISA IRQ 0–15 через IOAPIC (с учётом interrupt source overrides) → обработчики `[Irq(n)]` |
+| 0xFF | spurious |
+
+`isr.S` (сгенерирован) кладёт номер вектора и код ошибки, сохраняет регистры в формате `crash::CpuState`,
+`neko_isr_dispatch` отправляет исключения на экран смерти, остальное — в `irq_dispatch` (EOI для LAPIC).
+
+### Консоль
+
+`core/console.cpp`: сетка ячеек (кодпоинт + цвета), перерисовываются только изменившиеся ячейки. Шрифт PSF1/PSF2
+вшит через `.incbin` (`runtime/assets/fonts`, Terminus 8×16, OFL), таблица Unicode → глифы. Вход — байты UTF-8 и
+ANSI-последовательности (`ESC[…m`, `ESC[2J`, `ESC[H`, `ESC[K`), поэтому один и тот же поток идёт и на экран, и в serial
+(`neko::term`).
+
+### Экран смерти
+
+`core/crash.cpp`: STOP-код (векторы CPU 0x00–0x1F, программные 0xE0–0xE4), тип исключения (аппаратные — в терминах
+.NET), сообщение, место в C#, стек вызовов по цепочке `rbp` (ядро собрано с `-fno-omit-frame-pointer
+-fno-optimize-sibling-calls`), регистры, состояние системы; затем опрос клавиатуры (R — перезагрузка) при выключенных
+прерываниях. Символы: ядро линкуется дважды — `scripts/gen-symbols.py` берёт из первого ELF функции (`llvm-nm`) и
+таблицу строк DWARF (`llvm-dwarfdump`), пишет их в секцию `.neko_symbols`, которая стоит после `.bss`, поэтому адреса кода
+во втором проходе не меняются (это проверяется `--verify`).
 
 ### Память
 
@@ -79,7 +109,8 @@ src/host/                 host_main.cpp — платформа «Linux-проц�
   Без блокировок (одно ядро, без вытеснения) — см. фазу 4.
 - **Page allocator** (`pmm.cpp`): LIFO-стек свободных фреймов; указатель «следующий» хранится в самом фрейме.
   O(1), выдаёт обнулённые страницы, адреса — виртуальные (HHDM), `virt_to_phys`/`phys_to_virt`.
-- Своих таблиц страниц пока нет — используются таблицы Limine (фаза 3).
+- Своих таблиц страниц пока нет — используются таблицы Limine; `vmm::map_mmio` дописывает в них некэшируемые страницы
+  для LAPIC/IOAPIC/ACPI (base revision 3 не отображает MMIO в HHDM). Полноценный VMM — фаза 3.
 
 ### Исключения
 

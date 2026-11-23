@@ -3,13 +3,16 @@
 
 #include <neko/types.hpp>
 #include <neko/boot.hpp>
+#include <neko/console.hpp>
+#include <neko/crash.hpp>
 #include <neko/cpu.hpp>
 #include <neko/memory.hpp>
 #include <neko/serial.hpp>
+#include <neko/platform.hpp>
 
 namespace neko {
 
-// Prints "PANIC: <message>" and stops (hardware: cli; hlt forever, host: exit(1)).
+// Shows the stop screen (KERNEL_PANIC) and stops. See neko/crash.hpp for the other stop codes.
 NEKO_NORETURN void panic(const char* message);
 
 namespace platform {

@@ -18,6 +18,15 @@ static class Symbols
 
     public static bool IsIntrinsicType(INamedTypeSymbol? type) => type is not null && Has(type, "Intrinsic");
 
+    /// <summary>Exception classes are only used as "type tags" by <c>throw</c>; they are never emitted.</summary>
+    public static bool IsExceptionType(INamedTypeSymbol type)
+    {
+        for (var t = type; t is not null; t = t.BaseType)
+            if (t.ToDisplayString() == "System.Exception")
+                return true;
+        return false;
+    }
+
     public static bool IsAttributeType(INamedTypeSymbol type)
     {
         for (var t = type.BaseType; t is not null; t = t.BaseType)

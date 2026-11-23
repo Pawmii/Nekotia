@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <neko/runtime.hpp>
 
@@ -66,6 +67,48 @@ namespace neko::platform {
 void stop_after_panic() { finish(1); }
 }  // namespace neko::platform
 
+namespace {
+uint64_t monotonic_ms() {
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return uint64_t(ts.tv_sec) * 1000 + uint64_t(ts.tv_nsec) / 1000000;
+}
+uint64_t g_start_ms = monotonic_ms();
+}  // namespace
+
+namespace neko::time {
+uint64_t uptime_ms() { return monotonic_ms() - g_start_ms; }
+uint32_t timer_hz() { return 1000; }
+void sleep_ms(uint64_t ms) {
+    timespec ts = {time_t(ms / 1000), long(ms % 1000) * 1000000};
+    nanosleep(&ts, nullptr);
+}
+}  // namespace neko::time
+
+namespace neko::irq {
+// No hardware interrupts in host mode: handlers are accepted and never called.
+bool register_handler(uint8_t line, Handler) { return line < 16; }
+uint64_t count(uint8_t) { return 0; }
+}  // namespace neko::irq
+
+namespace neko::power {
+void reboot() {
+    printf("[neko-host] reboot requested\n");
+    finish(0);
+}
+void shutdown() {
+    printf("[neko-host] shutdown requested\n");
+    finish(0);
+}
+}  // namespace neko::power
+
+namespace neko::sysinfo {
+const char* cpu_brand() { return "host CPU (Linux process)"; }
+uint32_t cpu_count() { return 1; }
+uint64_t cpu_mhz() { return 0; }
+bool apic_available() { return false; }
+}  // namespace neko::sysinfo
+
 int main(int argc, char** argv) {
     void* heap = aligned_alloc(4096, kHeapSize);
     void* pages = aligned_alloc(4096, kPagesSize);
@@ -89,7 +132,9 @@ int main(int argc, char** argv) {
     g_info.CommandLine = reinterpret_cast<const uint8_t*>(argc > 1 ? argv[1] : "");
     g_info.Hosted = true;
 
-    printf("[neko-host] running the kernel as a Linux process\n");
+    neko::console::init(g_info.Screen);
+    neko::term::write("[neko-host] running the kernel as a Linux process\n");
+    neko_kernel_init();
     neko_kernel_main(&g_info);
     printf("[neko-host] kernel entry returned\n");
     finish(0);

@@ -99,6 +99,8 @@ sealed partial class CppEmitter
                 return Unsupported(e, "string interpolation", "write the parts with Serial.Write / Serial.WriteDec");
             case BaseExpressionSyntax:
                 return Unsupported(e, "base access");
+            case ThrowExpressionSyntax:
+                return Unsupported(e, "throw expressions", "use a throw statement");
             case LambdaExpressionSyntax or AnonymousMethodExpressionSyntax:
                 return Unsupported(e, "lambdas", "use a static method and a function pointer (&Method)");
             case IsPatternExpressionSyntax or SwitchExpressionSyntax:
@@ -157,6 +159,9 @@ sealed partial class CppEmitter
                 var recv = Receiver(out var sep);
                 return FieldRef(f, recv, sep, ma);
             }
+            case IPropertySymbol { Name: "Length", ContainingType.SpecialType: SpecialType.System_String }
+                when _model.GetConstantValue(ma.Expression).Value is string constant:
+                return constant.Length.ToString(CultureInfo.InvariantCulture); // "abc".Length of a constant
             case IPropertySymbol p:
             {
                 if (p.IsStatic)
@@ -231,6 +236,8 @@ sealed partial class CppEmitter
         var m = call.TargetMethod;
         if (Symbols.IsIntrinsicType(m.ContainingType))
             return Intrinsic(m, inv, call);
+        if (inv.ArgumentList.Arguments is [{ Expression: InterpolatedStringExpressionSyntax interpolated }])
+            return InterpolatedWrite(m, interpolated, inv);
 
         var args = Arguments(call.Arguments, m);
         if (Symbols.NativeName(m) is { } native)
@@ -268,6 +275,8 @@ sealed partial class CppEmitter
         var param = a.Parameter;
         if (a.ArgumentKind == ArgumentKind.ParamArray)
             return Unsupported(a.Syntax, "params arguments");
+        if (a.ArgumentKind == ArgumentKind.DefaultValue && param is not null && CallerInfo(param, a.Syntax) is { } info)
+            return info;
         if (a.ArgumentKind == ArgumentKind.DefaultValue)
             return a.Value.ConstantValue.HasValue ? Constant(a.Value.ConstantValue.Value, param?.Type) : Map(param?.Type, a.Syntax) + "{}";
 
@@ -283,6 +292,24 @@ sealed partial class CppEmitter
         if (pin && type is not null && !SymbolEqualityComparer.Default.Equals(type, param.Type) && TypeMapper.IsNumeric(type))
             return $"(({Map(param.Type, expr)})({Expr(expr)}))";
         return ExprAs(expr);
+    }
+
+    /// <summary>[CallerFilePath] / [CallerLineNumber] / [CallerMemberName]: repository-relative path and the full C# method name.</summary>
+    string? CallerInfo(IParameterSymbol param, SyntaxNode callSite)
+    {
+        foreach (var attr in param.GetAttributes())
+        {
+            switch (attr.AttributeClass?.ToDisplayString())
+            {
+                case "System.Runtime.CompilerServices.CallerFilePathAttribute":
+                    return CString(RelativePath(callSite.SyntaxTree.FilePath));
+                case "System.Runtime.CompilerServices.CallerLineNumberAttribute":
+                    return (callSite.GetLocation().GetLineSpan().StartLinePosition.Line + 1).ToString(CultureInfo.InvariantCulture);
+                case "System.Runtime.CompilerServices.CallerMemberNameAttribute":
+                    return CString(EnclosingMember(callSite));
+            }
+        }
+        return null;
     }
 
     string Intrinsic(IMethodSymbol m, InvocationExpressionSyntax inv, IInvocationOperation call)
@@ -386,6 +413,9 @@ sealed partial class CppEmitter
 
     string ElementAccess(ElementAccessExpressionSyntax ea)
     {
+        // Indexing a compile-time string: a UTF-16 literal has exactly C#'s char semantics.
+        if (_model.GetConstantValue(ea.Expression).Value is string table && ea.ArgumentList.Arguments.Count == 1)
+            return $"{Utf16Literal(table)}[{Expr(ea.ArgumentList.Arguments[0].Expression)}]";
         if (TypeOf(ea.Expression) is not IPointerTypeSymbol)
             return Unsupported(ea, $"indexing a '{TypeOf(ea.Expression)?.ToDisplayString()}'", "only pointers and fixed buffers can be indexed");
         if (ea.ArgumentList.Arguments.Count != 1)
@@ -524,6 +554,135 @@ sealed partial class CppEmitter
                 return "0";
         }
     }
+
+    /// <summary>u"..." literal with the same UTF-16 code units as the C# string.</summary>
+    static string Utf16Literal(string s)
+    {
+        var sb = new StringBuilder("u\"");
+        for (int i = 0; i < s.Length; i++)
+        {
+            char c = s[i];
+            if (char.IsHighSurrogate(c) && i + 1 < s.Length && char.IsLowSurrogate(s[i + 1]))
+            {
+                sb.Append($"\\U{char.ConvertToUtf32(c, s[++i]):X8}");
+                continue;
+            }
+            switch (c)
+            {
+                case '"': sb.Append("\\\""); break;
+                case '\\': sb.Append("\\\\"); break;
+                case >= ' ' and <= '~': sb.Append(c); break;
+                case < (char)0x80: sb.Append('\\').Append(Convert.ToString(c, 8).PadLeft(3, '0')); break;
+                default: sb.Append($"\\u{(int)c:X4}"); break;
+            }
+        }
+        return sb.Append('"').ToString();
+    }
+
+    // ---------------------------------------------------------------- string interpolation
+
+    /// <summary>
+    /// <c>Terminal.WriteLine($"took {ms} ms")</c> → <c>(Terminal::Write("took "), Terminal::WriteDec(ms), Terminal::Write(" ms"), Terminal::WriteLine())</c>.
+    /// The target type must offer the Write family: Write(string), WriteDec(long/ulong), and optionally WriteHex, WriteChar,
+    /// WriteCodepoint, WriteSize, WriteLine(). No string is ever built, so this works without a heap.
+    /// Format specifiers: {x:X} hex, {n:size} human-readable bytes.
+    /// </summary>
+    string InterpolatedWrite(IMethodSymbol target, InterpolatedStringExpressionSyntax interpolated, InvocationExpressionSyntax inv)
+    {
+        var type = target.ContainingType;
+        if (target.Name is not ("Write" or "WriteLine"))
+            return Unsupported(inv, "string interpolation", "it is only supported as the argument of Write/WriteLine on Serial, Terminal or a type with the same Write* methods");
+
+        IMethodSymbol? Find(string name, SpecialType? param)
+        {
+            foreach (var m in type.GetMembers(name).OfType<IMethodSymbol>())
+            {
+                if (param is null && m.Parameters.Length == 0)
+                    return m;
+                if (param is not null && m.Parameters.Length == 1 && m.Parameters[0].Type.SpecialType == param)
+                    return m;
+            }
+            return null;
+        }
+
+        string Call(IMethodSymbol? m, string arg, SyntaxNode at, string what)
+        {
+            if (m is null)
+            {
+                Unsupported(at, $"interpolating {what}", $"'{type.Name}' has no matching Write* method");
+                return "((void)0)";
+            }
+            var callee = Symbols.NativeName(m) ?? $"{Qualified(m.ContainingType)}::{Symbols.Escape(m.Name)}";
+            var cast = m.Parameters.Length == 1 && m.Parameters[0].Type.SpecialType != SpecialType.System_String
+                ? $"(({Map(m.Parameters[0].Type, at)})({arg}))"
+                : arg;
+            return $"{callee}({cast})";
+        }
+
+        var parts = new List<string>();
+        var writeString = Find("Write", SpecialType.System_String);
+        foreach (var content in interpolated.Contents)
+        {
+            if (content is InterpolatedStringTextSyntax text)
+            {
+                parts.Add(Call(writeString, CString(text.TextToken.ValueText), text, "text"));
+                continue;
+            }
+
+            var hole = (InterpolationSyntax)content;
+            if (hole.AlignmentClause is not null)
+                Unsupported(hole.AlignmentClause, "interpolation alignment");
+            var format = hole.FormatClause?.FormatStringToken.ValueText;
+            var value = Expr(hole.Expression);
+            var t = TypeOf(hole.Expression);
+            if (t is INamedTypeSymbol { TypeKind: TypeKind.Enum } e)
+                t = e.EnumUnderlyingType;
+
+            switch (t)
+            {
+                case { SpecialType: SpecialType.System_String }:
+                case IPointerTypeSymbol { PointedAtType.SpecialType: SpecialType.System_Byte }:
+                    parts.Add(Call(t is IPointerTypeSymbol ? FindPointerWrite(type) : writeString, value, hole, "a string"));
+                    break;
+                case { SpecialType: SpecialType.System_Boolean }:
+                    parts.Add(Call(writeString, $"(({value}) ? \"true\" : \"false\")", hole, "a bool"));
+                    break;
+                case { SpecialType: SpecialType.System_Char }:
+                    parts.Add(Call(Find("WriteCodepoint", SpecialType.System_UInt32) ?? Find("WriteChar", SpecialType.System_Byte), value, hole, "a char"));
+                    break;
+                case { SpecialType: SpecialType.System_SByte or SpecialType.System_Int16 or SpecialType.System_Int32 or SpecialType.System_Int64 or SpecialType.System_IntPtr }
+                    when format is null:
+                    parts.Add(Call(Find("WriteDec", SpecialType.System_Int64), value, hole, "an integer"));
+                    break;
+                case var _ when TypeMapper.IsNumeric(t) || t is IPointerTypeSymbol:
+                    var arg = t is IPointerTypeSymbol ? $"(uint64_t)(uintptr_t)({value})" : value;
+                    var method = format switch
+                    {
+                        null => Find("WriteDec", SpecialType.System_UInt64),
+                        "X" or "x" => Find("WriteHex", SpecialType.System_UInt64),
+                        "size" => Find("WriteSize", SpecialType.System_UInt64),
+                        _ => null,
+                    };
+                    if (format is not null and not ("X" or "x" or "size"))
+                        Unsupported(hole.FormatClause!, $"format ':{format}'", "supported: :X (hex), :size (bytes)");
+                    parts.Add(Call(method, arg, hole, "a number"));
+                    break;
+                default:
+                    parts.Add(Unsupported(hole.Expression, $"interpolating a value of type '{t?.ToDisplayString()}'"));
+                    break;
+            }
+        }
+
+        if (target.Name == "WriteLine")
+            parts.Add(Find("WriteLine", null) is { } newline
+                ? Call(newline, "", inv, "a newline")
+                : Call(writeString, "\"\\n\"", inv, "a newline"));
+        return "(" + string.Join(", ", parts) + ")";
+    }
+
+    IMethodSymbol? FindPointerWrite(INamedTypeSymbol type) =>
+        type.GetMembers("Write").OfType<IMethodSymbol>().FirstOrDefault(m =>
+            m.Parameters is [{ Type: IPointerTypeSymbol { PointedAtType.SpecialType: SpecialType.System_Byte } }]);
 
     static string CharLiteral(char c) => c is >= ' ' and <= '~' and not '\'' and not '\\'
         ? $"u'{c}'"

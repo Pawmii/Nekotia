@@ -36,8 +36,10 @@ NEKOC_SRCS  := $(shell find tools/nekoc -type f \( -name '*.cs' -o -name '*.cspr
 RT_HEADERS  := $(wildcard runtime/include/neko/*.hpp)
 CORE_SRCS   := $(wildcard runtime/src/core/*.cpp)
 KERNEL_SRCS := $(CORE_SRCS) $(wildcard runtime/src/freestanding/*.cpp) $(wildcard runtime/src/arch/x86_64/*.cpp)
-KERNEL_ASM  := $(wildcard runtime/src/arch/x86_64/*.S)
+KERNEL_ASM  := $(wildcard runtime/src/arch/x86_64/*.S) $(wildcard runtime/src/core/*.S)
 HOST_SRCS   := $(CORE_SRCS) $(wildcard runtime/src/host/*.cpp)
+CORE_ASM    := $(wildcard runtime/src/core/*.S)
+FONT        := runtime/assets/fonts/ter-v16n.psf
 GEN_CPP     := $(GEN)/nekotia.gen.cpp
 
 # ---------------------------------------------------------------- flags
@@ -52,6 +54,8 @@ KERNEL_FLAGS := $(COMMON_FLAGS) --target=x86_64-unknown-none-elf -ffreestanding 
                 -fno-stack-protector -fno-stack-check -fno-pic -fno-pie -fno-threadsafe-statics \
                 -fno-asynchronous-unwind-tables -fno-unwind-tables -mno-red-zone -mcmodel=kernel \
                 -mgeneral-regs-only -mno-80387 -mno-mmx -mno-sse -mno-sse2 \
+                -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -fno-optimize-sibling-calls \
+                -fno-delete-null-pointer-checks \
                 -Iruntime/third_party/limine -DNEKO_HOSTED=0 -DNEKO_HEAP_SIZE=$(HEAP_SIZE)
 KERNEL_LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 --gc-sections -T runtime/src/arch/x86_64/linker.ld
 
@@ -59,7 +63,7 @@ HOST_SAN   ?= -fsanitize=address,undefined -fno-omit-frame-pointer
 HOST_FLAGS := $(COMMON_FLAGS) -O1 -DNEKO_HOSTED=1 $(HOST_SAN)
 
 KERNEL_OBJS := $(patsubst %,$(BUILD)/kernel/%.o,$(KERNEL_SRCS) $(KERNEL_ASM)) $(BUILD)/kernel/gen.o
-HOST_OBJS   := $(patsubst %,$(BUILD)/host/%.o,$(HOST_SRCS)) $(BUILD)/host/gen.o
+HOST_OBJS   := $(patsubst %,$(BUILD)/host/%.o,$(HOST_SRCS) $(CORE_ASM)) $(BUILD)/host/gen.o
 
 .PHONY: all kernel gen check host run-host iso run run-uefi debug doctor tools clean vscode-ext
 
@@ -85,15 +89,20 @@ check: $(NEKOC_DLL)
 
 kernel: $(BUILD)/nekotia.elf
 
-$(BUILD)/nekotia.elf: $(KERNEL_OBJS) runtime/src/arch/x86_64/linker.ld
-	$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJS) -o $@
+# Two link passes: the second one adds the symbol/line table used by the stop screen.
+$(BUILD)/nekotia.elf: $(KERNEL_OBJS) runtime/src/arch/x86_64/linker.ld scripts/gen-symbols.py
+	$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJS) -o $(BUILD)/nekotia.stage1.elf
+	python3 -I scripts/gen-symbols.py $(BUILD)/nekotia.stage1.elf $(BUILD)/kernel/symbols.S
+	$(CXX) --target=x86_64-unknown-none-elf -c $(BUILD)/kernel/symbols.S -o $(BUILD)/kernel/symbols.o
+	$(LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJS) $(BUILD)/kernel/symbols.o -o $@
+	python3 -I scripts/gen-symbols.py --verify $(BUILD)/nekotia.stage1.elf $@
 	@echo "kernel: $@ ($$(du -h $@ | cut -f1))"
 
 $(BUILD)/kernel/%.cpp.o: %.cpp $(GEN_CPP)
 	@mkdir -p $(dir $@)
 	$(CXX) $(KERNEL_FLAGS) -c $< -o $@
 
-$(BUILD)/kernel/%.S.o: %.S
+$(BUILD)/kernel/%.S.o: %.S $(FONT)
 	@mkdir -p $(dir $@)
 	$(CXX) --target=x86_64-unknown-none-elf -c $< -o $@
 
@@ -111,6 +120,10 @@ $(BUILD)/host/nekotia-host: $(HOST_OBJS)
 $(BUILD)/host/%.cpp.o: %.cpp $(GEN_CPP)
 	@mkdir -p $(dir $@)
 	$(CXX) $(HOST_FLAGS) -c $< -o $@
+
+$(BUILD)/host/%.S.o: %.S $(FONT)
+	@mkdir -p $(dir $@)
+	$(CXX) -c $< -o $@
 
 $(BUILD)/host/gen.o: $(GEN_CPP)
 	@mkdir -p $(dir $@)

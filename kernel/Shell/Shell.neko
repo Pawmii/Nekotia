@@ -1,0 +1,252 @@
+// Kernel shell: line editing, history, tab completion. Commands live in Commands.neko.
+using Nekotia;
+using Nekotia.Hal;
+using Nekotia.OS.Drivers;
+
+namespace Nekotia.OS;
+
+public unsafe struct LineBuffer
+{
+    public fixed uint Chars[128];
+    public int Length;
+}
+
+public unsafe struct HistoryBuffer
+{
+    public fixed uint Chars[16 * 128];   // 16 entries × 128 codepoints
+    public fixed int Lengths[16];
+}
+
+public static unsafe class Shell
+{
+    const int MaxLine = 120;
+    const int HistorySize = 16;
+    const int HistoryStride = 128;
+
+    // Control codes produced by the keyboard driver for Ctrl+letter.
+    const uint CtrlC = 3;
+    const uint CtrlL = 12;
+    const uint CtrlU = 21;
+
+    static LineBuffer _line;
+    static HistoryBuffer _history;
+    static int _historyCount;   // total lines ever stored
+    static int _browse;         // index while browsing with ↑/↓
+
+    @noreturn
+    public static void Run()
+    {
+        Terminal.Write("Type ");
+        Terminal.Write(AnsiColor.BrightWhite, "help");
+        Terminal.WriteLine(" for commands. Alt+Shift switches EN/RU, ↑/↓ history, Tab completes.");
+        Terminal.WriteLine();
+        loop {
+            Prompt();
+            ReadLine();
+            Execute();
+        }
+    }
+
+    static void Prompt()
+    {
+        Terminal.Write(AnsiColor.BrightMagenta, "neko");
+        Terminal.Write(Keyboard.Russian ? AnsiColor.Yellow : AnsiColor.Cyan, Keyboard.Russian ? " ru" : " en");
+        Terminal.Write("> ");
+    }
+
+    // ---------------------------------------------------------------- editing
+
+    static void ReadLine()
+    {
+        _line.Length = 0;
+        _browse = _historyCount;
+        loop {
+            uint key = Keyboard.ReadKey();
+            if (key == '\n') {
+                Terminal.WriteLine();
+                return;
+            }
+            if (key == '\b') {
+                if (_line.Length > 0) {
+                    _line.Length--;
+                    Terminal.Write("\b \b");
+                }
+                continue;
+            }
+            if (key == CtrlC) {
+                Terminal.WriteLine("^C");
+                _line.Length = 0;
+                return;
+            }
+            if (key == CtrlL) {
+                Terminal.Clear();
+                Prompt();
+                Echo(0);
+                continue;
+            }
+            if (key == CtrlU) {
+                Erase();
+                continue;
+            }
+            if (key == '\t') {
+                Complete();
+                continue;
+            }
+            if (key == (uint)Key.Up) {
+                Recall(-1);
+                continue;
+            }
+            if (key == (uint)Key.Down) {
+                Recall(1);
+                continue;
+            }
+            if (key >= 0x20 && key < (uint)Key.Up && _line.Length < MaxLine) {
+                _line.Chars[_line.Length++] = key;
+                Terminal.WriteCodepoint(key);
+            }
+        }
+    }
+
+    static void Echo(int from)
+    {
+        for int i in from.._line.Length {
+            Terminal.WriteCodepoint(_line.Chars[i]);
+        }
+    }
+
+    static void Erase()
+    {
+        for int i in 0.._line.Length {
+            Terminal.Write("\b \b");
+        }
+        _line.Length = 0;
+    }
+
+    static void Recall(int direction)
+    {
+        int oldest = _historyCount > HistorySize ? _historyCount - HistorySize : 0;
+        int target = _browse + direction;
+        if (target < oldest || target > _historyCount)
+            return;
+        _browse = target;
+        Erase();
+        if (target == _historyCount)
+            return;   // back to an empty line
+        int slot = target % HistorySize;
+        _line.Length = _history.Lengths[slot];
+        for int i in 0.._line.Length {
+            _line.Chars[i] = _history.Chars[slot * HistoryStride + i];
+        }
+        Echo(0);
+    }
+
+    static void Remember()
+    {
+        if (_line.Length == 0)
+            return;
+        int slot = _historyCount % HistorySize;
+        _history.Lengths[slot] = _line.Length;
+        for int i in 0.._line.Length {
+            _history.Chars[slot * HistoryStride + i] = _line.Chars[i];
+        }
+        _historyCount++;
+    }
+
+    /// Completes the command name when exactly one command starts with what was typed.
+    static void Complete()
+    {
+        for int i in 0.._line.Length {
+            if (_line.Chars[i] == ' ')
+                return;   // only the command word is completed
+        }
+
+        int matchStart = -1;
+        int matchLength = 0;
+        int matches = 0;
+        int start = 0;
+        for int i in 0..=Commands.Names.Length {
+            if (i < Commands.Names.Length && Commands.Names[i] != ' ')
+                continue;
+            int length = i - start;
+            if (length >= _line.Length && PrefixMatches(start)) {
+                matches++;
+                matchStart = start;
+                matchLength = length;
+            }
+            start = i + 1;
+        }
+
+        if (matches != 1)
+            return;
+        for int i in _line.Length..matchLength {
+            uint c = Commands.Names[matchStart + i];
+            _line.Chars[_line.Length++] = c;
+            Terminal.WriteCodepoint(c);
+        }
+        _line.Chars[_line.Length++] = ' ';
+        Terminal.WriteChar((byte)' ');
+    }
+
+    static bool PrefixMatches(int start)
+    {
+        for int i in 0.._line.Length {
+            if (Commands.Names[start + i] != _line.Chars[i])
+                return false;
+        }
+        return true;
+    }
+
+    // ---------------------------------------------------------------- execution
+
+    static void Execute()
+    {
+        Remember();
+        byte* text = stackalloc byte[MaxLine * 4 + 1];
+        int n = 0;
+        for int i in 0.._line.Length {
+            n += EncodeUtf8(_line.Chars[i], text + n);
+        }
+        text[n] = 0;
+
+        // "  cmd   arg arg" → cmd = "cmd", args = "arg arg"
+        byte* cmd = text;
+        while (*cmd == ' ')
+            cmd++;
+        if (*cmd == 0)
+            return;
+        byte* args = cmd;
+        while (*args != 0 && *args != ' ')
+            args++;
+        if (*args != 0) {
+            *args = 0;
+            args++;
+            while (*args == ' ')
+                args++;
+        }
+        Commands.Run(cmd, args);
+    }
+
+    static int EncodeUtf8(uint cp, byte* o)
+    {
+        if (cp < 0x80) {
+            o[0] = (byte)cp;
+            return 1;
+        }
+        if (cp < 0x800) {
+            o[0] = (byte)(0xC0 | (cp >> 6));
+            o[1] = (byte)(0x80 | (cp & 0x3F));
+            return 2;
+        }
+        if (cp < 0x10000) {
+            o[0] = (byte)(0xE0 | (cp >> 12));
+            o[1] = (byte)(0x80 | ((cp >> 6) & 0x3F));
+            o[2] = (byte)(0x80 | (cp & 0x3F));
+            return 3;
+        }
+        o[0] = (byte)(0xF0 | (cp >> 18));
+        o[1] = (byte)(0x80 | ((cp >> 12) & 0x3F));
+        o[2] = (byte)(0x80 | ((cp >> 6) & 0x3F));
+        o[3] = (byte)(0x80 | (cp & 0x3F));
+        return 4;
+    }
+}

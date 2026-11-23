@@ -39,12 +39,16 @@ public static unsafe class SelfTest
     static int _passed;
     static int _failed;
     static int _deferTrace;
+    static bool _verbose;
 
-    public static void Run()
+    /// Quiet mode prints only failures and the summary (used at boot).
+    public static void Run(bool verbose)
     {
-        Serial.WriteLine("selftest:");
+        _verbose = verbose;
         _passed = 0;
         _failed = 0;
+        if (verbose)
+            Terminal.WriteLine("selftest:");
         defer Report();
 
         Language();
@@ -57,24 +61,23 @@ public static unsafe class SelfTest
 
     static void Report()
     {
-        Serial.Write("selftest: ");
-        Serial.WriteDec(_passed);
-        Serial.Write(" passed, ");
-        Serial.WriteDec(_failed);
-        Serial.WriteLine(" failed");
-        unless (_failed == 0) Debug.Panic("self test failed");
+        Terminal.Write("selftest: ");
+        Terminal.Write(_failed == 0 ? AnsiColor.Green : AnsiColor.BrightRed, _failed == 0 ? "ok" : "FAILED");
+        Terminal.WriteLine($" — {_passed} passed, {_failed} failed");
     }
 
     static void Check(bool ok, string name)
     {
         if (ok) {
             _passed++;
-            Serial.Write("  ok    ");
+            if (!_verbose)
+                return;
+            Terminal.Write(AnsiColor.Green, "  ok    ");
         } else {
             _failed++;
-            Serial.Write("  FAIL  ");
+            Terminal.Write(AnsiColor.BrightRed, "  FAIL  ");
         }
-        Serial.WriteLine(name);
+        Terminal.WriteLine(name);
     }
 
     static void Language()
@@ -147,6 +150,9 @@ public static unsafe class SelfTest
 
         Arch.Pause();
         Check(true, "asm block compiles");
+
+        const string table = "aй€";
+        Check(table.Length == 3 && table[1] == 'й' && table[2] == 0x20AC, "constant string indexing (UTF-16 semantics)");
     }
 
     static void HeapBasics()

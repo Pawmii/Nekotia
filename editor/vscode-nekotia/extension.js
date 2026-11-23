@@ -238,6 +238,7 @@ const SUGAR_DOCS = {
     noreturn: '**@noreturn** → `[NoReturn]` — the method never returns (`[[noreturn]]`).',
     native: '**@native("cpp::name")** → `[Native(...)]` — implemented in the C++ runtime; calls are emitted as `cpp::name(...)`.',
     align: '**@align(n)** → `[Align(n)]` — struct alignment (`alignas(n)`).',
+    irq: '**@irq(n)** → `[Irq(n)]` — interrupt handler for ISA IRQ `n` (1 = keyboard). Must be `static void Name()`; registered by nekoc before interrupts are enabled; runs with interrupts off, must not use the heap.',
 };
 
 function provideHover(document, position) {
@@ -245,7 +246,7 @@ function provideHover(document, position) {
     if (!range) return undefined;
     const word = document.getText(range).replace(/^@/, '');
     const isAttribute = document.getText(range).startsWith('@');
-    const attributes = ['entry', 'packed', 'inline', 'noreturn', 'native', 'align'];
+    const attributes = ['entry', 'packed', 'inline', 'noreturn', 'native', 'align', 'irq'];
     if (attributes.includes(word) && !isAttribute) return undefined;
     if (!SUGAR_DOCS[word]) return undefined;
     if (word === 'in' && !/\bfor\s+.*\bin\b/.test(document.lineAt(position.line).text)) return undefined;

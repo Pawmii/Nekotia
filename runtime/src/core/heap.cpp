@@ -50,10 +50,10 @@ void coalesce(Block* b) {
 }
 
 Block* validate(void* p, const char* who) {
-    if ((reinterpret_cast<uintptr_t>(p) & (kAlignment - 1)) != 0) panic(who);
+    if ((reinterpret_cast<uintptr_t>(p) & (kAlignment - 1)) != 0) crash::fail(crash::StopCode::HeapCorruption, who);
     Block* b = header_of(p);
-    if (b->magic == kMagicFree) panic("heap: double free");
-    if (b->magic != kMagicUsed) panic(who);
+    if (b->magic == kMagicFree) crash::fail(crash::StopCode::HeapCorruption, "heap: double free");
+    if (b->magic != kMagicUsed) crash::fail(crash::StopCode::HeapCorruption, who);
     return b;
 }
 

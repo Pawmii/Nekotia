@@ -1,6 +1,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Operations;
 
 namespace Nekotia.Compiler;
 
@@ -102,12 +103,12 @@ sealed partial class CppEmitter
                 w.Line($"goto {Symbols.Escape(label.Identifier.Text)};");
                 break;
 
-            case ThrowStatementSyntax:
-                Unsupported(s, "throw", "exceptions do not exist in the kernel — call Debug.Panic(\"...\")");
+            case ThrowStatementSyntax th:
+                w.Line(Throw(th) + ";");
                 break;
 
             case TryStatementSyntax:
-                Unsupported(s, "try/catch/finally", "use `defer` (in .neko files) for cleanup and Debug.Panic for fatal errors");
+                Unsupported(s, "try/catch/finally", "not yet: an uncaught `throw` shows the stop screen; use `defer` (in .neko files) for cleanup");
                 break;
 
             case ForEachStatementSyntax:
@@ -154,7 +155,7 @@ sealed partial class CppEmitter
             return;
         }
         var type = Map(_model.GetTypeInfo(decl.Type).Type, decl.Type);
-        var prefix = isConst ? "const " : "";
+        var prefix = isConst ? "constexpr " : "";   // C# const locals are compile-time constants
         foreach (var v in decl.Variables)
         {
             var name = Symbols.Escape(v.Identifier.Text);
@@ -212,6 +213,29 @@ sealed partial class CppEmitter
             w.CloseBrace();
         }
         w.CloseBrace();
+    }
+
+    // ---------------------------------------------------------------- throw
+
+    /// <summary>
+    /// <c>throw new InvalidOperationException("msg")</c> → the stop screen with the exception type, message,
+    /// C# file:line and method. There is no try/catch yet, so every throw is unhandled.
+    /// </summary>
+    string Throw(ThrowStatementSyntax th)
+    {
+        if (th.Expression is null)
+            return Unsupported(th, "rethrow (`throw;`)", "there is no catch yet");
+        if (th.Expression is not BaseObjectCreationExpressionSyntax creation || _model.GetOperation(creation) is not IObjectCreationOperation op)
+            return Unsupported(th.Expression, "throwing an existing exception object", "write `throw new SomeException(\"message\")`");
+
+        string message = "nullptr";
+        foreach (var arg in op.Arguments)
+            if (arg.Parameter is { Name: "message", Type.SpecialType: SpecialType.System_String } && arg.ArgumentKind == ArgumentKind.Explicit)
+                message = Argument(arg, pin: false);
+
+        var line = th.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+        return $"::neko::crash::unhandled_exception({CString(op.Type!.ToDisplayString())}, {message}, " +
+               $"{CString(RelativePath(th.SyntaxTree.FilePath))}, {line}, {CString(EnclosingMember(th))})";
     }
 
     // ---------------------------------------------------------------- defer (sugar)

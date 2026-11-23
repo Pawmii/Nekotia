@@ -3,7 +3,7 @@
 
 void* operator new(size_t size) {
     void* p = neko::heap::alloc(size);
-    if (!p) neko::panic("operator new: out of memory");
+    if (!p) neko::crash::fail(neko::crash::StopCode::OutOfMemory, "operator new: the kernel heap is exhausted");
     return p;
 }
 void* operator new[](size_t size) { return operator new(size); }

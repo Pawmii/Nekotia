@@ -22,7 +22,7 @@ inline uint64_t read_cr3() { return 0; }
 
 #else
 
-inline void halt() { __asm__ volatile("hlt"); }
+inline void halt() { __asm__ volatile("hlt" ::: "memory"); }  // memory clobber: re-read state an IRQ may have changed
 inline void disable_interrupts() { __asm__ volatile("cli" ::: "memory"); }
 inline void enable_interrupts() { __asm__ volatile("sti" ::: "memory"); }
 

@@ -55,11 +55,12 @@ public static unsafe class Kernel
 ```
 
 - **База на C++** (`runtime/`) — всё, что чувствительно к памяти и железу: аллокатор кучи (first-fit free list,
-  coalescing, проверка заголовков, детект double free), физический page allocator, IDT с дампом регистров на исключениях,
-  serial, старт ядра.
+  coalescing, проверка заголовков, детект double free), физический page allocator, GDT/TSS/IDT с дампом регистров на
+  исключениях, ACPI (MADT), LAPIC-таймер, IOAPIC, текстовая консоль во фреймбуфере, serial, старт ядра.
 - **Логика ядра на C#** (`kernel/`) — подмножество C# без GC: `static class`, `struct`, `enum`, указатели, `unsafe`,
-  `fixed`-буферы, `stackalloc`, перегрузка операторов, свойства, generic-методы (→ шаблоны C++), function pointers.
-- **Свой сахар** (`.neko` файлы) — `asm { }`, `defer`, `unless`, `loop`, `for T i in a..b`, `@entry`/`@packed`/`@native(...)`.
+  `fixed`-буферы, `stackalloc`, перегрузка операторов, свойства, generic-методы (→ шаблоны C++), function pointers,
+  интерполяция `$"..."` в `Write` (без аллокаций), обработчики прерываний `[Irq(n)]`. На C# написаны драйвер клавиатуры и shell.
+- **Свой сахар** (`.neko` файлы) — `asm { }`, `defer`, `unless`, `loop`, `for T i in a..b`, `@entry`/`@packed`/`@native(...)`/`@irq(n)`.
   Подсветка и подсказки — в VS Code-расширении (`editor/vscode-nekotia`).
 
 Подробности: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), язык и сахар: [docs/LANGUAGE.md](docs/LANGUAGE.md),
@@ -75,20 +76,33 @@ make run                  # C# → C++ → ELF → ISO → QEMU (BIOS), serial �
 make run-uefi             # то же через OVMF
 ```
 
-Ожидаемый вывод:
+На экране — консоль ядра (шрифт Terminus, кириллица, цвета), лог дублируется в serial-терминал:
 
 ```
-[neko] runtime: x86_64, Limine protocol
-[neko] heap 16 MiB, 61025 free pages — entering C# kernel
-   /\_/\    Nekotia
-  ( o.o )   kernel 0.1.0
+[neko] runtime: x86_64, Limine protocol, framebuffer console
+[neko] heap 16 MiB, 60962 free pages, 1 CPU(s) @ 3919 MHz — entering C# kernel
+
+   /\_/\
+  ( o.o )   Nekotia 0.2.0
+   > ^ <    kernel in C# → C++ (nekoc) → x86_64
+
+selftest: ok — 21 passed, 0 failed
+Type help for commands. Alt+Shift switches EN/RU, ↑/↓ history, Tab completes.
+
+neko en> info
+cpu:        QEMU Virtual CPU version 2.5+
+memory:     254 MiB usable of 255 MiB
 ...
-selftest: 19 passed, 0 failed
-graphics: 1280x800 framebuffer
-kernel: idle (hlt loop)
 ```
 
-В окне QEMU ядро рисует градиент и котика во фреймбуфере.
+### Командная строка ядра
+
+Кликните в окно QEMU и печатайте. Команды: `help`, `info`, `mem`, `uptime`, `echo`, `sleep MS`, `irq`, `layout`,
+`colors`, `neko` (котик на весь экран), `selftest`, `clear`, `panic`, `crash KIND` (проверка экрана смерти),
+`reboot`, `shutdown`. Клавиши: **Alt+Shift** — EN/RU, **↑/↓** — история, **Tab** — дополнение команды,
+**Ctrl+L** — очистить, **Ctrl+U** — стереть строку, **Ctrl+C** — отменить.
+
+Всё это — C#-код: драйвер клавиатуры `kernel/Drivers/Keyboard.neko` (обработчик `@irq(1)`), shell — `kernel/Shell/`.
 
 ## Команды
 
@@ -121,8 +135,19 @@ code --install-extension build/vscode-nekotia-0.1.0.vsix
 
 ## Отладка
 
-- Исключение CPU печатает регистры (для `#PF` — `cr2` и причину) и паникует.
-  `addr2line -e build/nekotia.elf <rip>` указывает **на строку в C#-файле** — nekoc пишет `#line` перед каждым оператором.
+**Экран смерти.** Любое фатальное событие — необработанный `throw`, `Debug.Assert`/`Debug.Panic`, повреждение кучи,
+нехватка памяти, исключение процессора — показывает экран «NEKOTIA HAS STOPPED»:
+
+- **STOP-код** и имя: `0x0000000E PAGE_FAULT`, `0x000000E0 UNHANDLED_EXCEPTION`, `0x000000E1 ASSERTION_FAILED`,
+  `0x000000E2 KERNEL_PANIC`, `0x000000E3 HEAP_CORRUPTION`, `0x000000E4 OUT_OF_MEMORY` (коды 0x00–0x1F — векторы CPU);
+- **тип исключения** — для аппаратных ошибок в терминах .NET: `#DE` → `DivideByZeroException`, `#PF` около нуля →
+  `NullReferenceException`, `#GP` → `AccessViolationException`, `#UD` → `InvalidProgramException`, `#DF` → `StackOverflowException`;
+- **сообщение, место** (`Nekotia.OS.Commands.Crash at kernel/Shell/Commands.neko:190`), для `#PF` — адрес и причина;
+- **стек вызовов** с C#-методами и строками `.cs`/`.neko` (таблица символов вшивается в ядро вторым проходом линковки,
+  `scripts/gen-symbols.py`), **регистры** с `cr0–cr4`, **состояние системы** (uptime, куча, страницы, CPU).
+
+Текст дублируется в serial. **R** — перезагрузка. Проверить все варианты: `crash null|div|throw|custom|assert|pf|gp|ud|bp|double-free`.
+`addr2line -e build/nekotia.elf <адрес>` тоже указывает **на строку в C#-файле** — nekoc пишет `#line` перед каждым оператором.
 - **F5 в VS Code** (нужно расширение C/C++ `ms-vscode.cpptools`): собирает `-O0`-ядро, запускает QEMU с gdb-сервером
   и подключается. Breakpoint'ы ставятся кликом прямо в `.cs` и `.neko`, видны стек вызовов и переменные.
   Окно QEMU до подключения отладчика пишет «guest has not initialized the display» — это нормально.
@@ -134,10 +159,13 @@ code --install-extension build/vscode-nekotia-0.1.0.vsix
 
 ```
 kernel/                 ядро на C# (.cs и .neko) + Nekotia.Kernel.csproj (только для IDE)
-sdk/Nekotia.Sdk/        C# API ядра: атрибуты, Asm, Serial/Cpu/Port, Heap/Pages/Memory, BootInfo
+kernel/Drivers/         драйверы на C# (PS/2 клавиатура)
+kernel/Shell/           командная строка ядра
+sdk/Nekotia.Sdk/        C# API ядра: атрибуты, Asm, Terminal/Serial/Cpu/Port/Time/Irq/Power/SysInfo, Heap/Pages/Memory
 runtime/include/neko/   C++ заголовки, которые использует сгенерированный код
-runtime/src/core/       куча, page allocator, вывод, panic (общие для всех платформ)
-runtime/src/arch/x86_64 Limine boot, IDT + isr.S, COM1, linker.ld
+runtime/src/core/       куча, page allocator, консоль (PSF/UTF-8/ANSI), вывод, panic (общие для всех платформ)
+runtime/src/arch/x86_64 Limine boot, GDT/TSS, IDT + isr.S, ACPI, APIC/таймер/IRQ, vmm (MMIO), COM1, linker.ld
+runtime/assets/fonts/   шрифт консоли Terminus (OFL 1.1)
 runtime/src/freestanding memcpy/memset…, operator new/delete
 runtime/src/host/       host-режим (ядро как Linux-процесс)
 runtime/third_party/    limine.h (0BSD)
@@ -150,6 +178,8 @@ nekotia.json            проект nekoc: исходники и каталог
 
 ## Статус
 
-Фаза 0 (фундамент) готова и проверена в QEMU (BIOS и UEFI): загрузка, куча, page allocator, исключения, framebuffer,
-транспилятор с диагностикой, сахар, VS Code-расширение. Дальше — таймер и прерывания устройств, свои page tables,
-потоки, userspace. См. [ROADMAP.md](ROADMAP.md).
+- **Фаза 0** (фундамент): загрузка BIOS/UEFI, куча, page allocator, исключения, транспилятор с диагностикой, сахар, VS Code.
+- **Фаза 2** (основное): своя GDT/TSS с IST, ACPI MADT, LAPIC-таймер 1 кГц, IOAPIC, IRQ из C#, консоль во фреймбуфере,
+  PS/2 клавиатура с EN/RU, командная строка.
+
+Дальше — свои таблицы страниц (фаза 3), потоки и планировщик (фаза 4), userspace (фаза 5). См. [ROADMAP.md](ROADMAP.md).

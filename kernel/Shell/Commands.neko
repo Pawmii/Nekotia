@@ -1,0 +1,228 @@
+// Shell commands. Add one: a name in `Names` (for help/Tab), a branch in Run, a method.
+using System;
+using Nekotia;
+using Nekotia.Hal;
+using Nekotia.Mem;
+using Nekotia.OS.Drivers;
+
+namespace Nekotia.OS;
+
+public static unsafe class Commands
+{
+    /// Space-separated, used by Tab completion.
+    public const string Names = "help clear info mem uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
+
+    public static void Run(byte* cmd, byte* args)
+    {
+        if (Is(cmd, "help")) Help();
+        else if (Is(cmd, "clear")) Terminal.Clear();
+        else if (Is(cmd, "info")) Info();
+        else if (Is(cmd, "mem")) Mem();
+        else if (Is(cmd, "uptime")) Uptime();
+        else if (Is(cmd, "echo")) Echo(args);
+        else if (Is(cmd, "sleep")) Sleep(args);
+        else if (Is(cmd, "irq")) Irqs();
+        else if (Is(cmd, "layout")) Layout();
+        else if (Is(cmd, "colors")) Colors();
+        else if (Is(cmd, "neko")) Neko();
+        else if (Is(cmd, "selftest")) SelfTest.Run(true);
+        else if (Is(cmd, "panic")) Debug.Panic("requested from the shell");
+        else if (Is(cmd, "crash")) Crash(args);
+        else if (Is(cmd, "reboot")) Power.Reboot();
+        else if (Is(cmd, "shutdown")) Power.Shutdown();
+        else {
+            Terminal.Write(AnsiColor.BrightRed, "unknown command: ");
+            Terminal.Write(cmd);
+            Terminal.WriteLine("  (try `help`)");
+        }
+    }
+
+    static bool Is(byte* cmd, string name) => Str.Equals(cmd, name);
+
+    static void Line(string name, string description)
+    {
+        Terminal.Write("  ");
+        Terminal.Write(AnsiColor.BrightCyan, name);
+        for int i in (int)Str.Length(name)..12 { Terminal.WriteChar((byte)' '); }
+        Terminal.WriteLine(description);
+    }
+
+    static void Help()
+    {
+        Terminal.WriteLine("Commands:");
+        Line("info", "system information");
+        Line("mem", "memory, heap and page allocator statistics");
+        Line("uptime", "time since boot");
+        Line("echo TEXT", "print TEXT");
+        Line("sleep MS", "sleep for MS milliseconds (LAPIC timer)");
+        Line("irq", "interrupt counters");
+        Line("layout", "switch keyboard layout EN/RU (also Alt+Shift)");
+        Line("colors", "console palette");
+        Line("neko", "draw the cat (any key to return)");
+        Line("selftest", "run the kernel self tests");
+        Line("clear", "clear the screen (also Ctrl+L)");
+        Line("panic", "stop screen: KERNEL_PANIC");
+        Line("crash KIND", "stop screen tests: null div throw custom assert pf gp ud bp double-free");
+        Line("reboot", "restart the machine");
+        Line("shutdown", "power off (QEMU)");
+        Terminal.WriteLine("Keys: ↑/↓ history, Tab completion, Ctrl+U erase line, Ctrl+C cancel.");
+    }
+
+    static void Info()
+    {
+        BootInfo* boot = Kernel.Info;
+        Terminal.WriteLine($"Nekotia {Kernel.Version} — x86_64 kernel written in C#, transpiled to C++ by nekoc");
+        Terminal.WriteLine($"cpu:        {SysInfo.CpuBrand()}");
+        Terminal.WriteLine($"processors: {SysInfo.CpuCount()} (the boot CPU runs the kernel), TSC {SysInfo.CpuMhz()} MHz");
+        Terminal.WriteLine($"memory:     {boot->UsableMemory:size} usable of {boot->TotalMemory:size}");
+        Terminal.WriteLine($"screen:     {boot->Screen.Width}x{boot->Screen.Height}, console {Terminal.Columns()}x{Terminal.Rows()}");
+        Terminal.Write("bootloader: ");
+        Terminal.Write(boot->BootloaderName);
+        Terminal.Write(" ");
+        Terminal.Write(boot->BootloaderVersion);
+        Terminal.Write("\ncmdline:    ");
+        Terminal.Write(boot->CommandLine);
+        Terminal.WriteLine();
+        Terminal.Write("uptime:     ");
+        Uptime();
+    }
+
+    static void Mem()
+    {
+        BootInfo* boot = Kernel.Info;
+        ulong freePages = Pages.FreeCount();
+        ulong totalPages = Pages.TotalCount();
+        Terminal.WriteLine($"physical:   {boot->UsableMemory:size} usable, {boot->TotalMemory:size} RAM, {boot->MemoryMapEntries} map entries");
+        Terminal.WriteLine($"pages:      {freePages} free of {totalPages} ({freePages * Pages.Size:size} free)");
+        Terminal.WriteLine($"heap:       {Heap.UsedBytes():size} used, {Heap.FreeBytes():size} free of {Heap.TotalBytes():size}, {Heap.BlockCount()} blocks");
+        Terminal.Write("heap check: ");
+        if (Heap.Check())
+            Terminal.WriteLine(AnsiColor.Green, "ok");
+        else
+            Terminal.WriteLine(AnsiColor.BrightRed, "CORRUPTED");
+    }
+
+    static void Uptime()
+    {
+        ulong ms = Time.UptimeMs();
+        ulong seconds = ms / 1000;
+        ulong minutes = seconds / 60;
+        ulong hours = minutes / 60;
+        Terminal.Write($"{hours}h ");
+        Pad2(minutes % 60);
+        Terminal.Write("m ");
+        Pad2(seconds % 60);
+        Terminal.Write(".");
+        ulong frac = ms % 1000;
+        if (frac < 100) Terminal.WriteChar((byte)'0');
+        if (frac < 10) Terminal.WriteChar((byte)'0');
+        Terminal.WriteLine($"{frac}s");
+    }
+
+    static void Pad2(ulong v)
+    {
+        if (v < 10)
+            Terminal.WriteChar((byte)'0');
+        Terminal.WriteDec(v);
+    }
+
+    static void Echo(byte* args)
+    {
+        Terminal.Write(args);
+        Terminal.WriteLine();
+    }
+
+    static void Sleep(byte* args)
+    {
+        ulong ms = 0;
+        unless (ParseNumber(args, out ms)) {
+            Terminal.WriteLine("usage: sleep MS");
+            return;
+        }
+        ulong start = Time.UptimeMs();
+        Time.Sleep(ms);
+        Terminal.WriteLine($"slept {Time.UptimeMs() - start} ms");
+    }
+
+    static void Irqs()
+    {
+        Terminal.WriteLine($"timer:      {Time.UptimeMs()} ticks at {Time.TimerHz()} Hz (LAPIC, vector 0x20)");
+        Terminal.WriteLine($"keyboard:   {Irq.Count(1)} interrupts (IRQ 1 → IOAPIC → vector 0x31), {Keyboard.DroppedKeys} keys dropped");
+    }
+
+    static void Layout()
+    {
+        Keyboard.ToggleLayout();
+        Terminal.WriteLine(Keyboard.Russian ? "layout: русская (ЙЦУКЕН)" : "layout: English (QWERTY)");
+    }
+
+    static void Colors()
+    {
+        for int i in 0..16 {
+            Terminal.SetColor((AnsiColor)i);
+            Terminal.Write("██");
+            if (i == 7) {
+                Terminal.ResetColor();
+                Terminal.WriteLine("  normal");
+            }
+        }
+        Terminal.ResetColor();
+        Terminal.WriteLine("  bright");
+    }
+
+    static void Neko()
+    {
+        unless (Graphics.DrawSplash(&Kernel.Info->Screen)) {
+            Terminal.WriteLine("no framebuffer");
+            return;
+        }
+        Keyboard.ReadKey();
+        Terminal.Redraw();
+    }
+
+    // A value the optimizer cannot see through, so the crashes below really happen at run time.
+    static ulong _zero;
+
+    static void Crash(byte* kind)
+    {
+        if (Is(kind, "null")) {
+            Node* node = (Node*)_zero;
+            node->Value = 42;                                   // #PF near 0 → NullReferenceException
+        } else if (Is(kind, "div")) {
+            int divisor = (int)_zero;
+            Terminal.WriteDec(100 / divisor);                   // #DE → DivideByZeroException
+        } else if (Is(kind, "throw")) {
+            throw new InvalidOperationException("the shell asked for an unhandled exception");
+        } else if (Is(kind, "custom")) {
+            throw new KernelError("a kernel-defined exception type");
+        } else if (Is(kind, "assert")) {
+            Debug.Assert(Heap.BlockCount() == 0, "the heap should have no blocks (it always has some)");
+        } else if (Is(kind, "pf")) {
+            *(ulong*)0xDEAD0000 = 42;                           // #PF on an unmapped page
+        } else if (Is(kind, "gp")) {
+            *(ulong*)(0x8000000000000000 | _zero) = 1;          // non-canonical address → #GP
+        } else if (Is(kind, "ud")) {
+            asm "ud2";                                          // #UD
+        } else if (Is(kind, "bp")) {
+            Intrinsics.Breakpoint();                            // #BP (int3)
+        } else if (Is(kind, "double-free")) {
+            void* block = Heap.Alloc(64);
+            Heap.Free(block);
+            Heap.Free(block);                                   // HEAP_CORRUPTION
+        } else {
+            Terminal.WriteLine("usage: crash null|div|throw|custom|assert|pf|gp|ud|bp|double-free");
+        }
+    }
+
+    static bool ParseNumber(byte* s, out ulong value)
+    {
+        value = 0;
+        if (s == null || *s < '0' || *s > '9')
+            return false;
+        while (*s >= '0' && *s <= '9') {
+            value = value * 10 + (ulong)(*s - '0');
+            s++;
+        }
+        return *s == 0 || *s == ' ';
+    }
+}

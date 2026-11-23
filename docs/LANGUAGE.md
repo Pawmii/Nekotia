@@ -26,6 +26,13 @@
 | `if/while/do/for/switch/break/continue/return/goto label` | то же | `switch` по целым и enum |
 | `nameof`, `sizeof`, `default`, `new S { F = 1 }` | константа / `sizeof` / `T{}` / IIFE-лямбда | |
 | `string` (только литералы) | `const char*` (UTF-8, NUL в конце) | сравнение — `Str.Equals` |
+| `Terminal.WriteLine($"{n} ms, {x:X}, {bytes:size}")` | `(Write("…"), WriteDec(n), …)` | без аллокаций; `:X` — hex, `:size` — KiB/MiB |
+| `"const"[i]`, `Const.Length` (константные строки) | `u"…"[i]`, число | семантика UTF-16 как в C# — таблицы символов |
+| `throw new T("msg")` | `neko::crash::unhandled_exception(...)` | экран смерти: тип, сообщение, файл:строка, метод |
+| `class MyError : Exception` | не генерируется | только как тип для `throw` |
+| `[CallerFilePath]`, `[CallerLineNumber]`, `[CallerMemberName]` | относительный путь, строка, `Ns.Type.Method` | |
+| `volatile` поля | `volatile T` | |
+| `[Irq(n)]` | регистрация в `neko_kernel_init()` | обработчик IRQ |
 
 ### Типы
 
@@ -42,8 +49,10 @@
 | `class` (не static), `new` ссылочных типов | NEKO0100 | `struct` + `Heap.New<T>()`; ссылочные классы — фаза 3 |
 | массивы `T[]` | NEKO0201 | `Heap.NewArray<T>(n)`, `stackalloc`, `fixed`-буфер |
 | `foreach` | NEKO0300 | `for i in a..b { }` (.neko) или `for` |
-| `try/catch/finally`, `throw` | NEKO0300 | `defer` для очистки, `Debug.Panic` для фатальных ошибок |
-| `"a" + b`, `$"..."` | NEKO0300 | несколько `Serial.Write*` подряд |
+| `try/catch/finally` | NEKO0300 | `defer` для очистки; любой `throw` пока необработанный → экран смерти |
+| `throw;`, `throw ex;`, throw-выражения | NEKO0300 | `throw new SomeException("...")` |
+| `"a" + b` | NEKO0300 | несколько `Write*` подряд или `$"..."` в `Write/WriteLine` |
+| `$"..."` вне `Write/WriteLine`, указатели в `$"..."` | NEKO0300 / CS0306 | отдельный `Write(ptr)` |
 | `float`, `double` | NEKO0201 | целые/фиксированная точка; FPU — фаза 4 |
 | лямбды, делегаты, LINQ, `async` | NEKO0300/0100 | статические методы + function pointers |
 | любой API .NET (`System.Console`…) | NEKO0200 / CS0234 | SDK Nekotia (`Nekotia.Hal`, `Nekotia.Mem`) |
@@ -106,6 +115,7 @@ for i in 1..=n { }              // включительно
 | `@inline` | `[Inline]` | `[[gnu::always_inline]]` |
 | `@noreturn` | `[NoReturn]` | `[[noreturn]]` |
 | `@native("::neko::x")` | `[Native("::neko::x")]` | реализация в `runtime/` |
+| `@irq(1)` | `[Irq(1)]` | обработчик ISA IRQ, регистрируется до `sti` |
 
 ## Связь с C++: `[Native]`
 
@@ -125,13 +135,17 @@ C#-обёртка в `sdk/Nekotia.Sdk/`.
 
 | Класс | Что умеет |
 |---|---|
-| `Nekotia.Hal.Serial` | `Write`, `WriteLine`, `WriteChar`, `WriteHex`, `WriteDec`, `WriteSize` |
+| `Nekotia.Hal.Terminal` | экран + serial: `Write*`, `WriteLine`, `WriteCodepoint`, `SetColor(AnsiColor)`, `Clear`, `Redraw`, курсор |
+| `Nekotia.Hal.Serial` | только serial: `Write`, `WriteLine`, `WriteChar`, `WriteHex`, `WriteDec`, `WriteSize` |
+| `Nekotia.Hal.Time` | `UptimeMs`, `Sleep(ms)`, `TimerHz` |
+| `Nekotia.Hal.Irq` | `Register(line, &Handler)`, `Count(line)` |
+| `Nekotia.Hal.Power` / `SysInfo` | `Reboot`, `Shutdown`; `CpuBrand`, `CpuCount`, `CpuMhz` |
 | `Nekotia.Hal.Cpu` | `Halt`, `HaltForever`, `Enable/DisableInterrupts`, `ReadTimestamp`, `ReadCr2/Cr3` |
 | `Nekotia.Hal.Port` | `In8/16/32`, `Out8/16/32`, `Wait` |
 | `Nekotia.Mem.Heap` | `Alloc`, `AllocZeroed`, `Realloc`, `Free`, `New<T>`, `NewArray<T>`, `Delete<T>`, статистика, `Check` |
 | `Nekotia.Mem.Pages` | `Alloc`, `Free` (4 KiB, обнулённые), `FreeCount`, `VirtToPhys`, `PhysToVirt` |
 | `Nekotia.Mem.Memory` | `Set`, `Copy`, `Move`, `Compare`, `Zero` |
-| `Nekotia.Debug` | `Panic`, `Assert` |
+| `Nekotia.Debug` | `Panic`, `Assert` — с файлом/строкой/методом вызывающего, экран смерти |
 | `Nekotia.Str` | `Length`, `Equals` для C-строк |
 | `Nekotia.Asm`, `Nekotia.Intrinsics` | `Emit`, `EmitAtt`, `Unreachable`, `Breakpoint`, `CompilerBarrier` |
 | `BootInfo`, `Framebuffer` | данные от загрузчика: память, HHDM, экран, cmdline |
@@ -141,6 +155,7 @@ C#-обёртка в `sdk/Nekotia.Sdk/`.
 | Код | Значение |
 |---|---|
 | NEKO0001 | нет / несколько / неверная сигнатура `[KernelEntry]` |
+| NEKO0003 | неверный `[Irq]`-обработчик (сигнатура, номер линии, дубликат) |
 | NEKO0100 | неподдерживаемый вид типа (class, interface, record, вложенный, generic) |
 | NEKO0101 | неподдерживаемый член (статический конструктор, индексатор, params…) |
 | NEKO0200 | вызов API .NET |
