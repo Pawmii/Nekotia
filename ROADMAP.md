@@ -123,7 +123,8 @@
 
 ## Фаза 6 — Драйверы и файловые системы
 
-- [ ] PCI/PCIe перечисление (ECAM через MCFG)
+- [x] PCI/PCIe перечисление: ECAM через ACPI MCFG (или порты 0xCF8), рекурсивный обход мостов, BAR с размерами,
+      capabilities; `Pci` в SDK, команда `lspci [-v]`
 - [ ] virtio-blk, AHCI (SATA), NVMe
 - [ ] VFS, initrd (Limine module: tar/cpio), ramfs, devfs
 - [ ] FAT32 (чтение/запись), ext2 (чтение)

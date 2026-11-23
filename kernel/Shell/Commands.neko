@@ -12,7 +12,7 @@ namespace Nekotia.OS;
 public static unsafe class Commands
 {
     /// Space-separated, used by Tab completion.
-    public const string Names = "help clear info ps run progs kill spawn mem vm pages alloc uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
+    public const string Names = "help clear info ps lspci run progs kill spawn mem vm pages alloc uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
 
     public static void Run(byte* cmd, byte* args)
     {
@@ -20,6 +20,7 @@ public static unsafe class Commands
         else if (Is(cmd, "clear")) Terminal.Clear();
         else if (Is(cmd, "info")) Info();
         else if (Is(cmd, "ps")) Ps();
+        else if (Is(cmd, "lspci")) Lspci(args);
         else if (Is(cmd, "run")) RunProgram(args);
         else if (Is(cmd, "progs")) Programs();
         else if (Is(cmd, "kill")) KillProcess(args);
@@ -63,6 +64,7 @@ public static unsafe class Commands
         Terminal.WriteLine("Commands:");
         Line("info", "system information");
         Line("ps", "threads and processes: state, priority, CPU time, context switches");
+        Line("lspci [-v]", "PCI devices (-v: BARs, IRQ, capabilities)");
         Line("run PROG ARGS", "run a user program in ring 3 (or just type its name; `&` at the end: background)");
         Line("progs", "user programs in /boot/bin");
         Line("kill PID", "end a user process (Ctrl+C ends the one in the foreground)");
@@ -178,6 +180,90 @@ public static unsafe class Commands
             Terminal.Write($"{p.MemoryKib} KiB");
             Pad(Digits(p.MemoryKib) + 4, 11);
             Terminal.WriteLine($"{p.UptimeMs} ms");
+        }
+    }
+
+    // ---------------------------------------------------------------- PCI
+
+    static void Lspci(byte* args)
+    {
+        bool verbose = Is(args, "-v");
+        uint n = Pci.Count();
+        if (n == 0) {
+            Terminal.WriteLine("no PCI devices (host mode, or no configuration space access)");
+            return;
+        }
+        PciDevice d = default;
+        for (uint i = 0; Pci.GetInfo(i, out d); i++) {
+            Hex(d.Bus, 2);
+            Terminal.Write(":");
+            Hex(d.Slot, 2);
+            Terminal.Write(".");
+            Terminal.WriteDec((ulong)d.Function);
+            Terminal.Write("  ");
+            Terminal.SetColor(AnsiColor.BrightCyan);
+            Hex(d.VendorId, 4);
+            Terminal.Write(":");
+            Hex(d.DeviceId, 4);
+            Terminal.ResetColor();
+            Terminal.Write("  ");
+            Terminal.Write(Pci.ClassName(d.Class, d.Subclass, d.ProgIf));
+            string vendor = Pci.VendorName(d.VendorId);
+            if (vendor != null) {
+                Terminal.Write(AnsiColor.Gray, " — ");
+                Terminal.Write(AnsiColor.Gray, vendor);
+            }
+            Terminal.WriteLine();
+            if (verbose)
+                LspciDetails(i, &d);
+        }
+        Terminal.WriteLine($"{n} device(s), configuration space through {(Pci.UsesEcam() ? "ECAM (ACPI MCFG)" : "ports 0xCF8/0xCFC")}");
+    }
+
+    static void LspciDetails(uint index, PciDevice* d)
+    {
+        Terminal.Write("          class ");
+        Hex(d->Class, 2);
+        Terminal.Write(".");
+        Hex(d->Subclass, 2);
+        Terminal.Write(".");
+        Hex(d->ProgIf, 2);
+        Terminal.Write($", rev {d->Revision}");
+        if (d->IrqPin != 0)
+            Terminal.Write($", INT{(char)('A' + d->IrqPin - 1)} → IRQ {d->IrqLine}");
+        if (d->HeaderType == 1)
+            Terminal.Write($", bridge to bus {Pci.Read8(index, 0x19)}");
+        byte cap = Pci.Read8(index, 0x34);
+        if ((Pci.Read16(index, 0x06) & 0x10) != 0 && cap >= 0x40) {
+            Terminal.Write(", caps");
+            for int guard in 0..48 {
+                if (cap < 0x40)
+                    break;
+                byte id = Pci.Read8(index, cap);
+                Terminal.Write(" ");
+                Terminal.Write(id == Pci.CapMsi ? "MSI" : id == Pci.CapMsiX ? "MSI-X" : id == Pci.CapExpress ? "PCIe" : id == Pci.CapVendor ? "vendor" : id == 0x01 ? "PM" : id == 0x12 ? "SATA" : "?");
+                cap = (byte)(Pci.Read8(index, (ushort)(cap + 1)) & 0xFC);
+            }
+        }
+        Terminal.WriteLine();
+        for int b in 0..6 {
+            if (d->BarAddress[b] == 0 && d->BarSize[b] == 0)
+                continue;
+            Terminal.Write($"          BAR{b} ");
+            bool io = (d->BarFlags[b] & Pci.BarIo) != 0;
+            Terminal.Write(io ? "I/O " : (d->BarFlags[b] & Pci.Bar64) != 0 ? "mem64 " : "mem32 ");
+            Terminal.Write($"{d->BarAddress[b]:X}  {d->BarSize[b]:size}");
+            if ((d->BarFlags[b] & Pci.BarPrefetchable) != 0)
+                Terminal.Write(", prefetchable");
+            Terminal.WriteLine();
+        }
+    }
+
+    static void Hex(ulong value, int digits)
+    {
+        for (int shift = (digits - 1) * 4; shift >= 0; shift -= 4) {
+            int digit = (int)((value >> shift) & 0xF);
+            Terminal.WriteChar((byte)(digit < 10 ? '0' + digit : 'a' + digit - 10));
         }
     }
 

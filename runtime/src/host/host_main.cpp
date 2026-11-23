@@ -129,6 +129,25 @@ bool space_check(uint64_t*, uint64_t, uint64_t, bool) { return false; }
 }  // namespace neko::vmm
 
 // No ring 3 in host mode: spawning a program reports "no user mode".
+namespace neko::pci {  // no devices in host mode
+void add_ecam(uint64_t, uint16_t, uint8_t, uint8_t) {}
+void init() {}
+bool uses_ecam() { return false; }
+uint32_t count() { return 0; }
+bool info(uint32_t, Device&) { return false; }
+const Device* get(uint32_t) { return nullptr; }
+int32_t find(uint16_t, uint16_t, uint32_t) { return -1; }
+int32_t find_class(uint8_t, uint8_t, uint32_t) { return -1; }
+uint32_t read32(uint32_t, uint16_t) { return 0xFFFFFFFF; }
+uint16_t read16(uint32_t, uint16_t) { return 0xFFFF; }
+uint8_t read8(uint32_t, uint16_t) { return 0xFF; }
+void write32(uint32_t, uint16_t, uint32_t) {}
+void write16(uint32_t, uint16_t, uint16_t) {}
+void enable(uint32_t, bool, bool, bool) {}
+uint8_t find_capability(uint32_t, uint8_t, uint8_t) { return 0; }
+void* map_bar(uint32_t, uint32_t) { return nullptr; }
+}  // namespace neko::pci
+
 namespace neko::arch {
 void enter_user(uint64_t, uint64_t, uint64_t, uint64_t) { neko::panic("user mode is not available in host mode"); }
 bool user_mode_available() { return false; }

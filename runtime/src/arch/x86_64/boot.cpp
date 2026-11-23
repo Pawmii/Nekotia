@@ -2,11 +2,12 @@
 // with paging, a GDT and a 64 KiB stack, then jumps to kmain().
 //
 // kmain:      serial → GDT/IDT → buddy allocator → own page tables → heap → kernel stack (guarded)
-// kmain_main: (on the new stack) console → ACPI/APIC → C# static init → [Irq] → sti → C# [KernelEntry]
+// kmain_main: (on the new stack) console → ACPI/APIC → PCI → initrd → C# static init → [Irq] → sti → C# [KernelEntry]
 #include <limine.h>
 
 #include "arch.hpp"
 
+#include <neko/pci.hpp>
 #include <neko/process.hpp>
 #include <neko/sched.hpp>
 #include <neko/smp.hpp>
@@ -196,6 +197,10 @@ uint64_t g_kernel_stack_top = 0;
     neko::term::write(", kernel stack with guard page\n");
 
     init_interrupts();
+    neko::pci::init();
+    neko::term::write("[neko] PCI: ");
+    neko::term::write_udec(neko::pci::count());
+    neko::term::write(neko::pci::uses_ecam() ? " device(s), ECAM (MCFG)\n" : " device(s), legacy port I/O\n");
     init_modules();
 
     // Dynamic initialisers of generated static fields, then [Irq] handler registration.

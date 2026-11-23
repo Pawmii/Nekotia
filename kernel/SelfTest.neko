@@ -64,6 +64,7 @@ public static unsafe class SelfTest
         BuddyBlocks();
         Paging();
         Threads();
+        PciBus();
         UserMode();
         return _failed;
     }
@@ -379,6 +380,19 @@ public static unsafe class SelfTest
     {
         long pid = Process.Start(name, args);
         return pid > 0 ? Process.Wait((uint)pid) : pid;
+    }
+
+    static void PciBus()
+    {
+        if (Kernel.Info->Hosted)
+            return;
+        Check(Pci.Count() > 0, "pci: the bus scan found devices");
+        int host = Pci.FindClass(0x06, 0x00);
+        Check(host >= 0, "pci: there is a host bridge (class 06.00)");
+        PciDevice d = default;
+        Check(host >= 0 && Pci.GetInfo((uint)host, out d) && (uint)Pci.Read16((uint)host, 0) == d.VendorId,
+              "pci: configuration reads match the scanned table");
+        Check(Pci.Find(0xFFFF, 0xFFFF, Pci.Count()) == -1, "pci: lookups past the end find nothing");
     }
 
     static void UserMode()

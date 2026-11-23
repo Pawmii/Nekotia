@@ -1,5 +1,8 @@
-// ACPI table discovery: RSDP → XSDT/RSDT → MADT ("APIC") for the interrupt controllers.
+// ACPI table discovery: RSDP → XSDT/RSDT → MADT ("APIC") for the interrupt controllers and
+// MCFG for the PCIe configuration space (ECAM).
 #include "arch.hpp"
+
+#include <neko/pci.hpp>
 
 namespace neko::arch {
 namespace {
@@ -83,6 +86,19 @@ void parse_madt(const Madt* madt, MadtInfo& out) {
     }
 }
 
+// MCFG: header, 8 reserved bytes, then one 16-byte entry per ECAM region.
+void parse_mcfg(const SdtHeader* h) {
+    auto* p = reinterpret_cast<const uint8_t*>(h) + sizeof(SdtHeader) + 8;
+    auto* end = reinterpret_cast<const uint8_t*>(h) + h->length;
+    for (; p + 16 <= end; p += 16) {
+        uint64_t base;
+        mem::copy(&base, p, 8);
+        uint16_t segment;
+        mem::copy(&segment, p + 8, 2);
+        pci::add_ecam(base, segment, p[10], p[11]);
+    }
+}
+
 }  // namespace
 
 bool acpi_init(void* rsdp_ptr, uint64_t hhdm, MadtInfo& out) {
@@ -98,15 +114,20 @@ bool acpi_init(void* rsdp_ptr, uint64_t hhdm, MadtInfo& out) {
     size_t entries = (root->length - sizeof(SdtHeader)) / (xsdt ? 8 : 4);
     auto* list = reinterpret_cast<const uint8_t*>(root) + sizeof(SdtHeader);
 
+    bool madt = false;
     for (size_t i = 0; i < entries; ++i) {
-        uint64_t table_phys = xsdt ? reinterpret_cast<const uint64_t*>(list)[i] : reinterpret_cast<const uint32_t*>(list)[i];
+        uint64_t table_phys;  // XSDT entries are 8 bytes but only 4-byte aligned
+        if (xsdt) mem::copy(&table_phys, list + i * 8, 8);
+        else table_phys = reinterpret_cast<const uint32_t*>(list)[i];
         const SdtHeader* h = map_table(table_phys);
-        if (sig(h->signature, "APIC")) {
+        if (sig(h->signature, "APIC") && !madt) {
             parse_madt(reinterpret_cast<const Madt*>(h), out);
-            return out.ioapic_count > 0;
+            madt = true;
+        } else if (sig(h->signature, "MCFG")) {
+            parse_mcfg(h);
         }
     }
-    return false;
+    return madt && out.ioapic_count > 0;
 }
 
 }  // namespace neko::arch

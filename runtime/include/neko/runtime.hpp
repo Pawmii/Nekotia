@@ -10,6 +10,7 @@
 #include <neko/memory.hpp>
 #include <neko/serial.hpp>
 #include <neko/platform.hpp>
+#include <neko/pci.hpp>
 #include <neko/process.hpp>
 #include <neko/sched.hpp>
 #include <neko/smp.hpp>
