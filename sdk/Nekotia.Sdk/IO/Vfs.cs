@@ -43,6 +43,33 @@ public struct VfsStats
     [Native("initrd_entries")] public ulong InitrdEntries;
 }
 
+/// <summary>A mounted volume. Mirrors <c>neko::vfs::MountInfo</c>.</summary>
+[Native("::neko::vfs::MountInfo")]
+public unsafe struct MountInfo
+{
+    [Native("path")] public fixed byte Path[64];
+    [Native("source")] public fixed byte Source[16];
+    [Native("type")] public fixed byte Type[8];
+    [Native("total_bytes")] public ulong TotalBytes;
+    [Native("free_bytes")] public ulong FreeBytes;
+}
+
+/// <summary>FAT32 volumes (runtime/src/fs/fat.cpp). Devices are names such as "vda" or "/dev/vda".</summary>
+public static unsafe class Fat
+{
+    /// <summary>Writes an empty FAT32 file system (needs ≥ 33 MiB). 0 or an error.</summary>
+    [Native("::neko::fat::format")]
+    public static extern long Format(byte* device, byte* label);
+
+    /// <summary>Mounts the FAT32 volume on <paramref name="device"/> at the empty directory <paramref name="dir"/>.</summary>
+    [Native("::neko::fat::mount")]
+    public static extern long Mount(byte* device, byte* dir);
+
+    /// <summary>Does the device hold a FAT32 boot sector?</summary>
+    [Native("::neko::fat::probe")]
+    public static extern bool Probe(byte* device);
+}
+
 /// <summary>
 /// The virtual file system (runtime/src/core/vfs.cpp): ramfs at /, the initrd unpacked into it, devices in /dev.
 /// Paths are absolute or relative to the working directory (kernel threads share one). Results are 0 / counts,
@@ -131,6 +158,17 @@ public static unsafe class Vfs
 
     [Native("::neko::vfs::stats")]
     public static extern VfsStats Statistics();
+
+    /// <summary>Unmounts the volume on <paramref name="dir"/> (after a sync); ErrBusy while something there is open.</summary>
+    [Native("::neko::vfs::unmount")]
+    public static extern long Unmount(byte* dir);
+
+    /// <summary>Writes every volume's pending metadata and flushes the disks.</summary>
+    [Native("::neko::vfs::sync_all")]
+    public static extern long Sync();
+
+    [Native("::neko::vfs::mount_info")]
+    public static extern bool GetMount(uint index, out MountInfo info);
 
     public static bool Exists(string path)
     {

@@ -47,4 +47,36 @@ public static unsafe class Tool
         Console.WriteLine(Ansi.Reset);
         return 1;
     }
+    /// <summary>Copies the file <paramref name="from"/> to <paramref name="to"/> (created or replaced). 0 or an error.</summary>
+    public static long CopyFile(byte* from, byte* to)
+    {
+        long src = File.Open(from, File.Read);
+        if (src < 0)
+            return src;
+        long dst = File.Open(to, File.Write | File.Create | File.Truncate);
+        if (dst < 0)
+        {
+            File.Close((int)src);
+            return dst;
+        }
+        const int Size = 16 * 1024;
+        byte* buffer = (byte*)Memory.Alloc(Size);
+        long result = buffer == null ? Process.ErrNoMemory : 0;
+        while (result == 0)
+        {
+            long n = File.ReadBytes((int)src, buffer, Size);
+            if (n <= 0)
+            {
+                result = n;
+                break;
+            }
+            long put = File.WriteBytes((int)dst, buffer, (ulong)n);
+            if (put != n)
+                result = put < 0 ? put : Process.ErrNoMemory;
+        }
+        Memory.Free(buffer);
+        File.Close((int)src);
+        File.Close((int)dst);
+        return result;
+    }
 }

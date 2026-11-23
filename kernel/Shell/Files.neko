@@ -257,6 +257,95 @@ public static unsafe class Files
             Terminal.WriteLine("no disks (QEMU: -drive file=disk.img,if=virtio,format=raw — `make run` attaches build/disk.img)");
     }
 
+    public static void Mount(byte* args)
+    {
+        byte* dir = Split(args);
+        if (*args == 0) {
+            MountInfo m = default;
+            uint n = 0;
+            for (uint i = 0; Vfs.GetMount(i, out m); i++) {
+                Terminal.Write("  /dev/");
+                Terminal.Write(m.Source);
+                Terminal.Write(" on ");
+                Terminal.SetColor(AnsiColor.BrightBlue);
+                Terminal.Write(m.Path);
+                Terminal.ResetColor();
+                Terminal.Write(" type ");
+                Terminal.Write(m.Type);
+                Terminal.WriteLine($", {m.FreeBytes:size} free of {m.TotalBytes:size}");
+                n++;
+            }
+            if (n == 0)
+                Terminal.WriteLine("nothing mounted (usage: mount DEV DIR, e.g. mount vda /mnt)");
+            return;
+        }
+        if (*dir == 0) {
+            Terminal.WriteLine("usage: mount DEV DIR   (e.g. mount vda /mnt)");
+            return;
+        }
+        Split(dir);
+        long e = Fat.Mount(args, dir);
+        if (e == Process.ErrNotSupported) {
+            Terminal.Write(AnsiColor.BrightRed, "mount: ");
+            Terminal.Write(args);
+            Terminal.WriteLine(AnsiColor.BrightRed, ": not a FAT32 volume (format it with `mkfs`)");
+        } else if (e < 0) {
+            Fail("mount", args, e);
+        }
+    }
+
+    public static void Unmount(byte* args)
+    {
+        if (*args == 0) {
+            Terminal.WriteLine("usage: umount DIR");
+            return;
+        }
+        Split(args);
+        long e = Vfs.Unmount(args);
+        if (e == Process.ErrBadArgument) {
+            Terminal.Write(AnsiColor.BrightRed, "umount: ");
+            Terminal.Write(args);
+            Terminal.WriteLine(AnsiColor.BrightRed, ": not a mount point");
+        } else if (e == Process.ErrBusy) {
+            Terminal.Write(AnsiColor.BrightRed, "umount: ");
+            Terminal.Write(args);
+            Terminal.WriteLine(AnsiColor.BrightRed, ": busy (an open file or a working directory is inside; `cd /` first)");
+        } else if (e < 0) {
+            Fail("umount", args, e);
+        }
+    }
+
+    public static void MakeFileSystem(byte* args)
+    {
+        byte* label = Split(args);
+        if (*args == 0) {
+            Terminal.WriteLine("usage: mkfs DEV [LABEL]   (FAT32; erases the disk)");
+            return;
+        }
+        Split(label);
+        long e = Fat.Format(args, *label != 0 ? label : Str.Bytes("NEKOTIA"));
+        if (e == Process.ErrNotSupported) {
+            Terminal.WriteLine(AnsiColor.BrightRed, "mkfs: the disk is too small for FAT32 (needs at least 33 MiB)");
+            return;
+        }
+        if (e < 0) {
+            Fail("mkfs", args, e);
+            return;
+        }
+        Terminal.Write("formatted /dev/");
+        Terminal.Write(args);
+        Terminal.Write(" as FAT32 — mount it with `mount ");
+        Terminal.Write(args);
+        Terminal.WriteLine(" /mnt`");
+    }
+
+    public static void Sync()
+    {
+        long e = Vfs.Sync();
+        if (e < 0)
+            Fail("sync", null, e);
+    }
+
     public static void Usage()
     {
         VfsStats s = Vfs.Statistics();

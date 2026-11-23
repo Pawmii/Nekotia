@@ -126,7 +126,7 @@ lower
 Программа — каталог `user/NAME` с `nekotia.json` (`"target": "user"`) и C#-кодом со `static int Main(int argc, byte** argv)`;
 API — `sdk/Nekotia.User` (`Console`, `Process`, `File`, `Path`, `Memory`, `Time`). `make` сам найдёт новый каталог,
 соберёт ELF и положит его в `/bin` initrd (`build/initrd.tar`, туда же попадает всё из `initrd/`). Программы: `sh`
-(shell в ring 3: `cd`, `pwd`, `> FILE`, `>> FILE`, `< FILE`, запуск по пути), `ls`, `cat`, `mkdir`, `rm`, `mv`, `ps`,
+(shell в ring 3: `cd`, `pwd`, `> FILE`, `>> FILE`, `< FILE`, запуск по пути), `ls`, `cat`, `cp`, `mkdir`, `rm`, `mv`, `ps`,
 `echo`, `kill`, `primes` (простые числа в N потоках — видно ускорение на нескольких CPU), `hello`, `guess` (читает
 клавиатуру), `usertest` (проверки ABI для `make test`).
 **Ctrl+C** завершает программу на переднем плане; `init=sh` в `cmdline` (`boot/limine.conf`) загружает сразу в `sh`.
@@ -144,7 +144,13 @@ Welcome to Nekotia — a kernel written in C#, transpiled to C++ by nekoc.
 ```
 
 Файлы живут в памяти (ramfs): `/bin`, `/etc`, `/home` приходят из initrd (файлы initrd читаются прямо из модуля,
-пока их не изменят), `/dev` — устройства `console`, `null`, `zero`, `/tmp` — пустой каталог для своих файлов.
+пока их не изменят), `/dev` — устройства `console`, `null`, `zero` и диски, `/tmp` — пустой каталог для своих файлов.
+
+**Диск.** `make run` подключает `build/disk.img` (64 МиБ) как virtio-диск `/dev/vda`. Один раз отформатируйте его
+из shell ядра — `mkfs vda`, `mount vda /mnt`; дальше ядро само монтирует его в `/mnt` при загрузке. Всё, что
+записано в `/mnt`, остаётся на диске между запусками (FAT32 с длинными именами — образ читается и в Linux:
+`sudo mount -o loop build/disk.img /media`). `cp`/`mv` переносят файлы между `/tmp` и `/mnt`, программы можно
+запускать прямо с диска (`./prog`). `scripts/fatcheck.py build/disk.img` проверяет образ без dosfstools.
 
 ## Команды
 

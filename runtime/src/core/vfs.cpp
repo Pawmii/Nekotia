@@ -32,6 +32,11 @@ struct Node {
     void* context;
     uint64_t created_ms;
     uint64_t modified_ms;
+    // Nodes of a mounted volume: the driver, its volume and its per-node data.
+    const FsOps* fs_ops;
+    void* fs;
+    void* fs_data;
+    bool mount_root;
 };
 
 struct File {
@@ -57,6 +62,15 @@ uint64_t g_open_files = 0;
 uint64_t g_heap_bytes = 0;
 uint64_t g_initrd_bytes = 0;
 uint64_t g_initrd_entries = 0;
+
+struct Mount {
+    Node* root;
+    const FsOps* ops;
+    void* fs;
+    char source[16];
+};
+constexpr uint32_t kMaxMounts = 8;
+Mount g_mounts[kMaxMounts];
 
 struct Locked {
     Locked() { g_lock.lock(); }
@@ -92,11 +106,14 @@ void drop_data(Node* n) {
 void release(Node* n) {
     if (--n->refs > 0) return;
     drop_data(n);
+    if (n->fs_ops && n->fs_data && !n->mount_root) n->fs_ops->release(n->fs, n->fs_data);
     heap::free(n);
     --g_nodes;
 }
 
 void attach(Node* dir, Node* n) {
+    n->fs_ops = dir->fs_ops;  // a node belongs to the volume of its directory
+    n->fs = dir->fs;
     n->parent = dir;
     n->next = nullptr;
     n->linked = true;
@@ -256,7 +273,7 @@ int64_t resize(Node* n, uint64_t size) {
     return 0;
 }
 
-uint64_t node_size(const Node* n) {
+uint64_t size_of(const Node* n) {
     if (n->type == Type::Directory) return n->child_count;
     if (n->type == Type::Device) return n->ops->size ? n->ops->size(n->context) : 0;
     return n->size;
@@ -266,7 +283,7 @@ void fill_stat(const Node* n, Stat& out) {
     mem::set(&out, 0, sizeof(out));
     out.type = n->type;
     out.id = n->id;
-    out.size = node_size(n);
+    out.size = size_of(n);
     out.created_ms = n->created_ms;
     out.modified_ms = n->modified_ms;
 }
@@ -398,6 +415,7 @@ void init() {
     make_dir_locked(g_root, "bin");
     make_dir_locked(g_root, "etc");
     make_dir_locked(g_root, "tmp");
+    make_dir_locked(g_root, "mnt");
     if (!dev) panic("vfs: out of memory for /dev");
     g_console = make_device_locked(dev, "console", &kConsoleOps, nullptr);
     make_device_locked(dev, "null", &kNullOps, nullptr);
@@ -498,25 +516,59 @@ int64_t open(const char* path, uint32_t flags, File*& out) {
     out = nullptr;
     if (!(flags & (kRead | kWrite))) return kErrBadArgument;
     if ((flags & kTruncate) && !(flags & kWrite)) return kErrBadArgument;
-    Locked guard;
-    Node* n = nullptr;
-    int64_t e = walk(path, n);
-    if (e == kErrNotFound && (flags & kCreate)) {
+    Node* n = nullptr;  // with one extra reference while we work on it
+    for (int attempt = 0;; ++attempt) {
+        g_lock.lock();
+        int64_t e = walk(path, n);
+        if (e == 0) {
+            if ((flags & kCreate) && (flags & kExclusive)) {
+                g_lock.unlock();
+                return kErrExists;
+            }
+            ++n->refs;
+            g_lock.unlock();
+            break;
+        }
+        if (e != kErrNotFound || !(flags & kCreate)) {
+            g_lock.unlock();
+            return e;
+        }
         Node* dir;
         char name[kMaxName + 1];
         e = walk_parent(path, dir, name);
+        if (e == 0 && !dir->fs_ops) {  // ramfs: create it right here
+            e = make(dir, name, Type::File, n);
+            if (e == 0) ++n->refs;
+        }
+        if (e < 0 || !dir->fs_ops) {
+            g_lock.unlock();
+            if (e < 0) return e;
+            break;
+        }
+        ++dir->refs;  // a mounted volume: the driver writes the entry (I/O, so without the lock)
+        g_lock.unlock();
+        e = dir->fs_ops->create(dir->fs, dir, name, Type::File, n);
+        node_release(dir);
+        if (e == kErrExists && attempt < 3) continue;  // created meanwhile: open that one
         if (e < 0) return e;
-        e = make(dir, name, Type::File, n);
-    } else if (e == 0 && (flags & kCreate) && (flags & kExclusive)) {
-        return kErrExists;
+        break;
     }
-    if (e < 0) return e;
-    if (n->type == Type::Directory && (flags & kWrite)) return kErrIsDirectory;
-    if (n->type == Type::File && (flags & kTruncate)) resize(n, 0);
-    File* f = new_file(n, flags);
-    if (!f) return kErrNoMemory;
-    out = f;
-    return 0;
+    int64_t e = 0;
+    if (n->type == Type::Directory && (flags & kWrite)) e = kErrIsDirectory;
+    else if (n->type == Type::File && (flags & kTruncate)) {
+        if (n->fs_ops) e = n->fs_ops->truncate(n->fs, n, 0);
+        else {
+            Locked guard;
+            e = resize(n, 0);
+        }
+    }
+    if (e == 0) {
+        Locked guard;
+        out = new_file(n, flags);
+        if (!out) e = kErrNoMemory;
+    }
+    node_release(n);
+    return e;
 }
 
 int64_t read(File* f, void* buffer, uint64_t length) {
@@ -532,6 +584,12 @@ int64_t read(File* f, void* buffer, uint64_t length) {
         return r;
     }
     if (n->type == Type::Directory) return kErrIsDirectory;
+    if (n->fs_ops) {
+        uint64_t at = __atomic_load_n(&f->offset, __ATOMIC_ACQUIRE);
+        int64_t r = n->fs_ops->read(n->fs, n, at, buffer, length);
+        if (r > 0) __atomic_store_n(&f->offset, at + uint64_t(r), __ATOMIC_RELEASE);
+        return r;
+    }
     Locked guard;
     if (f->offset >= n->size) return 0;
     uint64_t count = n->size - f->offset;
@@ -555,6 +613,13 @@ int64_t write(File* f, const void* buffer, uint64_t length) {
     }
     if (n->type == Type::Directory) return kErrIsDirectory;
     if (length == 0) return 0;
+    if (n->fs_ops) {
+        uint64_t at = (f->flags & kAppend) ? node_size(n) : __atomic_load_n(&f->offset, __ATOMIC_ACQUIRE);
+        if (at + length < at) return kErrBadArgument;
+        int64_t r = n->fs_ops->write(n->fs, n, at, buffer, length);
+        if (r > 0) __atomic_store_n(&f->offset, at + uint64_t(r), __ATOMIC_RELEASE);
+        return r;
+    }
     Locked guard;
     uint64_t at = (f->flags & kAppend) ? n->size : f->offset;
     if (at + length < at) return kErrBadArgument;
@@ -592,6 +657,7 @@ int64_t truncate(File* f, uint64_t size) {
     if (!f) return kErrBadFd;
     if (!(f->flags & kWrite)) return kErrAccess;
     if (f->node->type != Type::File) return f->node->type == Type::Directory ? kErrIsDirectory : kErrNotSupported;
+    if (f->node->fs_ops) return f->node->fs_ops->truncate(f->node->fs, f->node, size);
     Locked guard;
     return resize(f->node, size);
 }
@@ -613,7 +679,7 @@ int64_t readdir(File* f, uint32_t index, DirEntry& out) {
     mem::set(&out, 0, sizeof(out));
     str::copy(reinterpret_cast<char*>(out.name), c->name, sizeof(out.name));
     out.type = c->type;
-    out.size = node_size(c);
+    out.size = size_of(c);
     return 1;
 }
 
@@ -646,54 +712,104 @@ int64_t stat(const char* path, Stat& out) {
 }
 
 int64_t mkdir(const char* path) {
-    Locked guard;
+    g_lock.lock();
     Node* dir;
     char name[kMaxName + 1];
     int64_t e = walk_parent(path, dir, name);
-    if (e < 0) return e;
-    if (child(dir, name, uint32_t(str::length(name)))) return kErrExists;
-    Node* n;
-    return make(dir, name, Type::Directory, n);
+    if (e == 0 && child(dir, name, uint32_t(str::length(name)))) e = kErrExists;
+    if (e < 0 || !dir->fs_ops) {
+        Node* n;
+        if (e == 0) e = make(dir, name, Type::Directory, n);
+        g_lock.unlock();
+        return e;
+    }
+    ++dir->refs;
+    g_lock.unlock();
+    Node* n = nullptr;
+    e = dir->fs_ops->create(dir->fs, dir, name, Type::Directory, n);
+    if (e == 0) node_release(n);
+    node_release(dir);
+    return e;
 }
 
 int64_t remove(const char* path) {
-    Locked guard;
+    g_lock.lock();
     Node* n;
     int64_t e = walk(path, n);
-    if (e < 0) return e;
-    if (n == g_root || !n->parent) return kErrBusy;
-    if (n->type == Type::Directory && n->children) return kErrNotEmpty;
-    detach(n);
-    release(n);
-    return 0;
+    if (e == 0 && (n == g_root || !n->parent || n->mount_root)) e = kErrBusy;
+    if (e == 0 && n->type == Type::Directory && n->children) e = kErrNotEmpty;
+    if (e < 0 || !n->fs_ops) {
+        if (e == 0) {
+            detach(n);
+            release(n);
+        }
+        g_lock.unlock();
+        return e;
+    }
+    // On a volume the clusters go at once, so an open file (or a working directory) keeps it busy.
+    if (n->refs > 1) {
+        g_lock.unlock();
+        return kErrBusy;
+    }
+    ++n->refs;
+    g_lock.unlock();
+    e = n->fs_ops->remove(n->fs, n);
+    node_release(n);
+    return e;
 }
 
 int64_t rename(const char* from, const char* to) {
-    Locked guard;
+    g_lock.lock();
     Node* n;
-    int64_t e = walk(from, n);
-    if (e < 0) return e;
-    if (n == g_root || !n->parent) return kErrBusy;
-    Node* dir;
+    Node* dir = nullptr;
     char name[kMaxName + 1];
-    e = walk_parent(to, dir, name);
-    if (e < 0) return e;
-    if (!dir->linked) return kErrNotFound;
-    for (Node* d = dir; d; d = d->parent)  // a directory cannot move into itself
-        if (d == n) return kErrBusy;
-    Node* target = child(dir, name, uint32_t(str::length(name)));
-    if (target == n) return 0;
-    if (target) {
-        if (target->type == Type::Directory && n->type != Type::Directory) return kErrIsDirectory;
-        if (target->type != Type::Directory && n->type == Type::Directory) return kErrNotDirectory;
-        if (target->type == Type::Directory && target->children) return kErrNotEmpty;
-        detach(target);
-        release(target);
+    Node* target = nullptr;
+    int64_t e = walk(from, n);
+    if (e == 0 && (n == g_root || !n->parent || n->mount_root)) e = kErrBusy;
+    if (e == 0) e = walk_parent(to, dir, name);
+    if (e == 0 && !dir->linked) e = kErrNotFound;
+    if (e == 0) {
+        for (Node* d = dir; d; d = d->parent)  // a directory cannot move into itself
+            if (d == n) e = kErrBusy;
     }
-    detach(n);
-    str::copy(n->name, name, sizeof(n->name));
-    attach(dir, n);
-    return 0;
+    if (e == 0) target = child(dir, name, uint32_t(str::length(name)));
+    if (e == 0 && target == n) {
+        g_lock.unlock();
+        return 0;
+    }
+    if (e == 0 && (n->fs_ops != dir->fs_ops || n->fs != dir->fs)) e = kErrNotSupported;  // across volumes: copy instead
+    if (e == 0 && target) {
+        if (target->type == Type::Directory && n->type != Type::Directory) e = kErrIsDirectory;
+        else if (target->type != Type::Directory && n->type == Type::Directory) e = kErrNotDirectory;
+        else if (target->type == Type::Directory && target->children) e = kErrNotEmpty;
+        else if (target->mount_root) e = kErrBusy;
+        else if (n->fs_ops && target->refs > 1) e = kErrBusy;
+    }
+    if (e < 0 || !n->fs_ops) {
+        if (e == 0) {
+            if (target) {
+                detach(target);
+                release(target);
+            }
+            detach(n);
+            str::copy(n->name, name, sizeof(n->name));
+            attach(dir, n);
+        }
+        g_lock.unlock();
+        return e;
+    }
+    ++n->refs;
+    ++dir->refs;
+    if (target) ++target->refs;
+    g_lock.unlock();
+    if (target) {  // replacing a file: remove the old one first
+        e = n->fs_ops->remove(n->fs, target);
+        node_release(target);
+    }
+    if (e == 0) e = n->fs_ops->rename(n->fs, n, dir, name);
+    node_release(dir);
+    node_release(n);
+    return e;
 }
 
 int64_t create_device(const char* path, const DeviceOps* ops, void* context) {
@@ -727,7 +843,15 @@ int64_t read_all(const char* path, uint8_t*& data, uint64_t max_size) {
         close(f);
         return kErrNoMemory;
     }
-    int64_t got = read(f, buffer, st.size);  // ramfs reads return everything at once
+    int64_t got = 0;
+    while (uint64_t(got) < st.size) {
+        int64_t n = read(f, buffer + got, st.size - uint64_t(got));
+        if (n <= 0) {
+            if (n < 0) got = n;
+            break;
+        }
+        got += n;
+    }
     close(f);
     if (got < 0) {
         heap::free(buffer);
@@ -799,6 +923,187 @@ void set_console_reader(ConsoleReader reader) { __atomic_store_n(&g_console_read
 File* open_console() {
     Locked guard;
     return g_console ? new_file(g_console, kRead | kWrite) : nullptr;
+}
+
+// ---------------------------------------------------------------- mounted volumes
+
+int64_t mount(const char* path, const FsOps* ops, void* fs, const char* source, void* root_data, Node*& root) {
+    Locked guard;
+    Node* n;
+    int64_t e = walk(path, n);
+    if (e < 0) return e;
+    if (n->type != Type::Directory) return kErrNotDirectory;
+    if (n == g_root || n->fs_ops || n->children) return kErrBusy;  // an empty ramfs directory only
+    Mount* m = nullptr;
+    for (Mount& slot : g_mounts)
+        if (!slot.root && !m) m = &slot;
+    if (!m) return kErrLimit;
+    m->root = n;
+    m->ops = ops;
+    m->fs = fs;
+    str::copy(m->source, source ? source : "", sizeof(m->source));
+    n->fs_ops = ops;
+    n->fs = fs;
+    n->fs_data = root_data;
+    n->mount_root = true;
+    ++n->refs;  // the mount's own reference
+    root = n;
+    return 0;
+}
+
+namespace {
+
+bool busy_locked(Node* n, bool root) {
+    if (n->refs > (root ? 2u : 1u)) return true;  // open files or working directories (root: + the mount's)
+    for (Node* c = n->children; c; c = c->next)
+        if (busy_locked(c, false)) return true;
+    return false;
+}
+
+void drop_children_locked(Node* dir) {
+    while (Node* c = dir->children) {
+        drop_children_locked(c);
+        detach(c);
+        release(c);
+    }
+}
+
+}  // namespace
+
+int64_t unmount(const char* path) {
+    Mount* m = nullptr;
+    {
+        Locked guard;
+        Node* n;
+        int64_t e = walk(path, n);
+        if (e < 0) return e;
+        for (Mount& slot : g_mounts)
+            if (slot.root == n) m = &slot;
+        if (!m) return kErrBadArgument;  // not a mount point
+        if (busy_locked(n, true)) return kErrBusy;
+    }
+    m->ops->sync(m->fs);
+    Node* root;
+    const FsOps* ops;
+    void* fs;
+    {
+        Locked guard;
+        root = m->root;
+        if (busy_locked(root, true)) return kErrBusy;  // opened while we synced
+        ops = m->ops;
+        fs = m->fs;
+        drop_children_locked(root);
+        if (root->fs_data) ops->release(fs, root->fs_data);
+        root->fs_ops = nullptr;
+        root->fs = nullptr;
+        root->fs_data = nullptr;
+        root->mount_root = false;
+        m->root = nullptr;
+        release(root);  // the mount's reference
+    }
+    ops->unmount(fs);
+    return 0;
+}
+
+int64_t sync_all() {
+    int64_t result = 0;
+    for (Mount& m : g_mounts) {
+        const FsOps* ops;
+        void* fs;
+        {
+            Locked guard;
+            if (!m.root) continue;
+            ops = m.ops;
+            fs = m.fs;
+        }
+        int64_t e = ops->sync(fs);
+        if (e < 0) result = e;
+    }
+    return result;
+}
+
+bool mount_info(uint32_t index, MountInfo& out) {
+    const FsOps* ops = nullptr;
+    void* fs = nullptr;
+    {
+        Locked guard;
+        uint32_t seen = 0;
+        for (Mount& m : g_mounts) {
+            if (!m.root) continue;
+            if (seen++ != index) continue;
+            mem::set(&out, 0, sizeof(out));
+            // Path of the mount point, built from the end.
+            char path[kMaxPath];
+            uint64_t at = kMaxPath - 1;
+            path[at] = 0;
+            for (Node* d = m.root; d && d != g_root && at > 1; d = d->parent) {
+                uint64_t len = str::length(d->name);
+                if (len + 1 > at) break;
+                at -= len;
+                mem::copy(path + at, d->name, len);
+                path[--at] = '/';
+            }
+            str::copy(reinterpret_cast<char*>(out.path), path + at, sizeof(out.path));
+            str::copy(reinterpret_cast<char*>(out.source), m.source, sizeof(out.source));
+            str::copy(reinterpret_cast<char*>(out.type), m.ops->type, sizeof(out.type));
+            ops = m.ops;
+            fs = m.fs;
+            break;
+        }
+    }
+    if (!ops) return false;
+    ops->usage(fs, out.total_bytes, out.free_bytes);
+    return true;
+}
+
+// ---- helpers for drivers
+
+Node* add_node(Node* dir, const char* name, Type type, uint64_t size, void* fs_data, bool hold) {
+    Locked guard;
+    Node* n = new_node(name, uint32_t(str::length(name)), type);
+    if (!n) return nullptr;
+    n->size = size;
+    n->fs_data = fs_data;
+    attach(dir, n);
+    if (hold) ++n->refs;
+    return n;
+}
+
+void detach_node(Node* n) {
+    Locked guard;
+    if (!n->linked) return;
+    detach(n);
+    release(n);
+}
+
+void move_node(Node* n, Node* dir, const char* name) {
+    Locked guard;
+    detach(n);
+    str::copy(n->name, name, sizeof(n->name));
+    attach(dir, n);
+}
+
+void set_size(Node* n, uint64_t size) {
+    Locked guard;
+    n->size = size;
+    n->modified_ms = time::uptime_ms();
+}
+
+uint64_t node_size(Node* n) {
+    Locked guard;
+    return n->size;
+}
+
+void* node_data(Node* n) { return n->fs_data; }
+
+bool has_children(Node* n) {
+    Locked guard;
+    return n->children != nullptr;
+}
+
+bool has_child(Node* dir, const char* name) {
+    Locked guard;
+    return child(dir, name, uint32_t(str::length(name))) != nullptr;
 }
 
 Stats stats() {

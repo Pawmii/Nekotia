@@ -1,0 +1,265 @@
+.:  --exclude-dir=1
+./.gitignore:  listed in $Not_Code_Extension{gitignore}
+./Nekotia.slnx:  language unknown (#3)
+./boot/limine.conf:  unable to associate with a language
+./build/host/framebuffer.ppm:  binary file
+./build/host/gen.o:  binary file
+./build/host/nekotia-host:  binary file
+./build/host/runtime/src/core/block.cpp.o:  binary file
+./build/host/runtime/src/core/console.cpp.o:  binary file
+./build/host/runtime/src/core/crash.cpp.o:  binary file
+./build/host/runtime/src/core/font.S.o:  binary file
+./build/host/runtime/src/core/heap.cpp.o:  binary file
+./build/host/runtime/src/core/math.cpp.o:  binary file
+./build/host/runtime/src/core/pmm.cpp.o:  binary file
+./build/host/runtime/src/core/print.cpp.o:  binary file
+./build/host/runtime/src/core/process.cpp.o:  binary file
+./build/host/runtime/src/core/sched.cpp.o:  binary file
+./build/host/runtime/src/core/switch.S.o:  binary file
+./build/host/runtime/src/core/sync.cpp.o:  binary file
+./build/host/runtime/src/core/vfs.cpp.o:  binary file
+./build/host/runtime/src/host/host_main.cpp.o:  binary file
+./build/initrd.tar:  binary file
+./build/initrd_root/bin/cat:  binary file
+./build/initrd_root/bin/echo:  binary file
+./build/initrd_root/bin/guess:  binary file
+./build/initrd_root/bin/hello:  binary file
+./build/initrd_root/bin/kill:  binary file
+./build/initrd_root/bin/ls:  binary file
+./build/initrd_root/bin/mkdir:  binary file
+./build/initrd_root/bin/mv:  binary file
+./build/initrd_root/bin/primes:  binary file
+./build/initrd_root/bin/ps:  binary file
+./build/initrd_root/bin/rm:  binary file
+./build/initrd_root/bin/sh:  binary file
+./build/initrd_root/bin/usertest:  binary file
+./build/initrd_root/etc/motd:  language unknown (#3)
+./build/initrd_root/home/neko/hello.txt:  duplicate of ./initrd/home/neko/hello.txt
+./build/iso_root/EFI/BOOT/BOOTX64.EFI:  binary file
+./build/iso_root/boot/initrd.tar:  binary file
+./build/iso_root/boot/limine/limine-bios-cd.bin:  binary file
+./build/iso_root/boot/limine/limine-bios.sys:  binary file
+./build/iso_root/boot/limine/limine-uefi-cd.bin:  binary file
+./build/iso_root/boot/limine/limine.conf:  unable to associate with a language
+./build/iso_root/boot/nekotia.elf:  binary file
+./build/iso_root_test/EFI/BOOT/BOOTX64.EFI:  binary file
+./build/iso_root_test/boot/initrd.tar:  binary file
+./build/iso_root_test/boot/limine/limine-bios-cd.bin:  binary file
+./build/iso_root_test/boot/limine/limine-bios.sys:  binary file
+./build/iso_root_test/boot/limine/limine-uefi-cd.bin:  binary file
+./build/iso_root_test/boot/limine/limine.conf:  unable to associate with a language
+./build/iso_root_test/boot/nekotia.elf:  binary file
+./build/kernel/gen.o:  binary file
+./build/kernel/runtime/src/arch/x86_64/acpi.cpp.o:  binary file
+./build/kernel/runtime/src/arch/x86_64/apic.cpp.o:  binary file
+./build/kernel/runtime/src/arch/x86_64/boot.cpp.o:  binary file
+./build/kernel/runtime/src/arch/x86_64/entry.S.o:  binary file
+./build/kernel/runtime/src/arch/x86_64/gdt.cpp.o:  binary file
+./build/kernel/runtime/src/arch/x86_64/idt.cpp.o:  binary file
+./build/kernel/runtime/src/arch/x86_64/isr.S.o:  binary file
+./build/kernel/runtime/src/arch/x86_64/pci.cpp.o:  binary file
+./build/kernel/runtime/src/arch/x86_64/sched_arch.cpp.o:  binary file
+./build/kernel/runtime/src/arch/x86_64/serial.cpp.o:  binary file
+./build/kernel/runtime/src/arch/x86_64/smp.cpp.o:  binary file
+./build/kernel/runtime/src/arch/x86_64/syscall.S.o:  binary file
+./build/kernel/runtime/src/arch/x86_64/usermode.cpp.o:  binary file
+./build/kernel/runtime/src/arch/x86_64/vmm.cpp.o:  binary file
+./build/kernel/runtime/src/core/block.cpp.o:  binary file
+./build/kernel/runtime/src/core/console.cpp.o:  binary file
+./build/kernel/runtime/src/core/crash.cpp.o:  binary file
+./build/kernel/runtime/src/core/font.S.o:  binary file
+./build/kernel/runtime/src/core/heap.cpp.o:  binary file
+./build/kernel/runtime/src/core/math.cpp.o:  binary file
+./build/kernel/runtime/src/core/pmm.cpp.o:  binary file
+./build/kernel/runtime/src/core/print.cpp.o:  binary file
+./build/kernel/runtime/src/core/process.cpp.o:  binary file
+./build/kernel/runtime/src/core/sched.cpp.o:  binary file
+./build/kernel/runtime/src/core/switch.S.o:  binary file
+./build/kernel/runtime/src/core/sync.cpp.o:  binary file
+./build/kernel/runtime/src/core/vfs.cpp.o:  binary file
+./build/kernel/runtime/src/drivers/virtio_blk.cpp.o:  binary file
+./build/kernel/runtime/src/freestanding/cxxabi.cpp.o:  binary file
+./build/kernel/runtime/src/freestanding/libc.cpp.o:  binary file
+./build/kernel/symbols.o:  binary file
+./build/limine-test.conf:  unable to associate with a language
+./build/limine.conf:  unable to associate with a language
+./build/nekotia-test.iso:  binary file
+./build/nekotia.elf:  binary file
+./build/nekotia.iso:  binary file
+./build/nekotia.stage1.elf:  binary file
+./build/serial-bios.log:  language unknown (#3)
+./build/serial-smp.log:  language unknown (#3)
+./build/serial-uefi.log:  language unknown (#3)
+./build/smp1.log:  language unknown (#3)
+./build/stress.log:  language unknown (#3)
+./build/test-bios.log:  language unknown (#3)
+./build/test-disk.img:  binary file
+./build/test-uefi.log:  language unknown (#3)
+./build/tools/nekoc/Microsoft.CodeAnalysis.CSharp.dll:  binary file
+./build/tools/nekoc/Microsoft.CodeAnalysis.dll:  binary file
+./build/tools/nekoc/cs/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./build/tools/nekoc/cs/Microsoft.CodeAnalysis.resources.dll:  binary file
+./build/tools/nekoc/de/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./build/tools/nekoc/de/Microsoft.CodeAnalysis.resources.dll:  binary file
+./build/tools/nekoc/es/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./build/tools/nekoc/es/Microsoft.CodeAnalysis.resources.dll:  binary file
+./build/tools/nekoc/fr/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./build/tools/nekoc/fr/Microsoft.CodeAnalysis.resources.dll:  binary file
+./build/tools/nekoc/it/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./build/tools/nekoc/it/Microsoft.CodeAnalysis.resources.dll:  binary file
+./build/tools/nekoc/ja/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./build/tools/nekoc/ja/Microsoft.CodeAnalysis.resources.dll:  binary file
+./build/tools/nekoc/ko/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./build/tools/nekoc/ko/Microsoft.CodeAnalysis.resources.dll:  binary file
+./build/tools/nekoc/nekoc:  binary file
+./build/tools/nekoc/nekoc.deps.json:  duplicate of ./tools/nekoc/bin/Debug/net10.0/nekoc.deps.json
+./build/tools/nekoc/nekoc.dll:  binary file
+./build/tools/nekoc/nekoc.pdb:  binary file
+./build/tools/nekoc/pl/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./build/tools/nekoc/pl/Microsoft.CodeAnalysis.resources.dll:  binary file
+./build/tools/nekoc/pt-BR/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./build/tools/nekoc/pt-BR/Microsoft.CodeAnalysis.resources.dll:  binary file
+./build/tools/nekoc/ru/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./build/tools/nekoc/ru/Microsoft.CodeAnalysis.resources.dll:  binary file
+./build/tools/nekoc/tr/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./build/tools/nekoc/tr/Microsoft.CodeAnalysis.resources.dll:  binary file
+./build/tools/nekoc/zh-Hans/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./build/tools/nekoc/zh-Hans/Microsoft.CodeAnalysis.resources.dll:  binary file
+./build/tools/nekoc/zh-Hant/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./build/tools/nekoc/zh-Hant/Microsoft.CodeAnalysis.resources.dll:  binary file
+./build/user/bin/cat:  binary file
+./build/user/bin/echo:  binary file
+./build/user/bin/guess:  binary file
+./build/user/bin/hello:  binary file
+./build/user/bin/kill:  binary file
+./build/user/bin/ls:  binary file
+./build/user/bin/mkdir:  binary file
+./build/user/bin/mv:  binary file
+./build/user/bin/primes:  binary file
+./build/user/bin/ps:  binary file
+./build/user/bin/rm:  binary file
+./build/user/bin/sh:  binary file
+./build/user/bin/usertest:  binary file
+./build/user/cat/gen.o:  binary file
+./build/user/echo/gen.o:  binary file
+./build/user/guess/gen.o:  binary file
+./build/user/hello/gen.o:  binary file
+./build/user/kill/gen.o:  binary file
+./build/user/ls/gen.o:  binary file
+./build/user/mkdir/gen.o:  binary file
+./build/user/mv/gen.o:  binary file
+./build/user/primes/gen.o:  binary file
+./build/user/ps/gen.o:  binary file
+./build/user/rm/gen.o:  binary file
+./build/user/rt/runtime/src/core/math.cpp.o:  binary file
+./build/user/rt/runtime/src/freestanding/libc.cpp.o:  binary file
+./build/user/rt/runtime/user/src/crt0.S.o:  binary file
+./build/user/rt/runtime/user/src/user.cpp.o:  binary file
+./build/user/sh/gen.o:  binary file
+./build/user/usertest/gen.o:  binary file
+./initrd/etc/motd:  language unknown (#3)
+./kernel/Arch.neko:  language unknown (#3)
+./kernel/Demos.neko:  language unknown (#3)
+./kernel/Drivers/Keyboard.neko:  language unknown (#3)
+./kernel/Graphics.neko:  language unknown (#3)
+./kernel/SelfTest.neko:  language unknown (#3)
+./kernel/Shell/Commands.neko:  language unknown (#3)
+./kernel/Shell/Files.neko:  language unknown (#3)
+./kernel/Shell/Shell.neko:  language unknown (#3)
+./kernel/Syscalls.neko:  language unknown (#3)
+./kernel/bin/Debug/net10.0/Nekotia.Kernel.dll:  binary file
+./kernel/bin/Debug/net10.0/Nekotia.Kernel.pdb:  binary file
+./kernel/bin/Debug/net10.0/Nekotia.Sdk.dll:  binary file
+./kernel/bin/Debug/net10.0/Nekotia.Sdk.pdb:  binary file
+./kernel/obj/Debug/net10.0/.NETCoreApp,Version=v10.0.AssemblyAttributes.cs:  duplicate of ./user/obj/Debug/net10.0/.NETCoreApp,Version=v10.0.AssemblyAttributes.cs
+./kernel/obj/Debug/net10.0/Nekotia.Kernel.AssemblyInfoInputs.cache:  language unknown (#3)
+./kernel/obj/Debug/net10.0/Nekotia.Kernel.assets.cache:  binary file
+./kernel/obj/Debug/net10.0/Nekotia.Kernel.csproj.AssemblyReference.cache:  binary file
+./kernel/obj/Debug/net10.0/Nekotia.Kernel.csproj.CoreCompileInputs.cache:  language unknown (#3)
+./kernel/obj/Debug/net10.0/Nekotia.Kernel.dll:  binary file
+./kernel/obj/Debug/net10.0/Nekotia.Kernel.pdb:  binary file
+./kernel/obj/Debug/net10.0/ref/Nekotia.Kernel.dll:  binary file
+./kernel/obj/Debug/net10.0/refint/Nekotia.Kernel.dll:  binary file
+./kernel/obj/Nekotia.Kernel.csproj.nuget.g.props:  duplicate of ./user/obj/Nekotia.User.Programs.csproj.nuget.g.props
+./kernel/obj/Nekotia.Kernel.csproj.nuget.g.targets:  duplicate of ./user/obj/Nekotia.User.Programs.csproj.nuget.g.targets
+./kernel/obj/project.nuget.cache:  language unknown (#3)
+./runtime/assets/fonts/ter-v16n.psf:  binary file
+./sdk/Nekotia.Sdk/bin/Debug/net10.0/Nekotia.Sdk.dll:  binary file
+./sdk/Nekotia.Sdk/bin/Debug/net10.0/Nekotia.Sdk.pdb:  binary file
+./sdk/Nekotia.Sdk/obj/Debug/net10.0/.NETCoreApp,Version=v10.0.AssemblyAttributes.cs:  duplicate of ./user/obj/Debug/net10.0/.NETCoreApp,Version=v10.0.AssemblyAttributes.cs
+./sdk/Nekotia.Sdk/obj/Debug/net10.0/Nekotia.Sdk.AssemblyInfoInputs.cache:  language unknown (#3)
+./sdk/Nekotia.Sdk/obj/Debug/net10.0/Nekotia.Sdk.assets.cache:  binary file
+./sdk/Nekotia.Sdk/obj/Debug/net10.0/Nekotia.Sdk.csproj.CoreCompileInputs.cache:  language unknown (#3)
+./sdk/Nekotia.Sdk/obj/Debug/net10.0/Nekotia.Sdk.dll:  binary file
+./sdk/Nekotia.Sdk/obj/Debug/net10.0/Nekotia.Sdk.pdb:  binary file
+./sdk/Nekotia.Sdk/obj/Debug/net10.0/ref/Nekotia.Sdk.dll:  binary file
+./sdk/Nekotia.Sdk/obj/Debug/net10.0/refint/Nekotia.Sdk.dll:  binary file
+./sdk/Nekotia.Sdk/obj/Nekotia.Sdk.csproj.nuget.g.props:  duplicate of ./user/obj/Nekotia.User.Programs.csproj.nuget.g.props
+./sdk/Nekotia.Sdk/obj/Nekotia.Sdk.csproj.nuget.g.targets:  duplicate of ./user/obj/Nekotia.User.Programs.csproj.nuget.g.targets
+./sdk/Nekotia.Sdk/obj/project.nuget.cache:  language unknown (#3)
+./tools/nekoc/bin/Debug/net10.0/Microsoft.CodeAnalysis.CSharp.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/Microsoft.CodeAnalysis.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/cs/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/cs/Microsoft.CodeAnalysis.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/de/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/de/Microsoft.CodeAnalysis.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/es/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/es/Microsoft.CodeAnalysis.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/fr/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/fr/Microsoft.CodeAnalysis.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/it/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/it/Microsoft.CodeAnalysis.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/ja/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/ja/Microsoft.CodeAnalysis.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/ko/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/ko/Microsoft.CodeAnalysis.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/nekoc:  binary file
+./tools/nekoc/bin/Debug/net10.0/nekoc.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/nekoc.pdb:  binary file
+./tools/nekoc/bin/Debug/net10.0/pl/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/pl/Microsoft.CodeAnalysis.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/pt-BR/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/pt-BR/Microsoft.CodeAnalysis.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/ru/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/ru/Microsoft.CodeAnalysis.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/tr/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/tr/Microsoft.CodeAnalysis.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/zh-Hans/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/zh-Hans/Microsoft.CodeAnalysis.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/zh-Hant/Microsoft.CodeAnalysis.CSharp.resources.dll:  binary file
+./tools/nekoc/bin/Debug/net10.0/zh-Hant/Microsoft.CodeAnalysis.resources.dll:  binary file
+./tools/nekoc/obj/Debug/net10.0/.NETCoreApp,Version=v10.0.AssemblyAttributes.cs:  duplicate of ./user/obj/Debug/net10.0/.NETCoreApp,Version=v10.0.AssemblyAttributes.cs
+./tools/nekoc/obj/Debug/net10.0/apphost:  binary file
+./tools/nekoc/obj/Debug/net10.0/nekoc.AssemblyInfoInputs.cache:  language unknown (#3)
+./tools/nekoc/obj/Debug/net10.0/nekoc.GeneratedMSBuildEditorConfig.editorconfig:  duplicate of ./tools/nekoc/obj/Release/net10.0/nekoc.GeneratedMSBuildEditorConfig.editorconfig
+./tools/nekoc/obj/Debug/net10.0/nekoc.GlobalUsings.g.cs:  duplicate of ./tools/nekoc/obj/Release/net10.0/nekoc.GlobalUsings.g.cs
+./tools/nekoc/obj/Debug/net10.0/nekoc.assets.cache:  binary file
+./tools/nekoc/obj/Debug/net10.0/nekoc.csproj.AssemblyReference.cache:  binary file
+./tools/nekoc/obj/Debug/net10.0/nekoc.csproj.CoreCompileInputs.cache:  language unknown (#3)
+./tools/nekoc/obj/Debug/net10.0/nekoc.dll:  binary file
+./tools/nekoc/obj/Debug/net10.0/nekoc.genruntimeconfig.cache:  language unknown (#3)
+./tools/nekoc/obj/Debug/net10.0/nekoc.pdb:  binary file
+./tools/nekoc/obj/Debug/net10.0/ref/nekoc.dll:  binary file
+./tools/nekoc/obj/Debug/net10.0/refint/nekoc.dll:  binary file
+./tools/nekoc/obj/Release/net10.0/.NETCoreApp,Version=v10.0.AssemblyAttributes.cs:  duplicate of ./user/obj/Debug/net10.0/.NETCoreApp,Version=v10.0.AssemblyAttributes.cs
+./tools/nekoc/obj/Release/net10.0/apphost:  binary file
+./tools/nekoc/obj/Release/net10.0/nekoc.AssemblyInfoInputs.cache:  language unknown (#3)
+./tools/nekoc/obj/Release/net10.0/nekoc.assets.cache:  binary file
+./tools/nekoc/obj/Release/net10.0/nekoc.csproj.AssemblyReference.cache:  binary file
+./tools/nekoc/obj/Release/net10.0/nekoc.csproj.CoreCompileInputs.cache:  language unknown (#3)
+./tools/nekoc/obj/Release/net10.0/nekoc.dll:  binary file
+./tools/nekoc/obj/Release/net10.0/nekoc.genruntimeconfig.cache:  language unknown (#3)
+./tools/nekoc/obj/Release/net10.0/nekoc.pdb:  binary file
+./tools/nekoc/obj/Release/net10.0/ref/nekoc.dll:  binary file
+./tools/nekoc/obj/Release/net10.0/refint/nekoc.dll:  binary file
+./tools/nekoc/obj/project.nuget.cache:  language unknown (#3)
+./user/bin/Debug/net10.0/Nekotia.User.Programs.dll:  binary file
+./user/bin/Debug/net10.0/Nekotia.User.Programs.pdb:  binary file
+./user/obj/Debug/net10.0/Nekotia.User.Programs.AssemblyInfoInputs.cache:  language unknown (#3)
+./user/obj/Debug/net10.0/Nekotia.User.Programs.assets.cache:  binary file
+./user/obj/Debug/net10.0/Nekotia.User.Programs.csproj.CoreCompileInputs.cache:  language unknown (#3)
+./user/obj/Debug/net10.0/Nekotia.User.Programs.dll:  binary file
+./user/obj/Debug/net10.0/Nekotia.User.Programs.pdb:  binary file
+./user/obj/Debug/net10.0/ref/Nekotia.User.Programs.dll:  binary file
+./user/obj/Debug/net10.0/refint/Nekotia.User.Programs.dll:  binary file
+./user/obj/project.nuget.cache:  language unknown (#3)

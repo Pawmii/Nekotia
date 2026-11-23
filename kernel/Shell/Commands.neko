@@ -13,7 +13,7 @@ namespace Nekotia.OS;
 public static unsafe class Commands
 {
     /// Space-separated, used by Tab completion.
-    public const string Names = "help clear info ps lspci disks ls cd pwd cat mkdir rm mv write df run progs kill spawn mem vm pages alloc uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
+    public const string Names = "help clear info ps lspci disks mount umount mkfs sync ls cd pwd cat mkdir rm mv write df run progs kill spawn mem vm pages alloc uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
 
     public static void Run(byte* cmd, byte* args)
     {
@@ -23,6 +23,10 @@ public static unsafe class Commands
         else if (Is(cmd, "ps")) Ps();
         else if (Is(cmd, "lspci")) Lspci(args);
         else if (Is(cmd, "disks")) Files.Disks();
+        else if (Is(cmd, "mount")) Files.Mount(args);
+        else if (Is(cmd, "umount")) Files.Unmount(args);
+        else if (Is(cmd, "mkfs")) Files.MakeFileSystem(args);
+        else if (Is(cmd, "sync")) Files.Sync();
         else if (Is(cmd, "ls")) Files.List(args);
         else if (Is(cmd, "cd")) Files.ChangeDirectory(args);
         else if (Is(cmd, "pwd")) Files.PrintDirectory();
@@ -50,8 +54,13 @@ public static unsafe class Commands
         else if (Is(cmd, "selftest")) SelfTest.Run(true);
         else if (Is(cmd, "panic")) Debug.Panic("requested from the shell");
         else if (Is(cmd, "crash")) Crash(args);
-        else if (Is(cmd, "reboot")) Power.Reboot();
-        else if (Is(cmd, "shutdown")) Power.Shutdown();
+        else if (Is(cmd, "reboot")) {
+            Vfs.Sync();
+            Power.Reboot();
+        } else if (Is(cmd, "shutdown")) {
+            Vfs.Sync();
+            Power.Shutdown();
+        }
         else if (HasProgram(cmd)) Execute(cmd, args);   // `hello a b` = `run hello a b`
         else {
             Terminal.Write(AnsiColor.BrightRed, "unknown command: ");
@@ -131,6 +140,10 @@ public static unsafe class Commands
         Line("mv FROM TO", "rename, or move into a directory");
         Line("df", "file system usage: nodes, open files, heap and initrd bytes");
         Line("disks", "block devices: size, model, sectors read and written (each is also /dev/NAME)");
+        Line("mount [DEV DIR]", "mount a FAT32 disk on an empty directory; without arguments: list mounts");
+        Line("umount DIR", "unmount (writes everything out first)");
+        Line("mkfs DEV [LABEL]", "format a disk as FAT32 — erases it");
+        Line("sync", "write pending metadata of every volume and flush the disks");
         Section("Programs:");
         Line("progs", "user programs in /bin");
         Line("run PROG ARGS", "run a user program in ring 3 (or just type its name or path; `&` at the end: background)");

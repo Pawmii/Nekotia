@@ -1,5 +1,6 @@
 using Nekotia;
 using Nekotia.Hal;
+using Nekotia.IO;
 using Nekotia.OS.Drivers;
 using Nekotia.Processes;
 
@@ -24,6 +25,7 @@ public static unsafe class Kernel
             Power.TestExit(failed == 0 ? (byte)0 : (byte)1);
         }
         SelfTest.Run(false);
+        MountDisk();
         Keyboard.Init();
         RunInit((byte*)info->CommandLine);
         Shell.Run();
@@ -63,6 +65,31 @@ public static unsafe class Kernel
         Terminal.Write($" exited with code {code} — kernel shell]");
         Terminal.ResetColor();
         Terminal.WriteLine();
+    }
+
+    /// The first virtio disk goes to /mnt when it holds FAT32 (`make run` attaches build/disk.img as vda).
+    static void MountDisk()
+    {
+        byte* dev = Str.Bytes("vda");
+        if (Block.Find(dev) < 0)
+            return;
+        if (!Fat.Probe(dev)) {
+            Terminal.SetColor(AnsiColor.Gray);
+            Terminal.WriteLine("disk: /dev/vda has no FAT32 file system — `mkfs vda`, then `mount vda /mnt`");
+            Terminal.ResetColor();
+            return;
+        }
+        long e = Fat.Mount(dev, Str.Bytes("/mnt"));
+        if (e < 0) {
+            Terminal.Write(AnsiColor.BrightRed, "disk: cannot mount /dev/vda: ");
+            Terminal.WriteLine(Process.ErrorText(e));
+            return;
+        }
+        MountInfo m = default;
+        Vfs.GetMount(0, out m);
+        Terminal.SetColor(AnsiColor.Gray);
+        Terminal.WriteLine($"disk: /dev/vda (FAT32) mounted on /mnt, {m.FreeBytes:size} free of {m.TotalBytes:size}");
+        Terminal.ResetColor();
     }
 
     static void Banner()

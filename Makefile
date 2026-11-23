@@ -37,7 +37,7 @@ HEAP_SIZE  ?= 4194304  # initial kernel heap; it grows on demand
 CS_SOURCES  := $(shell find sdk kernel -type f \( -name '*.cs' -o -name '*.neko' \) -not -path '*/bin/*' -not -path '*/obj/*')
 NEKOC_SRCS  := $(shell find tools/nekoc -type f \( -name '*.cs' -o -name '*.csproj' \) -not -path '*/bin/*' -not -path '*/obj/*')
 RT_HEADERS  := $(wildcard runtime/include/neko/*.hpp)
-CORE_SRCS   := $(wildcard runtime/src/core/*.cpp)
+CORE_SRCS   := $(wildcard runtime/src/core/*.cpp) $(wildcard runtime/src/fs/*.cpp)
 KERNEL_SRCS := $(CORE_SRCS) $(wildcard runtime/src/freestanding/*.cpp) $(wildcard runtime/src/arch/x86_64/*.cpp) \
                $(wildcard runtime/src/drivers/*.cpp)
 KERNEL_ASM  := $(wildcard runtime/src/arch/x86_64/*.S) $(wildcard runtime/src/core/*.S)
@@ -238,6 +238,7 @@ DISK       ?= $(BUILD)/disk.img
 DISK_SIZE  ?= 64M
 DISK_FLAGS  = -drive file=$(DISK),if=none,id=disk0,format=raw -device virtio-blk-pci,drive=disk0
 TEST_DISK  := $(BUILD)/test-disk.img
+TEST_FAT   := $(BUILD)/test-fat.img
 
 $(DISK):
 	@mkdir -p $(dir $@)
@@ -247,17 +248,21 @@ TEST_FLAGS ?= -M q35 -cpu qemu64,+smep,+smap -m 256M -smp 4 -display none -seria
               -device isa-debug-exit,iobase=0xf4,iosize=0x04
 TEST_TIMEOUT ?= 60
 
-TEST_DISK_FLAGS = -drive file=$(TEST_DISK),if=none,id=disk0,format=raw -device virtio-blk-pci,drive=disk0
+# vda: raw sectors for the block tests; vdb: formatted as FAT32 by the self test (needs ≥ 33 MiB).
+TEST_DISK_FLAGS = -drive file=$(TEST_DISK),if=none,id=disk0,format=raw -device virtio-blk-pci,drive=disk0 \
+                  -drive file=$(TEST_FAT),if=none,id=disk1,format=raw -device virtio-blk-pci,drive=disk1
 
 test: $(BUILD)/nekotia-test.iso
-	@rm -f $(TEST_DISK); truncate -s 8M $(TEST_DISK)
+	@rm -f $(TEST_DISK) $(TEST_FAT); truncate -s 8M $(TEST_DISK); truncate -s 64M $(TEST_FAT)
 	@echo "== QEMU (BIOS)"; timeout $(TEST_TIMEOUT) $(QEMU) $(TEST_FLAGS) $(TEST_DISK_FLAGS) -cdrom $< > $(BUILD)/test-bios.log 2>&1; \
 	  status=$$?; sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' $(BUILD)/test-bios.log | grep -aE '^(  (ok|FAIL)|selftest)'; \
 	  if [ $$status -ne 1 ]; then echo "test (BIOS): FAILED (status $$status, log: $(BUILD)/test-bios.log)"; exit 1; fi
 	@if [ -n "$(OVMF)" ]; then echo "== QEMU (UEFI)"; timeout $(TEST_TIMEOUT) $(QEMU) $(TEST_FLAGS) $(TEST_DISK_FLAGS) -bios $(OVMF) -cdrom $< > $(BUILD)/test-uefi.log 2>&1; \
 	  status=$$?; sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' $(BUILD)/test-uefi.log | grep -aE '^selftest'; \
 	  if [ $$status -ne 1 ]; then echo "test (UEFI): FAILED (status $$status, log: $(BUILD)/test-uefi.log)"; exit 1; fi; fi
-	@echo "test: all passed (BIOS$(if $(OVMF), + UEFI))"
+	@echo "== FAT32 image written by the kernel (scripts/fatcheck.py)"; python3 -I scripts/fatcheck.py $(TEST_FAT) | tail -4 && \
+	  test "$$(python3 -I scripts/fatcheck.py $(TEST_FAT) --cat 'Kept by selftest/Привет, мир.txt')" = persisted
+	@echo "test: all passed (BIOS$(if $(OVMF), + UEFI), FAT32 image checked)"
 
 run: $(BUILD)/nekotia.iso $(DISK)
 	$(QEMU) $(QEMU_FLAGS) $(DISK_FLAGS) -cdrom $<

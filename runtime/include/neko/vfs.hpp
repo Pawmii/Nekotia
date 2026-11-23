@@ -110,6 +110,57 @@ using ConsoleReader = int64_t (*)(uint8_t* buffer, uint64_t length);
 void set_console_reader(ConsoleReader reader);
 File* open_console();  // a fresh open file for fds 0, 1, 2 of processes the kernel starts
 
+// ---- mounted file systems
+//
+// A driver (fat.cpp) mounts a volume on an empty directory and builds the whole directory tree as
+// VFS nodes at mount time (names are in memory, so path walks never touch the disk). File contents
+// and every change to the tree go through FsOps, called WITHOUT the VFS lock (they do I/O) — the
+// driver serialises its volume with its own mutex and updates the tree through the helpers below.
+// release() runs when a node's memory goes and must not block.
+struct FsOps {
+    const char* type;  // "fat32"
+    int64_t (*read)(void* fs, Node* n, uint64_t offset, void* buffer, uint64_t length);
+    int64_t (*write)(void* fs, Node* n, uint64_t offset, const void* buffer, uint64_t length);
+    int64_t (*truncate)(void* fs, Node* n, uint64_t size);
+    // Creates `name` in `dir` on disk and in the tree (add_node with hold = true): out has an extra reference.
+    int64_t (*create)(void* fs, Node* dir, const char* name, Type type, Node*& out);
+    int64_t (*remove)(void* fs, Node* n);  // on disk, then detach_node; directories are empty
+    int64_t (*rename)(void* fs, Node* n, Node* dir, const char* name);  // on disk, then move_node; `name` is free
+    int64_t (*sync)(void* fs);
+    void (*release)(void* fs, void* fs_data);
+    void (*unmount)(void* fs);  // after a sync, once every node is gone: free the volume
+    void (*usage)(void* fs, uint64_t& total_bytes, uint64_t& free_bytes);
+};
+
+// Mounts `fs` on the empty directory `dir`; root_data becomes the directory's fs_data. Out: that node.
+int64_t mount(const char* dir, const FsOps* ops, void* fs, const char* source, void* root_data, Node*& root);
+inline int64_t mount(const uint8_t* dir, const FsOps* ops, void* fs, const char* source, void* root_data, Node*& root) {
+    return mount(reinterpret_cast<const char*>(dir), ops, fs, source, root_data, root);
+}
+int64_t unmount(const char* dir);  // kErrBusy while anything below it is open or a working directory
+inline int64_t unmount(const uint8_t* dir) { return unmount(reinterpret_cast<const char*>(dir)); }
+int64_t sync_all();                // every mounted volume
+
+// Field names match sdk/Nekotia.Sdk/IO/Vfs.cs.
+struct MountInfo {
+    uint8_t path[64];
+    uint8_t source[16];  // device, e.g. "vda"
+    uint8_t type[8];
+    uint64_t total_bytes;
+    uint64_t free_bytes;
+};
+bool mount_info(uint32_t index, MountInfo& out);
+
+// Tree helpers for drivers (they take the VFS lock themselves).
+Node* add_node(Node* dir, const char* name, Type type, uint64_t size, void* fs_data, bool hold);
+void detach_node(Node* n);
+void move_node(Node* n, Node* dir, const char* name);
+void set_size(Node* n, uint64_t size);
+uint64_t node_size(Node* n);
+void* node_data(Node* n);
+bool has_children(Node* n);
+bool has_child(Node* dir, const char* name);
+
 // ---- statistics
 struct Stats {
     uint64_t nodes;
