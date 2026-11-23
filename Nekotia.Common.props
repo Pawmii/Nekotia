@@ -1,0 +1,37 @@
+<Project>
+
+  <!--
+    Shared settings for the IDE projects (sdk/ and kernel/).
+    They exist for IntelliSense, go-to-definition and fast C# error checking only;
+    the kernel itself is built by nekoc + clang (see Makefile), never by MSBuild.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <LangVersion>preview</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <DefineConstants>$(DefineConstants);NEKOTIA</DefineConstants>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- extern without DllImport ([Native]), fields filled by hardware/bootloader -->
+    <NoWarn>$(NoWarn);CS0626;CS0649;CS0169;CS0414;CS8500</NoWarn>
+    <NekocDll>$(MSBuildThisFileDirectory)build/tools/nekoc/nekoc.dll</NekocDll>
+  </PropertyGroup>
+
+  <!-- .neko files: desugar into obj/ so Roslyn (and the IDE) sees them; #line maps errors back to the .neko file. -->
+  <ItemGroup>
+    <NekoSource Include="**/*.neko" Exclude="bin/**;obj/**" />
+    <None Include="@(NekoSource)" />
+  </ItemGroup>
+
+  <Target Name="NekoDesugar" BeforeTargets="CoreCompile;CompileDesignTime" Condition="'@(NekoSource)' != ''">
+    <Warning Condition="!Exists('$(NekocDll)')" Text="nekoc is not built yet — run `make tools`; .neko files are skipped for now." />
+    <Exec Condition="Exists('$(NekocDll)')"
+          Command="dotnet &quot;$(NekocDll)&quot; desugar &quot;%(NekoSource.FullPath)&quot; --out &quot;$(IntermediateOutputPath)neko/%(NekoSource.RecursiveDir)%(NekoSource.Filename).neko.g.cs&quot;" />
+    <ItemGroup Condition="Exists('$(NekocDll)')">
+      <Compile Include="$(IntermediateOutputPath)neko/**/*.neko.g.cs" />
+    </ItemGroup>
+  </Target>
+
+</Project>

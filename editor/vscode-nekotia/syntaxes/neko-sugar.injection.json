@@ -1,0 +1,85 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "scopeName": "neko.sugar.injection",
+  "injectionSelector": "L:source.neko -comment -string",
+  "patterns": [
+    { "include": "#asm-block" },
+    { "include": "#asm-inline" },
+    { "include": "#for-in" },
+    { "include": "#range" },
+    { "include": "#keywords" },
+    { "include": "#attribute-shorthand" }
+  ],
+  "repository": {
+    "asm-block": {
+      "begin": "\\b(asm)\\s*(\\{)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.asm.neko" },
+        "2": { "name": "punctuation.section.embedded.begin.neko" }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": { "name": "punctuation.section.embedded.end.neko" }
+      },
+      "contentName": "meta.embedded.block.asm.neko",
+      "patterns": [{ "include": "#asm-body" }]
+    },
+    "asm-inline": {
+      "begin": "\\b(asm)\\s+(\")",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.asm.neko" },
+        "2": { "name": "punctuation.definition.string.begin.neko" }
+      },
+      "end": "\"",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.neko" }
+      },
+      "contentName": "meta.embedded.line.asm.neko",
+      "patterns": [{ "include": "#asm-body" }]
+    },
+    "asm-body": {
+      "patterns": [
+        { "match": "(#|//).*$", "name": "comment.line.asm.neko" },
+        {
+          "match": "(?:^|\\G|;)\\s*([A-Za-z][A-Za-z0-9.]*)\\b",
+          "captures": { "1": { "name": "keyword.other.instruction.asm.neko" } }
+        },
+        {
+          "match": "%?\\b(r(?:[abcd]x|[sd]i|[sb]p|ip|[89]|1[0-5])[dwb]?|e(?:[abcd]x|[sd]i|[sb]p|ip)|[abcd][xlh]|[sd]il?|[sb]pl?|cr[0-8]|dr[0-7]|[cdefgs]s|[xyz]mm\\d+|[re]?flags|gdtr|idtr)\\b",
+          "name": "variable.language.register.asm.neko"
+        },
+        { "match": "\\b(byte|word|dword|qword|tbyte|xmmword|ptr|offset|rel)\\b", "name": "storage.type.asm.neko" },
+        { "match": "\\$?\\b(0[xX][0-9a-fA-F]+|0[bB][01]+|[0-9][0-9a-fA-F]*[hH]|\\d+)\\b", "name": "constant.numeric.asm.neko" },
+        { "match": "[\\[\\]]", "name": "punctuation.definition.memory.asm.neko" },
+        { "match": "[,:+\\-*]", "name": "punctuation.separator.asm.neko" }
+      ]
+    },
+    "for-in": {
+      "match": "\\b(for)\\s+(?:([A-Za-z_][\\w.]*\\**)\\s+)?([A-Za-z_]\\w*)\\s+(in)\\b",
+      "captures": {
+        "1": { "name": "keyword.control.loop.for.neko" },
+        "2": { "name": "keyword.type.neko" },
+        "3": { "name": "entity.name.variable.local.neko" },
+        "4": { "name": "keyword.control.loop.in.neko" }
+      }
+    },
+    "range": {
+      "match": "\\.\\.=?",
+      "name": "keyword.operator.range.neko"
+    },
+    "keywords": {
+      "patterns": [
+        { "match": "\\b(defer)\\b(?=\\s)", "name": "keyword.control.defer.neko" },
+        { "match": "\\b(unless)\\b(?=\\s*\\()", "name": "keyword.control.conditional.unless.neko" },
+        { "match": "\\b(loop)\\b(?=\\s*\\{)", "name": "keyword.control.loop.neko" }
+      ]
+    },
+    "attribute-shorthand": {
+      "match": "(@)(entry|packed|inline|noreturn|native|align)\\b",
+      "captures": {
+        "1": { "name": "punctuation.definition.decorator.neko" },
+        "2": { "name": "entity.name.function.decorator.neko storage.modifier.attribute.neko" }
+      }
+    }
+  }
+}

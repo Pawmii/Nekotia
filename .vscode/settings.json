@@ -1,0 +1,11 @@
+{
+  "files.associations": { "*.neko": "nekotia" },
+  "files.exclude": { "**/bin": true, "**/obj": true },
+  "search.exclude": { "build/**": true },
+  "dotnet.defaultSolution": "Nekotia.slnx",
+  "C_Cpp.default.compilerPath": "/usr/bin/clang++",
+  "C_Cpp.default.cppStandard": "c++20",
+  "C_Cpp.default.includePath": ["${workspaceFolder}/runtime/include", "${workspaceFolder}/runtime/third_party/limine", "${workspaceFolder}/build/gen"],
+  "C_Cpp.default.defines": ["NEKO_HOSTED=0"],
+  "C_Cpp.default.compilerArgs": ["--target=x86_64-unknown-none-elf", "-ffreestanding"]
+}

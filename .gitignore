@@ -1,0 +1,7 @@
+# build output (generated C++, objects, ELF, ISO, .vsix)
+/build/
+bin/
+obj/
+/third_party/limine-bin/
+*.swp
+.idea/

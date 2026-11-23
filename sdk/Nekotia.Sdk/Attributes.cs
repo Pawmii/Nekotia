@@ -1,0 +1,45 @@
+using System;
+
+namespace Nekotia;
+
+/// <summary>
+/// Marks the kernel entry point. Exactly one method in the kernel must have it:
+/// <c>[KernelEntry] public static void Start(BootInfo* info)</c> (or with no parameters).
+/// Sugar: <c>@entry</c>.
+/// </summary>
+[AttributeUsage(AttributeTargets.Method)]
+public sealed class KernelEntryAttribute : Attribute { }
+
+/// <summary>
+/// The member is implemented in the C++ runtime (runtime/). nekoc does not emit it and spells every
+/// reference as <paramref name="cppName"/>. Works on methods, structs and fields.
+/// Sugar: <c>@native("neko::serial::write")</c>.
+/// </summary>
+[AttributeUsage(AttributeTargets.Method | AttributeTargets.Struct | AttributeTargets.Field | AttributeTargets.Class)]
+public sealed class NativeAttribute(string cppName) : Attribute
+{
+    public string CppName { get; } = cppName;
+}
+
+/// <summary>Struct without padding (<c>__attribute__((packed))</c>) — for GDT/IDT entries, ACPI tables, etc. Sugar: <c>@packed</c>.</summary>
+[AttributeUsage(AttributeTargets.Struct)]
+public sealed class PackedAttribute : Attribute { }
+
+/// <summary>Struct alignment in bytes (<c>alignas(n)</c>). Sugar: <c>@align(16)</c>.</summary>
+[AttributeUsage(AttributeTargets.Struct)]
+public sealed class AlignAttribute(int bytes) : Attribute
+{
+    public int Bytes { get; } = bytes;
+}
+
+/// <summary>Always inline this method (<c>[[gnu::always_inline]]</c>). Sugar: <c>@inline</c>.</summary>
+[AttributeUsage(AttributeTargets.Method)]
+public sealed class InlineAttribute : Attribute { }
+
+/// <summary>The method never returns (<c>[[noreturn]]</c>). Sugar: <c>@noreturn</c>.</summary>
+[AttributeUsage(AttributeTargets.Method)]
+public sealed class NoReturnAttribute : Attribute { }
+
+/// <summary>Compiler-internal: the type is handled by nekoc itself and never emitted.</summary>
+[AttributeUsage(AttributeTargets.Class)]
+public sealed class IntrinsicAttribute : Attribute { }

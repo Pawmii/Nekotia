@@ -1,0 +1,46 @@
+{
+  "kernel entry": {
+    "prefix": "kentry",
+    "body": [
+      "[KernelEntry]",
+      "public static void ${1:Start}(BootInfo* info)",
+      "{",
+      "\t$0",
+      "\twhile (true)",
+      "\t\tCpu.Halt();",
+      "}"
+    ],
+    "description": "Kernel entry point"
+  },
+  "kernel static class": {
+    "prefix": "kclass",
+    "body": [
+      "using Nekotia;",
+      "using Nekotia.Hal;",
+      "using Nekotia.Mem;",
+      "",
+      "namespace ${1:Nekotia.OS};",
+      "",
+      "public static unsafe class ${2:${TM_FILENAME_BASE}}",
+      "{",
+      "\t$0",
+      "}"
+    ],
+    "description": "New kernel module (static class)"
+  },
+  "native extern": {
+    "prefix": "knative",
+    "body": ["[Native(\"::neko::${1:module}::${2:function}\")]", "public static extern ${3:void} ${4:Name}($5);"],
+    "description": "Method implemented in the C++ runtime"
+  },
+  "heap new": {
+    "prefix": "knew",
+    "body": ["${1:T}* ${2:value} = Heap.New<${1:T}>();"],
+    "description": "Allocate a zeroed struct on the kernel heap"
+  },
+  "serial log": {
+    "prefix": "klog",
+    "body": ["Serial.WriteLine(\"${1:message}\");"],
+    "description": "Print a line to the serial console"
+  }
+}

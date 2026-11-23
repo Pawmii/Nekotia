@@ -1,0 +1,11 @@
+{
+  // nekoc project file. Paths are relative to this file.
+  "name": "Nekotia",
+  "sources": [
+    "sdk/Nekotia.Sdk",
+    "kernel"
+  ],
+  "output": "build/gen",
+  "lineDirectives": true,
+  "defines": ["NEKOTIA"]
+}

@@ -1,0 +1,52 @@
+{
+  "asm block": {
+    "prefix": "asm",
+    "body": ["asm {", "\t${1:cli}", "}"],
+    "description": "Raw Intel-syntax assembly block (compiled out in host mode)"
+  },
+  "asm line": {
+    "prefix": "asml",
+    "body": ["asm \"${1:pause}\";"],
+    "description": "One-line assembly"
+  },
+  "defer": {
+    "prefix": "defer",
+    "body": ["defer ${1:Heap.Free(ptr)};"],
+    "description": "Run a statement when the current scope exits (reverse order)"
+  },
+  "defer block": {
+    "prefix": "deferb",
+    "body": ["defer {", "\t$0", "}"],
+    "description": "Run a block when the current scope exits"
+  },
+  "unless": {
+    "prefix": "unless",
+    "body": ["unless (${1:condition}) {", "\t$0", "}"],
+    "description": "if (!(condition))"
+  },
+  "loop": {
+    "prefix": "loop",
+    "body": ["loop {", "\t$0", "}"],
+    "description": "Infinite loop (while (true))"
+  },
+  "for in range": {
+    "prefix": "forin",
+    "body": ["for ${1:int} ${2:i} in ${3:0}..${4:count} {", "\t$0", "}"],
+    "description": "Half-open range loop: a <= i < b (use ..= for inclusive)"
+  },
+  "entry shorthand": {
+    "prefix": "@entry",
+    "body": ["@entry", "public static void ${1:Start}(BootInfo* info)", "{", "\t$0", "}"],
+    "description": "[KernelEntry] method"
+  },
+  "packed struct": {
+    "prefix": "@packed",
+    "body": ["@packed", "public struct ${1:Name}", "{", "\t$0", "}"],
+    "description": "Struct without padding"
+  },
+  "native method": {
+    "prefix": "@native",
+    "body": ["@native(\"::neko::${1:module}::${2:function}\")", "public static extern ${3:void} ${4:Name}($5);"],
+    "description": "Method implemented in the C++ runtime"
+  }
+}

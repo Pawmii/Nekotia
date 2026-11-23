@@ -1,0 +1,103 @@
+# Архитектура Nekotia
+
+## Конвейер сборки
+
+```
+nekotia.json ──► nekoc build
+                  │ ProjectConfig: собрать *.cs / *.neko из sdk/ и kernel/ (без bin/ obj/)
+                  │ Desugarer:     .neko → C# (CodeMask пропускает строки и комментарии, строки не сдвигаются)
+                  │ Roslyn:        CSharpCompilation против System.Private.CoreLib (только для атрибутов и примитивов)
+                  │                ошибки CS* → стоп
+                  │ CppEmitter:    символы + семантическая модель → C++
+                  ▼
+        build/gen/nekotia.gen.hpp   forward-декларации → enum → struct (топосорт по полям) → static class
+        build/gen/nekotia.gen.cpp   статические поля → тела методов (#line перед каждым оператором) → neko_kernel_main
+                  │
+clang++ (freestanding, -mcmodel=kernel, -mno-red-zone, без SSE) ──► *.o
+                  │  + runtime/src/core, freestanding, arch/x86_64 (boot.cpp, idt.cpp, isr.S, serial.cpp)
+ld.lld -T runtime/src/arch/x86_64/linker.ld ──► build/nekotia.elf
+xorriso + limine bios-install ──► build/nekotia.iso (гибрид BIOS/UEFI)
+```
+
+## nekoc (`tools/nekoc`)
+
+| Файл | Роль |
+|---|---|
+| `Program.cs` | CLI: `build`, `check`, `desugar`, `version`; `--format json` для редактора |
+| `ProjectConfig.cs` | чтение `nekotia.json` |
+| `Sugar/Desugarer.cs`, `Sugar/CodeMask.cs` | переписывание сахара в C# |
+| `Compiler/Driver.cs` | разбор, компиляция Roslyn, запуск эмиттера, запись файлов (только при изменении) |
+| `Compiler/CppEmitter*.cs` | генерация: объявления, операторы, выражения |
+| `Compiler/TypeMapper.cs` | C#-тип → C++-тип |
+| `Compiler/Symbols.cs` | атрибуты SDK, экранирование имён (ключевые слова C++ → `name_`) |
+| `Compiler/Diagnostics.cs` | диагностики в формате MSBuild (`$msCompile`) и JSON |
+
+Ключевые решения:
+
+- **Один translation unit** для всего C#-кода: инлайнинг между модулями, шаблоны без явных инстанциаций,
+  простой порядок объявлений. При росте ядра — разбиение по файлам (фаза 1).
+- **Семантика C# важнее красоты C++**: неявные числовые преобразования, которые в C++ дали бы другой результат, становятся
+  явными кастами; аргументы перегруженных методов приводятся к типам выбранной Roslyn'ом перегрузки.
+- **`#line`**: каждое C#-выражение-оператор помечается исходной строкой — clang-ошибки, `addr2line` и gdb работают в терминах C#.
+- **Сахар — препроцессор, а не новый парсер**: Roslyn остаётся единственным источником истины о C#; `defer` кодируется
+  валидным C# (`if (Sugar.Defer) stmt;`) и распознаётся эмиттером по символу.
+
+## Рантайм (`runtime/`)
+
+```
+include/neko/types.hpp    fnptr, defer guard, NEKO_ENUM_OPERATORS, NEKO_ASM*
+include/neko/boot.hpp     BootInfo, Framebuffer (поля = поля C#-структур SDK)
+include/neko/cpu.hpp      hlt/cli/sti, in/out, cr2/cr3, rdtsc (в host-режиме — заглушки)
+include/neko/memory.hpp   mem::*, heap::*, pmm::*
+include/neko/serial.hpp   serial::*, str::*
+src/core/                 heap.cpp, pmm.cpp, print.cpp (+ panic)
+src/freestanding/         memcpy/memset/memmove/memcmp, new/delete, __cxa_* заглушки
+src/arch/x86_64/          boot.cpp (kmain), idt.cpp + isr.S, serial.cpp, linker.ld
+src/host/                 host_main.cpp — платформа «Linux-процесс»
+```
+
+### Загрузка (x86_64)
+
+1. Limine (BIOS или UEFI) загружает ELF по адресу `0xffffffff80000000`, включает long mode и paging, отображает всю
+   физическую память в HHDM, даёт 64 KiB стека и передаёт управление `kmain`.
+2. `kmain`: COM1 → проверка base revision → IDT (исключения 0–31) → память → framebuffer → строки загрузчика →
+   `__init_array` (динамические инициализаторы сгенерированных статических полей) → `neko_kernel_main(&info)`.
+3. Сгенерированный `neko_kernel_main` вызывает C#-метод с `[KernelEntry]`.
+
+### Память
+
+```
+физическая память (карта Limine)
+ ├─ первый usable-регион ≥ HEAP_SIZE + 4K → куча ядра (по умолчанию 16 MiB, через HHDM)
+ └─ остальные usable-регионы → page allocator (стек фреймов по 4 KiB)
+ страница 0 никогда не выдаётся (null остаётся невалидным)
+```
+
+- **Куча** (`heap.cpp`): двусвязный список блоков в порядке адресов; заголовок 32 байта (`magic`, `size`, `prev`, `next`);
+  first-fit; разбиение, если остаток ≥ 48 байт; слияние с соседями при освобождении и при `add_region`;
+  `realloc` растёт на месте за счёт свободного соседа. Неверный указатель или повторное освобождение → `panic`.
+  Без блокировок (одно ядро, без вытеснения) — см. фазу 4.
+- **Page allocator** (`pmm.cpp`): LIFO-стек свободных фреймов; указатель «следующий» хранится в самом фрейме.
+  O(1), выдаёт обнулённые страницы, адреса — виртуальные (HHDM), `virt_to_phys`/`phys_to_virt`.
+- Своих таблиц страниц пока нет — используются таблицы Limine (фаза 3).
+
+### Исключения
+
+`isr.S` выравнивает кадр стека (код ошибки 0 для исключений без него), сохраняет все GPR и вызывает
+`neko_isr_dispatch(InterruptFrame*)`, который печатает вектор, имя, `rip`, `rflags`, регистры, для `#PF` — `cr2` и причину,
+затем `panic`. `addr2line -e build/nekotia.elf <rip>` даёт C#-строку.
+
+## Host-режим
+
+Тот же рантайм (`src/core`) + `src/host/host_main.cpp` вместо `arch/` и `freestanding/`, сборка обычным clang++ с
+ASan/UBSan. Куча и фреймы — из `aligned_alloc`, HHDM = 0, framebuffer 800×600 в RAM (сохраняется в
+`build/host/framebuffer.ppm`), serial → stdout, `Cpu.Halt()` завершает процесс, `asm` вырезается.
+Нужен для быстрых проверок транспилятора и алгоритмов; всё, что связано с железом, проверяется только в QEMU.
+
+## Редактор
+
+- `editor/vscode-nekotia` — расширение на чистом JS: язык `nekotia` (`source.neko` = `source.cs` + инъекция сахара),
+  диагностика через `nekoc check --format json`, команды `make`, переход к сгенерированному C++ по `#line`.
+- `Nekotia.slnx` + `Nekotia.Common.props` — IDE-проекты: таргет `NekoDesugar` прогоняет `.neko` через `nekoc desugar --out`
+  в `obj/neko/*.neko.g.cs` (с `#line` на оригинал), чтобы C#-сервер видел типы из `.neko` и ошибки указывали на `.neko`.
+  Ядро MSBuild'ом не собирается.

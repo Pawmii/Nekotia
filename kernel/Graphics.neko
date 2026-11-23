@@ -1,0 +1,69 @@
+// .neko = C# + Nekotia sugar (for-in ranges, unless, defer, asm, @attributes).
+// `nekoc desugar kernel/Graphics.neko` shows the plain C# it becomes.
+using Nekotia;
+using Nekotia.Hal;
+
+namespace Nekotia.OS;
+
+public static unsafe class Graphics
+{
+    public static void DrawSplash(Framebuffer* fb)
+    {
+        unless (fb->Address != null && fb->Bpp == 32) {
+            Serial.WriteLine("graphics: no 32-bpp framebuffer, skipping the splash");
+            return;
+        }
+
+        Serial.Write("graphics: ");
+        Serial.WriteDec(fb->Width);
+        Serial.Write("x");
+        Serial.WriteDec(fb->Height);
+        Serial.WriteLine(" framebuffer");
+        defer Serial.WriteLine("graphics: splash drawn");
+
+        // Background gradient.
+        for ulong y in 0..fb->Height {
+            uint* row = (uint*)((byte*)fb->Address + y * fb->Pitch);
+            for ulong x in 0..fb->Width {
+                uint r = (uint)(x * 0x60 / fb->Width) + 0x20;
+                uint b = (uint)(y * 0x80 / fb->Height) + 0x40;
+                row[x] = (r << 16) | (0x18u << 8) | b;
+            }
+        }
+
+        // A cat face in the middle of the screen.
+        int cx = (int)(fb->Width / 2);
+        int cy = (int)(fb->Height / 2);
+        var head = new Rect { Origin = new Point(cx - 110, cy - 70), Width = 220, Height = 150 };
+
+        Triangle(fb, new Point(cx - 105, cy - 70), 70, Colors.Peach);
+        Triangle(fb, new Point(cx + 35, cy - 70), 70, Colors.Peach);
+        FillRect(fb, head, Colors.Peach);
+        FillRect(fb, new Rect { Origin = new Point(cx - 60, cy - 25), Width = 24, Height = 32 }, Colors.Black);
+        FillRect(fb, new Rect { Origin = new Point(cx + 36, cy - 25), Width = 24, Height = 32 }, Colors.Black);
+        FillRect(fb, new Rect { Origin = new Point(cx - 10, cy + 20), Width = 20, Height = 12 }, Colors.Pink);
+    }
+
+    public static void FillRect(Framebuffer* fb, Rect r, uint color)
+    {
+        for int y in r.Origin.Y..(r.Origin.Y + r.Height) {
+            if (y < 0 || (ulong)y >= fb->Height)
+                continue;
+            uint* row = (uint*)((byte*)fb->Address + (ulong)y * fb->Pitch);
+            for int x in r.Origin.X..(r.Origin.X + r.Width) {
+                if (x >= 0 && (ulong)x < fb->Width)
+                    row[x] = color;
+            }
+        }
+    }
+
+    /// Upward-pointing triangle whose base starts at `baseLeft` (ears).
+    static void Triangle(Framebuffer* fb, Point baseLeft, int size, uint color)
+    {
+        for int i in 0..size {
+            int half = (size - i) / 2;
+            int mid = baseLeft.X + size / 2;
+            FillRect(fb, new Rect { Origin = new Point(mid - half, baseLeft.Y - i), Width = half * 2, Height = 1 }, color);
+        }
+    }
+}

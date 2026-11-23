@@ -1,0 +1,208 @@
+// Boot-time self test of the runtime and of the C# → C++ translation itself.
+using System;
+using Nekotia;
+using Nekotia.Hal;
+using Nekotia.Mem;
+
+namespace Nekotia.OS;
+
+public enum Shape : byte { Circle = 1, Square = 2, Triangle = 3 }
+
+[Flags]
+public enum Access : uint { None = 0, Read = 1, Write = 2, Execute = 4 }
+
+public unsafe struct Node
+{
+    public Node* Next;
+    public ulong Value;
+}
+
+@packed
+public struct GdtEntry
+{
+    public ushort LimitLow;
+    public ushort BaseLow;
+    public byte BaseMiddle;
+    public byte AccessByte;
+    public byte Granularity;
+    public byte BaseHigh;
+}
+
+public unsafe struct Name16
+{
+    public fixed byte Bytes[16];
+    public int Length;
+}
+
+public static unsafe class SelfTest
+{
+    static int _passed;
+    static int _failed;
+    static int _deferTrace;
+
+    public static void Run()
+    {
+        Serial.WriteLine("selftest:");
+        _passed = 0;
+        _failed = 0;
+        defer Report();
+
+        Language();
+        Sugar();
+        HeapBasics();
+        HeapLinkedList();
+        HeapCoalescing();
+        PageFrames();
+    }
+
+    static void Report()
+    {
+        Serial.Write("selftest: ");
+        Serial.WriteDec(_passed);
+        Serial.Write(" passed, ");
+        Serial.WriteDec(_failed);
+        Serial.WriteLine(" failed");
+        unless (_failed == 0) Debug.Panic("self test failed");
+    }
+
+    static void Check(bool ok, string name)
+    {
+        if (ok) {
+            _passed++;
+            Serial.Write("  ok    ");
+        } else {
+            _failed++;
+            Serial.Write("  FAIL  ");
+        }
+        Serial.WriteLine(name);
+    }
+
+    static void Language()
+    {
+        var a = new Point(3, -4);
+        var b = a + new Point(1, 1);
+        Check(b.X == 4 && b.Y == -3 && a.ManhattanLength == 7, "structs: ctor, operator +, property");
+
+        var r = new Rect { Origin = new Point(10, 10), Width = 5, Height = 4 };
+        Check(r.Area == 20 && r.Contains(new Point(12, 13)) && !r.Contains(new Point(15, 10)), "structs: object initializer, methods");
+
+        Check(Sides(Shape.Square) == 4 && Sides(Shape.Circle) == 0 && Sides((Shape)3) == 3, "enums + switch");
+
+        Access acc = Access.Read | Access.Write;
+        Check((acc & Access.Write) != 0 && (acc & Access.Execute) == 0, "[Flags] enum operators");
+
+        Check(sizeof(GdtEntry) == 8, "@packed struct has no padding");
+
+        uint big = 0xFFFFFFF0;
+        int neg = -32;
+        Check(big + neg == 0xFFFFFFD0L, "C# integer promotion (uint + int is long)");
+
+        Name16 name = default;
+        for int i in 0..4 { name.Bytes[i] = (byte)('a' + i); }
+        name.Length = 4;
+        Check(name.Bytes[3] == (byte)'d' && name.Bytes[4] == 0, "fixed buffers");
+
+        byte* scratch = stackalloc byte[32];
+        Check(scratch[0] == 0 && scratch[31] == 0, "stackalloc is zeroed");
+
+        delegate*<int, int> twice = &Twice;
+        Check(twice(21) == 42, "function pointers (delegate*)");
+    }
+
+    static int Twice(int v) => v * 2;
+
+    static int Sides(Shape s)
+    {
+        switch (s)
+        {
+            case Shape.Circle:
+                return 0;
+            case Shape.Square:
+                return 4;
+            default:
+                return 3;
+        }
+    }
+
+    static void Sugar()
+    {
+        _deferTrace = 0;
+        {
+            defer _deferTrace = _deferTrace * 10 + 1;
+            defer _deferTrace = _deferTrace * 10 + 2;
+            _deferTrace = 9;
+        }
+        Check(_deferTrace == 921, "defer runs in reverse order at scope exit");
+
+        ulong sum = 0;
+        for ulong i in 1..=10 { sum += i; }
+        Check(sum == 55, "for i in a..=b (inclusive range)");
+
+        int spins = 0;
+        loop {
+            spins++;
+            if (spins == 3) break;
+        }
+        Check(spins == 3, "loop { } with break");
+
+        Arch.Pause();
+        Check(true, "asm block compiles");
+    }
+
+    static void HeapBasics()
+    {
+        nuint before = Heap.UsedBytes();
+        byte* p = (byte*)Heap.Alloc(100);
+        Check(p != null && ((ulong)p & 15) == 0, "heap: alloc returns 16-byte aligned memory");
+
+        Memory.Set(p, 0xAB, 100);
+        p = (byte*)Heap.Realloc(p, 4000);
+        Check(p != null && p[0] == 0xAB && p[99] == 0xAB, "heap: realloc keeps contents");
+
+        Heap.Free(p);
+        Check(Heap.UsedBytes() == before && Heap.Check(), "heap: free returns everything");
+    }
+
+    static void HeapLinkedList()
+    {
+        Node* head = null;
+        for ulong i in 0..100 {
+            Node* n = Heap.New<Node>();
+            n->Value = i;
+            n->Next = head;
+            head = n;
+        }
+
+        ulong sum = 0;
+        for (Node* it = head; it != null; it = it->Next)
+            sum += it->Value;
+
+        while (head != null) {
+            Node* next = head->Next;
+            Heap.Delete(head);
+            head = next;
+        }
+        Check(sum == 4950 && Heap.Check(), "heap: 100-node linked list via Heap.New<T>()");
+    }
+
+    static void HeapCoalescing()
+    {
+        nuint blocks = Heap.BlockCount();
+        void* a = Heap.Alloc(256);
+        void* b = Heap.Alloc(256);
+        void* c = Heap.Alloc(256);
+        Heap.Free(a);
+        Heap.Free(c);
+        Heap.Free(b);
+        Check(Heap.BlockCount() == blocks && Heap.Check(), "heap: neighbours coalesce after free");
+    }
+
+    static void PageFrames()
+    {
+        ulong free = Pages.FreeCount();
+        byte* page = (byte*)Pages.Alloc();
+        Check(page != null && Pages.VirtToPhys(page) % Pages.Size == 0 && page[4095] == 0, "pages: alloc gives a zeroed, aligned frame");
+        Pages.Free(page);
+        Check(Pages.FreeCount() == free, "pages: free puts it back");
+    }
+}

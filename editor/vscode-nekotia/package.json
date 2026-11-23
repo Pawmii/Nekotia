@@ -1,0 +1,90 @@
+{
+  "name": "vscode-nekotia",
+  "displayName": "Nekotia",
+  "description": "Nekotia OS tooling: .neko syntax (C# + kernel sugar), nekoc diagnostics, build / QEMU commands, jump to generated C++.",
+  "version": "0.1.0",
+  "publisher": "nekotia",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets",
+    "Other"
+  ],
+  "keywords": ["nekotia", "neko", "kernel", "osdev", "csharp"],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:nekotia",
+    "onLanguage:csharp",
+    "workspaceContains:nekotia.json"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "nekotia",
+        "aliases": ["Nekotia", "neko"],
+        "extensions": [".neko"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "nekotia",
+        "scopeName": "source.neko",
+        "path": "./syntaxes/neko.tmLanguage.json"
+      },
+      {
+        "scopeName": "neko.sugar.injection",
+        "path": "./syntaxes/neko-sugar.injection.json",
+        "injectTo": ["source.neko"]
+      }
+    ],
+    "snippets": [
+      { "language": "nekotia", "path": "./snippets/neko.json" },
+      { "language": "nekotia", "path": "./snippets/kernel.json" },
+      { "language": "csharp", "path": "./snippets/kernel.json" }
+    ],
+    "commands": [
+      { "command": "nekotia.build", "title": "Build Kernel (make)", "category": "Nekotia", "icon": "$(tools)" },
+      { "command": "nekotia.run", "title": "Run in QEMU (BIOS)", "category": "Nekotia", "icon": "$(play)" },
+      { "command": "nekotia.runUefi", "title": "Run in QEMU (UEFI)", "category": "Nekotia" },
+      { "command": "nekotia.runHost", "title": "Run as Linux Process (host mode)", "category": "Nekotia" },
+      { "command": "nekotia.debug", "title": "Start QEMU Paused for gdb", "category": "Nekotia" },
+      { "command": "nekotia.check", "title": "Check (nekoc diagnostics)", "category": "Nekotia" },
+      { "command": "nekotia.showDesugared", "title": "Show Desugared C#", "category": "Nekotia", "icon": "$(symbol-namespace)" },
+      { "command": "nekotia.showGeneratedCpp", "title": "Show Generated C++ for This Line", "category": "Nekotia", "icon": "$(go-to-file)" }
+    ],
+    "menus": {
+      "editor/title": [
+        { "command": "nekotia.showDesugared", "when": "resourceExtname == .neko", "group": "navigation@1" },
+        { "command": "nekotia.showGeneratedCpp", "when": "resourceExtname == .neko || resourceExtname == .cs", "group": "navigation@2" }
+      ],
+      "editor/context": [
+        { "command": "nekotia.showGeneratedCpp", "when": "resourceExtname == .neko || resourceExtname == .cs", "group": "nekotia@1" },
+        { "command": "nekotia.showDesugared", "when": "resourceExtname == .neko", "group": "nekotia@2" }
+      ]
+    },
+    "configuration": {
+      "title": "Nekotia",
+      "properties": {
+        "nekotia.dotnetPath": {
+          "type": "string",
+          "default": "dotnet",
+          "description": "dotnet executable used to run nekoc."
+        },
+        "nekotia.nekocPath": {
+          "type": "string",
+          "default": "build/tools/nekoc/nekoc.dll",
+          "description": "Path to nekoc.dll, relative to the workspace folder (built by `make tools`)."
+        },
+        "nekotia.checkOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run `nekoc check` when a .neko / .cs file is saved and show its diagnostics."
+        }
+      }
+    }
+  }
+}

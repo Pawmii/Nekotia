@@ -1,0 +1,79 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "nekotia: build kernel",
+      "type": "shell",
+      "command": "make kernel",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": [
+        "$msCompile",
+        "$gcc"
+      ]
+    },
+    {
+      "label": "nekotia: run (QEMU, BIOS)",
+      "type": "shell",
+      "command": "make run",
+      "problemMatcher": [
+        "$msCompile",
+        "$gcc"
+      ]
+    },
+    {
+      "label": "nekotia: run (QEMU, UEFI)",
+      "type": "shell",
+      "command": "make run-uefi",
+      "problemMatcher": [
+        "$msCompile",
+        "$gcc"
+      ]
+    },
+    {
+      "label": "nekotia: run host mode",
+      "type": "shell",
+      "command": "make run-host",
+      "problemMatcher": [
+        "$msCompile",
+        "$gcc"
+      ]
+    },
+    {
+      "label": "nekotia: qemu gdb server",
+      "detail": "make debug: -O0 kernel in build/debug, QEMU paused with gdb on :1234",
+      "type": "shell",
+      "command": "make debug",
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "nekotia",
+        "fileLocation": "absolute",
+        "pattern": {
+          "regexp": "^(.*)\\((\\d+),(\\d+)\\): (error|warning) (\\w+): (.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "code": 5,
+          "message": 6
+        },
+        "background": {
+          "activesBegin": true,
+          "beginsPattern": "^nekotia: starting QEMU",
+          "endsPattern": "^nekotia: QEMU is waiting for gdb"
+        }
+      }
+    },
+    {
+      "label": "nekotia: stop qemu",
+      "type": "shell",
+      "command": "pkill -f '[q]emu-system-x86_64.*build/debug/nekotia.iso' || true",
+      "presentation": {
+        "reveal": "never"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

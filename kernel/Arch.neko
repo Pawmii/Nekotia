@@ -1,0 +1,34 @@
+using Nekotia;
+using Nekotia.Hal;
+
+namespace Nekotia.OS;
+
+public static class Arch
+{
+    /// Spin-loop hint for the CPU.
+    @inline
+    public static void Pause()
+    {
+        asm "pause";
+    }
+
+    /// Busy-waits roughly `cycles` TSC ticks.
+    public static void SpinWait(ulong cycles)
+    {
+        ulong start = Cpu.ReadTimestamp();
+        while (Cpu.ReadTimestamp() - start < cycles)
+            Pause();
+    }
+
+    /// Stops the machine with interrupts disabled (raw asm block, Intel syntax).
+    @noreturn
+    public static void Freeze()
+    {
+        loop {
+            asm {
+                cli
+                hlt
+            }
+        }
+    }
+}

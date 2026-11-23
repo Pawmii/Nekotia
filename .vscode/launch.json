@@ -1,0 +1,22 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Nekotia: debug kernel in QEMU (gdb)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/debug/nekotia.elf",
+      "cwd": "${workspaceFolder}",
+      "MIMode": "gdb",
+      "miDebuggerPath": "gdb",
+      "miDebuggerServerAddress": "localhost:1234",
+      "stopAtConnect": false,
+      "preLaunchTask": "nekotia: qemu gdb server",
+      "postDebugTask": "nekotia: stop qemu",
+      "setupCommands": [
+        { "text": "set architecture i386:x86-64", "ignoreFailures": true },
+        { "text": "set disassembly-flavor intel", "ignoreFailures": true }
+      ]
+    }
+  ]
+}

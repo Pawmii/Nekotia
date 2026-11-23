@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- IDE-only project (IntelliSense). The kernel is built by `make`, see Nekotia.Common.props. -->
+  <Import Project="../Nekotia.Common.props" />
+
+  <PropertyGroup>
+    <AssemblyName>Nekotia.Kernel</AssemblyName>
+    <RootNamespace>Nekotia.OS</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../sdk/Nekotia.Sdk/Nekotia.Sdk.csproj" />
+  </ItemGroup>
+
+</Project>
