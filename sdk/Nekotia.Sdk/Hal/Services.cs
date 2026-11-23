@@ -35,6 +35,11 @@ public static class Power
     [Native("::neko::power::shutdown")]
     [NoReturn]
     public static extern void Shutdown();
+
+    /// <summary>Leaves QEMU with an exit status for automated tests (`make test`): 0 → status 1 (pass), other → failure.</summary>
+    [Native("::neko::power::test_exit")]
+    [NoReturn]
+    public static extern void TestExit(byte code);
 }
 
 public static class SysInfo

@@ -16,6 +16,11 @@ public static unsafe class Kernel
     {
         Info = info;
         Banner();
+        if (Str.StartsWith(info->CommandLine, "test")) {
+            // `make test`: verbose self tests, then leave QEMU with the result.
+            int failed = SelfTest.Run(true);
+            Power.TestExit(failed == 0 ? (byte)0 : (byte)1);
+        }
         SelfTest.Run(false);
         Keyboard.Init();
         Shell.Run();

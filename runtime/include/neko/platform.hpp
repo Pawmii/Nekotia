@@ -26,6 +26,8 @@ namespace neko::power {
 
 NEKO_NORETURN void reboot();
 NEKO_NORETURN void shutdown();  // ACPI-less: works in QEMU/Bochs, otherwise halts
+// QEMU isa-debug-exit (port 0xf4): QEMU exits with status (code << 1) | 1. Used by `make test`.
+NEKO_NORETURN void test_exit(uint8_t code);
 
 }  // namespace neko::power
 

@@ -96,6 +96,10 @@ void reboot() {
     printf("[neko-host] reboot requested\n");
     finish(0);
 }
+void test_exit(uint8_t code) {
+    printf("[neko-host] test exit %u\n", code);
+    finish(code);
+}
 void shutdown() {
     printf("[neko-host] shutdown requested\n");
     finish(0);

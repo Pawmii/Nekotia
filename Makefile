@@ -6,6 +6,7 @@
 #   make run        boot the ISO in QEMU (BIOS), serial on this terminal
 #   make run-uefi   same with OVMF firmware
 #   make debug      QEMU paused with a gdb stub on :1234
+#   make test       boot in QEMU (BIOS + UEFI), run the self tests, fail on any failure
 #   make check      nekoc diagnostics only
 #   make doctor     check that the toolchain is installed
 
@@ -65,7 +66,7 @@ HOST_FLAGS := $(COMMON_FLAGS) -O1 -DNEKO_HOSTED=1 $(HOST_SAN)
 KERNEL_OBJS := $(patsubst %,$(BUILD)/kernel/%.o,$(KERNEL_SRCS) $(KERNEL_ASM)) $(BUILD)/kernel/gen.o
 HOST_OBJS   := $(patsubst %,$(BUILD)/host/%.o,$(HOST_SRCS) $(CORE_ASM)) $(BUILD)/host/gen.o
 
-.PHONY: all kernel gen check host run-host iso run run-uefi debug doctor tools clean vscode-ext
+.PHONY: all kernel gen check host run-host iso run run-uefi debug test doctor tools clean vscode-ext
 
 all: kernel
 
@@ -136,18 +137,44 @@ run-host: $(BUILD)/host/nekotia-host
 
 iso: $(BUILD)/nekotia.iso
 
-$(BUILD)/nekotia.iso: $(BUILD)/nekotia.elf boot/limine.conf
+# $(call make-iso,<limine.conf>,<output.iso>,<staging dir>)
+define make-iso
 	@test -n "$(LIMINE_DIR)" || { echo "Limine not found: install it (scripts/setup-arch.sh) or run scripts/fetch-limine.sh"; exit 1; }
-	rm -rf $(BUILD)/iso_root
-	mkdir -p $(BUILD)/iso_root/boot/limine $(BUILD)/iso_root/EFI/BOOT
-	cp $(BUILD)/nekotia.elf $(BUILD)/iso_root/boot/
-	cp boot/limine.conf $(LIMINE_DIR)/limine-bios.sys $(LIMINE_DIR)/limine-bios-cd.bin $(LIMINE_DIR)/limine-uefi-cd.bin $(BUILD)/iso_root/boot/limine/
-	cp $(LIMINE_DIR)/BOOTX64.EFI $(BUILD)/iso_root/EFI/BOOT/
+	rm -rf $(3)
+	mkdir -p $(3)/boot/limine $(3)/EFI/BOOT
+	cp $(BUILD)/nekotia.elf $(3)/boot/
+	cp $(1) $(3)/boot/limine/limine.conf
+	cp $(LIMINE_DIR)/limine-bios.sys $(LIMINE_DIR)/limine-bios-cd.bin $(LIMINE_DIR)/limine-uefi-cd.bin $(3)/boot/limine/
+	cp $(LIMINE_DIR)/BOOTX64.EFI $(3)/EFI/BOOT/
 	$(XORRISO) -as mkisofs -R -r -J -b boot/limine/limine-bios-cd.bin -no-emul-boot -boot-load-size 4 \
 		-boot-info-table -hfsplus -apm-block-size 2048 --efi-boot boot/limine/limine-uefi-cd.bin \
-		-efi-boot-part --efi-boot-image --protective-msdos-label $(BUILD)/iso_root -o $@ 2>/dev/null
-	$(LIMINE) bios-install $@ 2>/dev/null
-	@echo "iso: $@"
+		-efi-boot-part --efi-boot-image --protective-msdos-label $(3) -o $(2) 2>/dev/null
+	$(LIMINE) bios-install $(2) 2>/dev/null
+	@echo "iso: $(2)"
+endef
+
+$(BUILD)/nekotia.iso: $(BUILD)/nekotia.elf boot/limine.conf
+	$(call make-iso,boot/limine.conf,$@,$(BUILD)/iso_root)
+
+# Same kernel, but the command line says `test`: the kernel runs its self tests and leaves QEMU
+# through the isa-debug-exit device (exit status 1 = all passed, 3 = failures).
+$(BUILD)/nekotia-test.iso: $(BUILD)/nekotia.elf boot/limine.conf
+	@mkdir -p $(BUILD)
+	sed 's/^\( *cmdline:\).*/\1 test/' boot/limine.conf > $(BUILD)/limine-test.conf
+	$(call make-iso,$(BUILD)/limine-test.conf,$@,$(BUILD)/iso_root_test)
+
+TEST_FLAGS ?= -M q35 -m 256M -smp 4 -display none -serial stdio -no-reboot \
+              -device isa-debug-exit,iobase=0xf4,iosize=0x04
+TEST_TIMEOUT ?= 60
+
+test: $(BUILD)/nekotia-test.iso
+	@echo "== QEMU (BIOS)"; timeout $(TEST_TIMEOUT) $(QEMU) $(TEST_FLAGS) -cdrom $< > $(BUILD)/test-bios.log 2>&1; \
+	  status=$$?; sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' $(BUILD)/test-bios.log | grep -aE '^(  (ok|FAIL)|selftest)'; \
+	  if [ $$status -ne 1 ]; then echo "test (BIOS): FAILED (status $$status, log: $(BUILD)/test-bios.log)"; exit 1; fi
+	@if [ -n "$(OVMF)" ]; then echo "== QEMU (UEFI)"; timeout $(TEST_TIMEOUT) $(QEMU) $(TEST_FLAGS) -bios $(OVMF) -cdrom $< > $(BUILD)/test-uefi.log 2>&1; \
+	  status=$$?; sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' $(BUILD)/test-uefi.log | grep -aE '^selftest'; \
+	  if [ $$status -ne 1 ]; then echo "test (UEFI): FAILED (status $$status, log: $(BUILD)/test-uefi.log)"; exit 1; fi; fi
+	@echo "test: all passed (BIOS$(if $(OVMF), + UEFI))"
 
 run: $(BUILD)/nekotia.iso
 	$(QEMU) $(QEMU_FLAGS) -cdrom $<

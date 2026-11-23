@@ -42,7 +42,8 @@ public static unsafe class SelfTest
     static bool _verbose;
 
     /// Quiet mode prints only failures and the summary (used at boot).
-    public static void Run(bool verbose)
+    /// Returns the number of failed checks.
+    public static int Run(bool verbose)
     {
         _verbose = verbose;
         _passed = 0;
@@ -60,6 +61,7 @@ public static unsafe class SelfTest
         PageFrames();
         BuddyBlocks();
         Paging();
+        return _failed;
     }
 
     static void Report()

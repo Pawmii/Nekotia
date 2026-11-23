@@ -227,6 +227,11 @@ void reboot() {
     cpu::halt_forever();
 }
 
+void test_exit(uint8_t code) {
+    cpu::outb(0xf4, code);
+    shutdown();  // no debug-exit device: power off instead
+}
+
 void shutdown() {
     cpu::disable_interrupts();
     cpu::outw(0x604, 0x2000);   // QEMU (q35/piix with ACPI)
