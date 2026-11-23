@@ -11,6 +11,7 @@
 #include <neko/exception.hpp>
 #include <neko/fat.hpp>
 #include <neko/fmt.hpp>
+#include <neko/log.hpp>
 #include <neko/cpu.hpp>
 #include <neko/math.hpp>
 #include <neko/memory.hpp>

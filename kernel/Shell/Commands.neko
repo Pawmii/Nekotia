@@ -13,7 +13,7 @@ namespace Nekotia.OS;
 public static unsafe class Commands
 {
     /// Space-separated, used by Tab completion.
-    public const string Names = "help clear info ps lspci lsusb ifconfig ping arp dhcp netstat disks mount umount mkfs sync ls cd pwd cat mkdir rm mv write df run progs kill spawn mem vm pages alloc uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
+    public const string Names = "help clear info ps lspci lsusb dmesg loglevel ifconfig ping arp dhcp netstat disks mount umount mkfs sync ls cd pwd cat mkdir rm mv write df run progs kill spawn mem vm pages alloc uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
 
     public static void Run(byte* cmd, byte* args)
     {
@@ -23,6 +23,8 @@ public static unsafe class Commands
         else if (Is(cmd, "ps")) Ps();
         else if (Is(cmd, "lspci")) Lspci(args);
         else if (Is(cmd, "lsusb")) Lsusb();
+        else if (Is(cmd, "dmesg")) Dmesg();
+        else if (Is(cmd, "loglevel")) SetLogLevel(args);
         else if (Is(cmd, "ifconfig")) Network.Ifconfig();
         else if (Is(cmd, "ping")) Network.Ping(args);
         else if (Is(cmd, "arp")) Network.ArpTable();
@@ -166,6 +168,8 @@ public static unsafe class Commands
         Line("info", "system information");
         Line("lspci [-v]", "PCI devices (-v: BARs, IRQ, capabilities)");
         Line("lsusb", "USB devices (xHCI root ports), keyboard and mouse activity");
+        Line("dmesg", "the kernel log: the boot transcript, then leveled messages (also /proc/log)");
+        Line("loglevel [L]", "show or set which messages reach the screen: debug info warn error");
         Line("mem", "memory, heap and page allocator statistics");
         Line("vm", "virtual memory layout and page tables");
         Line("pages", "buddy allocator: free blocks per order");
@@ -278,6 +282,43 @@ public static unsafe class Commands
             Pad(Digits(p.MemoryKib) + 4, 11);
             Terminal.WriteLine($"{p.UptimeMs} ms");
         }
+    }
+
+    // ---------------------------------------------------------------- log
+
+    static void Dmesg()
+    {
+        byte* chunk = stackalloc byte[257];
+        ulong size = Log.Size();
+        for (ulong at = 0; at < size;) {
+            long n = Log.Read(at, chunk, 256);
+            if (n <= 0)
+                break;
+            chunk[n] = 0;
+            Terminal.Write(chunk);
+            at += (ulong)n;
+        }
+        Terminal.ResetColor();
+    }
+
+    static void SetLogLevel(byte* args)
+    {
+        if (*args != 0) {
+            LogLevel level = Is(args, "debug") ? LogLevel.Debug : Is(args, "info") ? LogLevel.Info
+                : Is(args, "warn") ? LogLevel.Warn : Is(args, "error") ? LogLevel.Error : (LogLevel)99;
+            if ((int)level == 99) {
+                Terminal.WriteLine("usage: loglevel [debug|info|warn|error]");
+                return;
+            }
+            Log.SetLevel(level);
+        }
+        LogLevel now = Log.Level();
+        Terminal.WriteLine(now switch {
+            LogLevel.Debug => "loglevel: debug (everything reaches the screen)",
+            LogLevel.Info => "loglevel: info",
+            LogLevel.Warn => "loglevel: warn (info goes to serial and dmesg only)",
+            _ => "loglevel: error",
+        });
     }
 
     // ---------------------------------------------------------------- USB

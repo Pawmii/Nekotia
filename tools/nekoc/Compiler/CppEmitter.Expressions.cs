@@ -617,10 +617,32 @@ sealed partial class CppEmitter
     {
         var type = target.ContainingType;
         if (target.Name is not ("Write" or "WriteLine"))
-            return Unsupported(inv, "string interpolation", "it is only supported as the only argument of Write/WriteLine on Serial, Terminal, Console, Text or a type with the same Write* methods");
+            return InterpolatedToString(target, interpolated, inv);
+        return InterpolatedInto(target, type, null, interpolated, inv, target.Name == "WriteLine");
+    }
 
-        string receiver = "";
-        if (!target.IsStatic)
+    /// <summary>
+    /// <c>Log.Info($"…")</c> and any other method with a <c>string</c> overload: the text is built in a stack buffer
+    /// with <see cref="Nekotia.Text"/> (512 bytes, cut beyond) and passed to that overload.
+    /// </summary>
+    string InterpolatedToString(IMethodSymbol target, InterpolatedStringExpressionSyntax interpolated, InvocationExpressionSyntax inv)
+    {
+        var overload = target.ContainingType.GetMembers(target.Name).OfType<IMethodSymbol>()
+            .FirstOrDefault(m => m.Parameters is [{ Type.SpecialType: SpecialType.System_String }] && m.IsStatic && target.IsStatic);
+        var text = _compilation.GetTypeByMetadataName("Nekotia.Text");
+        if (overload is null || text is null)
+            return Unsupported(inv, "string interpolation", "pass $\"…\" to Write/WriteLine (Terminal, Serial, Console, Text) or to a static method that also has a string overload");
+        var callee = Symbols.NativeName(overload) ?? $"{Qualified(overload.ContainingType)}::{Symbols.Escape(overload.Name)}";
+        var build = InterpolatedInto(null, text, "_neko_t.", interpolated, inv, newline: false);
+        var result = overload.ReturnsVoid ? "" : "return ";
+        return $"([&]() {{ uint8_t _neko_buf[512]; {Qualified(text)} _neko_t(_neko_buf, 512); {build}; {result}{callee}((const char*)_neko_buf); }}())";
+    }
+
+    string InterpolatedInto(IMethodSymbol? target, INamedTypeSymbol type, string? fixedReceiver, InterpolatedStringExpressionSyntax interpolated,
+                            InvocationExpressionSyntax inv, bool newline)
+    {
+        string receiver = fixedReceiver ?? "";
+        if (fixedReceiver is null && target is { IsStatic: false })
         {
             switch (inv.Expression)
             {
@@ -739,9 +761,9 @@ sealed partial class CppEmitter
             }
         }
 
-        if (target.Name == "WriteLine")
-            parts.Add(Find("WriteLine", null) is { } newline
-                ? Call(newline, "", inv, "a newline")
+        if (newline)
+            parts.Add(Find("WriteLine", null) is { } newlineMethod
+                ? Call(newlineMethod, "", inv, "a newline")
                 : Call(writeString, "\"\\n\"", inv, "a newline"));
         return "(" + string.Join(", ", parts) + ")";
     }

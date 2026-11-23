@@ -35,9 +35,18 @@ public static unsafe class Proc
         Add("/proc/net/arp", &NetArp);
         Add("/proc/net/tcp", &NetTcp);
         Add("/proc/net/udp", &NetUdp);
+        Add("/proc/log", &KernelLog);
     }
 
     static void Add(string path, delegate*<byte*, ulong, long> generate) => Vfs.CreateGenerated(path, generate);
+
+    static long KernelLog(byte* buffer, ulong capacity)
+    {
+        ulong size = Log.Size();
+        ulong skip = size > capacity ? size - capacity : 0;   // the newest part when it does not fit
+        long n = Log.Read(skip, buffer, capacity);
+        return n < 0 ? 0 : n;
+    }
 
     static long Version(byte* buffer, ulong capacity)
     {

@@ -82,6 +82,7 @@ public static unsafe class SelfTest
         PciBus();
         FileSystem();
         Disks();
+        Logging();
         ProcFiles();
         FatVolume();
         Networking();
@@ -720,6 +721,24 @@ public static unsafe class SelfTest
 
     /// The block layer on a RAM disk (host mode) or, under `make test` only, on the scratch virtio disk
     /// QEMU gets there — a normal boot never writes to a disk.
+    static void Logging()
+    {
+        ulong before = Log.Size();
+        int code = 42;
+        Log.Debug($"selftest marker {code}");   // below the default level: serial and the ring only
+        byte* tail = stackalloc byte[128];
+        ulong size = Log.Size();
+        long n = Log.Read(size > 100 ? size - 100 : 0, tail, 100);
+        tail[n < 0 ? 0 : n] = 0;
+        bool found = false;
+        for (long i = 0; i + 19 <= n; i++) {
+            if (Str.StartsWith(tail + i, "selftest marker 42\n"))
+                found = true;
+        }
+        Check(size > before && found, "log: an interpolated message lands in the ring");
+        Check(Log.Level() == LogLevel.Info || Log.Level() == LogLevel.Debug, "log: the level comes from loglevel= (info by default)");
+    }
+
     static void ProcFiles()
     {
         if (!Vfs.Exists("/proc/version"))

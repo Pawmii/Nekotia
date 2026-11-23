@@ -87,14 +87,10 @@ public static unsafe class Kernel
                     blank = false;
             }
             if (!blank || Fat.Format(dev, Str.Bytes("NEKOTIA")) < 0) {
-                Terminal.SetColor(AnsiColor.Gray);
-                Terminal.WriteLine("disk: /dev/vda has no FAT32 file system — `mkfs vda` (erases it), then `mount vda /mnt`");
-                Terminal.ResetColor();
+                Log.Info("disk: /dev/vda has no FAT32 file system — `mkfs vda` (erases it), then `mount vda /mnt`");
                 return;
             }
-            Terminal.SetColor(AnsiColor.Gray);
-            Terminal.WriteLine("disk: /dev/vda was empty — formatted as FAT32");
-            Terminal.ResetColor();
+            Log.Info("disk: /dev/vda was empty — formatted as FAT32");
             if (Fat.Mount(dev, Str.Bytes("/mnt")) == 0) {
                 OpenFile* f = null;
                 if (Vfs.Open("/mnt/readme.txt", Vfs.Write | Vfs.Create, out f) == 0) {
@@ -107,15 +103,12 @@ public static unsafe class Kernel
         }
         long e = Fat.Mount(dev, Str.Bytes("/mnt"));
         if (e < 0) {
-            Terminal.Write(AnsiColor.BrightRed, "disk: cannot mount /dev/vda: ");
-            Terminal.WriteLine(Process.ErrorText(e));
+            Log.Error($"disk: cannot mount /dev/vda: {Process.ErrorText(e)}");
             return;
         }
         MountInfo m = default;
         Vfs.GetMount(0, out m);
-        Terminal.SetColor(AnsiColor.Gray);
-        Terminal.WriteLine($"disk: /dev/vda (FAT32) mounted on /mnt, {m.FreeBytes:size} free of {m.TotalBytes:size}");
-        Terminal.ResetColor();
+        Log.Info($"disk: /dev/vda (FAT32) mounted on /mnt, {m.FreeBytes:size} free of {m.TotalBytes:size}");
     }
 
     /// The C# network stack on eth0, configured by DHCP (`make run` gives QEMU's user network: 10.0.2.x).
@@ -124,17 +117,12 @@ public static unsafe class Kernel
         Stack.Init();
         if (!Stack.Up)
             return;
-        Terminal.SetColor(AnsiColor.Gray);
         if (Dhcp.Configure()) {
-            Terminal.Write("net: eth0 ");
-            Stack.WriteIp(Stack.Address);
-            Terminal.Write(" via ");
-            Stack.WriteIp(Stack.Gateway);
-            Terminal.WriteLine(" (DHCP)");
+            uint a = Stack.Address, g = Stack.Gateway;
+            Log.Info($"net: eth0 {a >> 24}.{(a >> 16) & 255}.{(a >> 8) & 255}.{a & 255} via {g >> 24}.{(g >> 16) & 255}.{(g >> 8) & 255}.{g & 255} (DHCP)");
         } else {
-            Terminal.WriteLine("net: eth0 is up, but no DHCP server answered (`dhcp` tries again)");
+            Log.Warn("net: eth0 is up, but no DHCP server answered (`dhcp` tries again)");
         }
-        Terminal.ResetColor();
     }
 
     /// /etc/motd from the initrd, if there is one.

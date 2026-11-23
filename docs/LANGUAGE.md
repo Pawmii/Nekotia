@@ -31,6 +31,7 @@
 | `string` (только литералы) | `const char*` (UTF-8, NUL в конце) | сравнение — `Str.Equals` |
 | `Terminal.WriteLine($"{n} ms, {x:X}, {bytes:size}")` | `(Write("…"), WriteDec(n), …)` | без аллокаций; `:X` — 0x…, `:X4` — 4 hex-цифры, `:D2` — с нулями, `:size` — KiB/MiB, `:F2` |
 | `t.WriteLine($"{name,-12}{size,8:size}")` (`Nekotia.Text`) | то же на построителе в вашем буфере | интерполяция в буфер; `{v,8}` / `{v,-8}` — выравнивание; `byte*` в дырах |
+| `Log.Info($"net: {n} packets")` — любой статический метод с перегрузкой `string` | текст собирается в 512-байтовый буфер на стеке и передаётся в эту перегрузку | без аллокаций; длиннее — обрезается |
 | `"const"[i]`, `Const.Length` (константные строки) | `u"…"[i]`, число | семантика UTF-16 как в C# — таблицы символов |
 | `throw new T("msg")`, `throw;` | `neko::exc::raise(…)` / `rethrow` | без подходящего `try` — экран смерти (в программе — код 134) |
 | `try { } catch (T e) when (f) { } finally { }` | кадр `setjmp` + охранные объекты | `e.Message`; перехват по базовому типу; `defer`, `lock` и `finally` выполняются при раскрутке |
@@ -190,6 +191,7 @@ C#-обёртка в `sdk/Nekotia.Sdk/`.
 | `Nekotia.Hal.Serial` | только serial: `Write`, `WriteLine`, `WriteChar`, `WriteHex`, `WriteDec`, `WriteSize` |
 | `Nekotia.Hal.Time` | `UptimeMs`, `Sleep(ms)`, `TimerHz` |
 | `Nekotia.Hal.Irq` | `Register(line, &Handler)`, `Count(line)`, `GetMsi(i, …)` |
+| `Nekotia.Hal.Log` | `Debug/Info/Warn/Error(text или $"…")`, `Level`/`SetLevel(LogLevel)`, `Read`/`Size` (журнал), `StopBootCapture` |
 | `Nekotia.IO.Block` | `Count`, `GetInfo`, `Find(name)`, `Read/Write(index, lba, count, buffer)`, `ReadBytes/WriteBytes`, `Flush`, `AddRamDisk` |
 | `Nekotia.Hal.Power` / `SysInfo` | `Reboot`, `Shutdown`; `CpuBrand`, `CpuCount`, `CpuMhz` |
 | `Nekotia.Hal.Cpu` | `Halt`, `HaltForever`, `Enable/DisableInterrupts`, `ReadTimestamp`, `ReadCr2/Cr3` |

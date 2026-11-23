@@ -214,6 +214,7 @@ uint64_t g_kernel_stack_top = 0;
     neko::sched::init(g_kernel_stack_top, kKernelStackSize);
     init_framebuffer();
     init_strings();
+    neko::log::configure(g_cmdline);
     g_info.Hosted = false;
 
     bool screen = neko::console::init(g_info.Screen);

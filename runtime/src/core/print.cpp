@@ -109,6 +109,7 @@ sync::SpinLock g_term_lock;  // one write call = one uninterrupted piece of outp
 void term_put(uint8_t c) {
     serial::write_char(c);
     console::put_byte(c);
+    if (log::capturing()) log::capture_byte(c);  // the boot transcript for dmesg
 }
 
 }  // namespace

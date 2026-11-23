@@ -37,6 +37,7 @@ public static unsafe class Shell
     @noreturn
     public static void Run()
     {
+        Log.StopBootCapture();   // dmesg keeps the boot transcript up to here
         Terminal.Write("Type ");
         Terminal.Write(AnsiColor.BrightWhite, "help");
         Terminal.WriteLine(" for commands. Alt+Shift switches EN/RU, ↑/↓ history, Tab completes.");
