@@ -465,7 +465,19 @@ public static unsafe class Program
         ulong t = Thread.Start(&ThrowingThread);
         Thread.Join(t);
         Check(_threadResult == 1, "try/catch in a second thread (its own TLS)");
-        Check(Process.Wait((uint)Process.Start("usertest", "uncaught")) == 134, "an uncaught exception ends the program with 134");
+        // Its "Unhandled exception" report goes to /dev/null: the boot self test is quiet.
+        long quiet = File.Open("/dev/null", File.Write);
+        long savedOut = File.Duplicate(1);
+        long savedErr = File.Duplicate(2);
+        File.Redirect((int)quiet, 1);
+        File.Redirect((int)quiet, 2);
+        long child = Process.Start("usertest", "uncaught");
+        File.Redirect((int)savedOut, 1);
+        File.Redirect((int)savedErr, 2);
+        File.Close((int)quiet);
+        File.Close((int)savedOut);
+        File.Close((int)savedErr);
+        Check(Process.Wait((uint)child) == 134, "an uncaught exception ends the program with 134");
     }
 
     // ---------------------------------------------------------------- sockets

@@ -1,0 +1,115 @@
+Nekotia Noncommercial License, version 1.0
+
+Copyright (c) 2026 Pawmii — https://github.com/Pawmii/Nekotia
+
+In short (the terms below are what counts): you may use, study, change and share
+this software, and builds of it, for any noncommercial purpose. Keep the author
+notice, say that your version is changed and where it comes from, never present
+the whole work as your own, and give the source code to anyone who receives a
+build from you and asks for it. Commercial use needs separate permission.
+
+1. Definitions
+
+"Software" means the source code, documentation and other files published in
+the Nekotia repository, and any part of them.
+
+"Build" means any compiled, linked, packaged or otherwise generated form of the
+Software or of a Derivative Work (for example a kernel image, an ISO image, a
+disk image or an executable program).
+
+"Derivative Work" means any work that contains, is based on, or is modified
+from the Software or a part of it.
+
+"Corresponding Source" for a Build means the complete source code of the
+Software and of all changes and additions used to produce it, together with the
+scripts and instructions needed to build it.
+
+"Licensor" means the copyright holder named above and the contributors to the
+Software, each for their own contributions.
+
+"You" means any person or organization exercising rights under this license.
+
+"Commercial Purpose" means any use intended for, or directed toward, commercial
+advantage or monetary compensation, including: selling, renting or licensing
+the Software, a Build or a Derivative Work; charging for access to them, for
+their distribution, hosting or support, or for services built on them; including
+them in a product, device, service or offering that is sold or monetized in any
+way, including through advertising; and using them in the course of the business
+of a for-profit organization. Personal use, study, research, teaching, hobby
+projects, and use by nonprofit, educational or public organizations for their
+noncommercial activities are not Commercial Purposes.
+
+2. Grant
+
+Subject to the conditions in section 3, the Licensor grants You a worldwide,
+royalty-free, non-exclusive license to use, copy, modify, create Derivative
+Works of, build, and distribute the Software, Builds and Derivative Works, in
+source or compiled form, for noncommercial purposes only.
+
+3. Conditions
+
+3.1 Noncommercial use only. You may not use, copy, modify, distribute or
+otherwise exploit the Software, a Build or a Derivative Work for a Commercial
+Purpose. A license for commercial use may be requested from the copyright
+holder; nothing in this license grants it.
+
+3.2 Notices. Every copy of the Software or of a Derivative Work that You
+distribute, and every Build that You distribute, must be accompanied by this
+license (or a link to it) and the copyright notice above. You must not remove or
+alter copyright, author or license notices in files You did not write.
+
+3.3 No false claim of authorship. You must not present the Software, or a
+Derivative Work as a whole, as being entirely Your own work, and You must not
+remove or misrepresent the authorship of others. A Derivative Work that You
+distribute must state prominently that it is based on Nekotia by Pawmii, link to
+https://github.com/Pawmii/Nekotia, and indicate that it has been modified. You
+may claim authorship of Your own changes and additions.
+
+3.4 Builds and source code. You may distribute Builds. If You do, every
+recipient of a Build has the right to obtain its Corresponding Source from You:
+You must either provide the Corresponding Source together with the Build, or
+offer it in writing (for example in the documentation or the download page) and
+provide it to any recipient who asks, free of charge or for no more than the
+cost of delivery, for as long as You distribute the Build and for at least
+three years afterwards.
+
+3.5 Same terms for Derivative Works. Derivative Works and Builds that You
+distribute must be licensed under this license (this version or a later version
+published by the copyright holder), so that their recipients receive the same
+rights and are bound by the same conditions. You may not impose further
+restrictions on the rights granted here.
+
+4. Third-party components
+
+Some files in the Software are the work of others and remain under their own
+licenses, which take precedence for those files:
+
+  - runtime/assets/fonts/ter-v16n.psf — Terminus Font, SIL Open Font License 1.1
+    (runtime/assets/fonts/LICENSE-Terminus-OFL.txt);
+  - runtime/third_party/limine/limine.h — Limine boot protocol header, 0BSD;
+  - the Limine bootloader binaries that the build places in ISO images —
+    BSD 2-Clause License (see the Limine project).
+
+5. Contributions
+
+Unless stated otherwise in writing, any contribution You submit for inclusion in
+the Software is licensed under this license.
+
+6. Termination
+
+If You violate this license, Your rights under it end automatically. If You stop
+the violation and correct it within 30 days of receiving notice of it from the
+Licensor (for the first violation only), Your rights are reinstated. Licenses
+that recipients received from You in compliance with this license do not end
+because of Your violation.
+
+7. No warranty, no liability
+
+THE SOFTWARE AND BUILDS ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO
+EVENT SHALL THE LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE, A BUILD, OR THE USE OF OR OTHER DEALINGS IN THEM.
+THIS IS AN OPERATING SYSTEM KERNEL THAT WRITES TO DISKS: USE IT ON MACHINES AND
+DISKS WHOSE DATA YOU CAN AFFORD TO LOSE.

@@ -343,7 +343,13 @@ void put_codepoint(uint32_t cp) {
 
 void put_byte(uint8_t b) {
     if (!g_ready) return;
-    if (escape(b)) return;
+    if (b == 0x1B || g_esc != Esc::None) {
+        // Escapes clear and move: the cursor must not stay painted where it was.
+        hide_cursor();
+        bool consumed = escape(b);
+        if (g_esc == Esc::None) show_cursor();
+        if (consumed) return;
+    }
     if (b < 0x80) {
         g_utf8_left = 0;
         put_codepoint(b);

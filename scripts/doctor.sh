@@ -16,6 +16,8 @@ echo "Nekotia toolchain:"
 check "dotnet"              dotnet              required
 check "clang++"             clang++             required
 check "ld.lld (or ld)"      ld.lld              optional
+check "llvm-nm (stop-screen symbols)" llvm-nm   required
+check "llvm-dwarfdump"      llvm-dwarfdump      required
 check "make"                make                required
 check "xorriso"             xorriso             required
 check "limine"              limine              required

@@ -1,256 +1,196 @@
+<div align="center">
+
+```
+   /\_/\
+  ( o.o )
+   > ^ <
+```
+
 # Nekotia
 
-```
-   /\_/\    Nekotia — операционная система, ядро которой пишется на C#
-  ( o.o )   и транслируется в C++ (nekoc), а затем собирается clang'ом
-   > ^ <    в обычное freestanding-ядро x86_64.
+**Операционная система для x86_64, у которой ядро и программы написаны на C#.**
+
+[![ci](https://github.com/Pawmii/Nekotia/actions/workflows/ci.yml/badge.svg)](https://github.com/Pawmii/Nekotia/actions/workflows/ci.yml)
+![x86_64](https://img.shields.io/badge/arch-x86__64-blue)
+![BIOS + UEFI](https://img.shields.io/badge/boot-BIOS%20%2B%20UEFI-blueviolet)
+[![license](https://img.shields.io/badge/license-noncommercial-lightgrey)](LICENSE)
+
+<img src="docs/images/boot.png" alt="Nekotia после загрузки: сообщения ядра, самотест, сеть и диск" width="820">
+
+</div>
+
+Nekotia — настоящее ядро: оно загружается в QEMU или на железе, само управляет памятью, прерываниями,
+процессорами и устройствами. При этом почти всё, что выше аппаратного уровня — shell, драйвер клавиатуры, стек
+TCP/IP, `/proc`, системные вызовы, утилиты, — написано на C#.
+
+Внутри нет ни .NET, ни сборщика мусора. Собственный транслятор **nekoc** (Roslyn) переводит подмножество C# в
+C++20, а clang собирает из него обычное freestanding-ядро. C# здесь — язык исходников, а не среда выполнения.
+
+## Что уже умеет
+
+- **Загрузка и железо** — BIOS и UEFI через Limine, до 16 процессоров (SMP), ACPI, APIC-таймер, PCI/PCIe, MSI и MSI-X.
+- **Память** — свои таблицы страниц с NX и W^X, SMEP/SMAP, buddy-аллокатор, растущая куча ядра, стеки с guard-страницами.
+- **Многозадачность** — вытесняющий планировщик с приоритетами, мьютексы и семафоры, обнаружение взаимных блокировок.
+- **Программы** — процессы в ring 3 со своими адресными пространствами и потоками, загрузчик ELF, Ctrl+C и `kill`,
+  futex, TLS, исключения `try/catch`; падение программы не роняет систему.
+- **Файлы** — VFS, initrd, `/dev`, `/proc`, каналы (`a | b`), FAT32 с длинными именами на дисках virtio, SATA и NVMe.
+- **Сеть** — virtio-net и стек TCP/IP на C#: DHCP, DNS, ping, UDP, TCP. Внутри есть веб-сервер, который открывается в
+  браузере хоста, и `fetch`, который качает страницы из интернета.
+- **USB** — контроллер xHCI, клавиатура и мышь.
+- **Отладка** — экран смерти со стеком вызовов в терминах C# (методы, файлы, строки), отладка по строкам C# в gdb и
+  VS Code, 190+ самотестов, которые CI прогоняет в QEMU на BIOS и UEFI.
+
+<div align="center">
+<img src="docs/images/shell.png" alt="Shell в ring 3: конвейеры, потоки, DNS, HTTP, файлы, /proc" width="820">
+</div>
+
+## Быстрый старт
+
+Нужны .NET SDK 10, clang/lld/llvm, xorriso, QEMU и Limine. На Arch Linux всё ставит один скрипт:
+
+```sh
+git clone https://github.com/Pawmii/Nekotia.git && cd Nekotia
+scripts/setup-arch.sh      # пакеты; на других системах: Limine — scripts/fetch-limine.sh
+make doctor                # проверить, всё ли на месте
+make run                   # собрать C# → C++ → ядро → ISO и запустить в QEMU
 ```
 
-Nekotia — настоящее ядро: грузится Limine'ом на «голом железе» или в QEMU (BIOS и UEFI),
-работает в long mode в higher half, сам управляет памятью и прерываниями. В итоговом образе нет ни .NET runtime,
-ни GC, ни libc: C# здесь — только язык исходников.
+Откроется окно QEMU с командной строкой ядра. Кликните в него и попробуйте:
+
+| | |
+|---|---|
+| `help`, `info`, `ps`, `lspci`, `lsusb`, `disks` | система и устройства |
+| `ifconfig`, `ping 10.0.2.2`, `netstat` | сеть (QEMU раздаёт адрес по DHCP и выпускает в интернет) |
+| `cd /mnt`, `write note.txt hi`, `cat note.txt` | `/mnt` — это диск `build/disk.img`, он переживает перезапуск |
+| `sh` | shell в ring 3: `ls /bin \| grep s \| wc`, `primes 3000000 4`, `host example.com`, `fetch example.com \| head -n 5` |
+| `httpd &` в `sh` | затем откройте **http://localhost:8080/** в браузере хоста |
+| `neko` | котик |
+| `crash null` | посмотреть на экран смерти |
+
+Alt+Shift переключает раскладку EN/RU, ↑/↓ — история, Tab — дополнение, Ctrl+C — прервать программу.
+
+## Как выглядит код
+
+Программа для ring 3 — обычный C# с `Main`. Make сам находит каталоги в `user/` и кладёт программы в `/bin`:
 
 ```csharp
-// kernel/Main.neko — .neko = C# + сахар Nekotia (defer, asm, for-in…)
+// user/visits/Visits.cs — пример: каталог user/visits с nekotia.json и этим файлом
 using Nekotia;
-using Nekotia.Hal;
-using Nekotia.Mem;
+using Nekotia.User;
 
-namespace Nekotia.OS;
-
-public static unsafe class Kernel
+public static unsafe class Program
 {
-    [KernelEntry]
-    public static void Start(BootInfo* info)
+    public static int Main(int argc, byte** argv)
     {
-        Serial.WriteLine("Hello from C# in ring 0!");
+        Console.WriteLine($"Hello from ring 3! I am process {Process.Id()}, {Time.UptimeMs()} ms after boot.");
 
-        Node* n = Heap.New<Node>();       // C++ аллокатор ядра
-        defer Heap.Delete(n);             // сахар .neko — освобождение при выходе из scope
-
-        while (true)
-            Cpu.Halt();
+        long fd = File.Open("/mnt/visits.txt", File.Write | File.Create | File.Append);
+        File.WriteBytes((int)fd, Str.Bytes("one more visit\n"), 15);
+        File.Close((int)fd);
+        return 0;
     }
 }
 ```
 
+Код ядра — тот же язык. Например, системный вызов, написанный на C#:
+
+```csharp
+// kernel/Net/Sockets.neko — `connect` для программ
+@syscall(40)
+static long TcpConnect(ulong ip, ulong port)
+{
+    int h = Tcp.Connect((uint)ip, (ushort)port, Process.CurrentPid());
+    return h < 0 ? h : Install(KindTcp, h);   // сокет — обычный файловый дескриптор
+}
+```
+
+Поддерживаются `struct`, `enum`, указатели и `unsafe`, свойства и операторы, generic-методы, function pointers,
+паттерны и `switch`-выражения, `try/catch/finally`, интерполяция строк без аллокаций (`$"{size,8:size}"`).
+Файлы `.neko` добавляют немного сахара: `defer`, `lock`, `asm { }`, `loop`, `for i in 0..n`. Подробности — в
+[docs/LANGUAGE.md](docs/LANGUAGE.md).
+
 ## Как это устроено
 
 ```
- kernel/*.cs, *.neko        sdk/Nekotia.Sdk (C# API: Serial, Cpu, Port, Heap, Pages…)
-          │                         │
-          └──────────┬──────────────┘
-                     ▼
-     nekoc  (tools/nekoc, .NET + Roslyn)
-       1. .neko → C#            (десугаринг: asm, defer, unless, loop, for-in, @attr)
-       2. Roslyn: разбор + семантика, проверка подмножества языка (NEKO0xxx ошибки)
-       3. C# → C++20            (build/gen/nekotia.gen.{hpp,cpp}, с #line на исходный C#)
-                     │
-                     ▼
-     clang++ --target=x86_64-unknown-none-elf -ffreestanding -mcmodel=kernel …
-       + runtime/ (C++): boot (Limine), IDT/исключения, COM1, куча, page allocator, libc-шимы
-                     │
-                     ▼
-     ld.lld → build/nekotia.elf → xorriso + Limine → build/nekotia.iso → QEMU / железо
+ kernel/*.cs, *.neko         sdk/ (C# API ядра и программ)         user/*/ (программы)
+          └───────────────────────────┬──────────────────────────────────┘
+                                      ▼
+        nekoc (tools/nekoc, Roslyn): .neko → C# → проверка подмножества → C++20 с #line на строки C#
+                                      ▼
+        clang++ -ffreestanding  +  runtime/ (C++: загрузка, память, прерывания, драйверы, VFS, FAT32)
+                                      ▼
+        ld.lld → nekotia.elf  +  initrd.tar (/bin, /etc)  →  Limine  →  nekotia.iso  →  QEMU / железо
 ```
 
-- **База на C++** (`runtime/`) — всё, что чувствительно к памяти и железу: аллокатор кучи (first-fit free list,
-  coalescing, проверка заголовков, детект double free), физический page allocator, GDT/TSS/IDT с дампом регистров на
-  исключениях, ACPI (MADT, MCFG), LAPIC-таймер, IOAPIC, PCI/PCIe, драйверы virtio-blk/virtio-net/AHCI/NVMe/xHCI (USB-клавиатура и мышь), VFS (ramfs + initrd + /dev), текстовая консоль
-  во фреймбуфере, serial, старт ядра.
-- **Логика ядра на C#** (`kernel/`) — подмножество C# без GC: `static class`, `struct`, `enum`, указатели, `unsafe`,
-  `fixed`-буферы, `stackalloc`, перегрузка операторов, свойства, generic-методы (→ шаблоны C++), function pointers,
-  интерполяция `$"..."` в `Write` (без аллокаций), обработчики прерываний `[Irq(n)]` и системных вызовов `[Syscall(n)]`.
-  На C# написаны драйвер клавиатуры, shell (с `ls/cd/cat/mkdir/rm/mv/lspci`) и чтение консоли для программ.
-- **Программы в ring 3** (`user/`) — тоже C#: nekoc с `"target": "user"` собирает их в статические ELF, Makefile
-  упаковывает их в initrd (`/bin` внутри tar), ядро распаковывает его в VFS и запускает программы в отдельных адресных
-  пространствах. У процесса есть файловые дескрипторы и рабочий каталог. Падение программы убивает только её.
-- **Свой сахар** (`.neko` файлы) — `asm { }`, `defer`, `unless`, `loop`, `for T i in a..b`, `@entry`/`@packed`/`@native(...)`/`@irq(n)`.
-  Подсветка и подсказки — в VS Code-расширении (`editor/vscode-nekotia`).
-
-Подробности: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), язык и сахар: [docs/LANGUAGE.md](docs/LANGUAGE.md),
-план: [ROADMAP.md](ROADMAP.md).
-
-## Быстрый старт (Arch Linux)
-
-```sh
-scripts/setup-arch.sh     # dotnet-sdk, clang, lld, limine, xorriso, qemu, edk2-ovmf, gdb
-make doctor               # проверить тулчейн
-
-make run                  # C# → C++ → ELF → ISO → QEMU (BIOS), serial в этот терминал
-make run-uefi             # то же через OVMF
-```
-
-На экране — консоль ядра (шрифт Terminus, кириллица, цвета), лог дублируется в serial-терминал:
-
-```
-[neko] runtime: x86_64, Limine protocol, framebuffer console
-[neko] heap 16 MiB, 60962 free pages, 1 CPU(s) @ 3919 MHz — entering C# kernel
-
-   /\_/\
-  ( o.o )   Nekotia 0.2.0
-   > ^ <    kernel in C# → C++ (nekoc) → x86_64
-
-selftest: ok — 21 passed, 0 failed
-Type help for commands. Alt+Shift switches EN/RU, ↑/↓ history, Tab completes.
-
-neko en> info
-cpu:        QEMU Virtual CPU version 2.5+
-memory:     254 MiB usable of 255 MiB
-...
-```
-
-### Командная строка ядра
-
-Кликните в окно QEMU и печатайте. Команды: `help`, `info`, `ps`, `run PROG ARGS` (или просто имя программы; `&` в конце —
-в фоне), `progs`, `kill PID`, `spawn spinner|primes|burn|counter`, `mem`, `vm`, `pages`, `alloc MB`, `uptime`, `echo`, `sleep MS`, `irq`, `layout`,
-`colors`, `neko` (котик на весь экран), `selftest`, `clear`, `panic`, `crash KIND` (проверка экрана смерти),
-`reboot`, `shutdown`. Клавиши: **Alt+Shift** — EN/RU, **↑/↓** — история, **Tab** — дополнение команды,
-**Ctrl+L** — очистить, **Ctrl+U** — стереть строку, **Ctrl+C** — отменить.
-
-Всё это — C#-код: драйвер клавиатуры `kernel/Drivers/Keyboard.neko` (обработчик `@irq(1)`), shell — `kernel/Shell/`.
-
-### Программы
-
-```
-neko en> hello world 42
-Hello from ring 3!
-I am a C# program running as process 8, 5125 ms after boot.
-arguments: 2 — world, 42
-neko en> guess
-I am thinking of a number between 1 and 100.
-guess #1: 50
-lower
-```
-
-Программа — каталог `user/NAME` с `nekotia.json` (`"target": "user"`) и C#-кодом со `static int Main(int argc, byte** argv)`;
-API — `sdk/Nekotia.User` (`Console`, `Process`, `File`, `Path`, `Memory`, `Time`). `make` сам найдёт новый каталог,
-соберёт ELF и положит его в `/bin` initrd (`build/initrd.tar`, туда же попадает всё из `initrd/`). Программы: `sh`
-(shell в ring 3: `cd`, `pwd`, `> FILE`, `>> FILE`, `< FILE`, конвейеры `a | b`, запуск по пути), `ls`, `cat`, `cp`, `mkdir`, `rm`, `mv`, `grep`, `wc`, `head`, `httpd`, `fetch`, `nc`, `host`, `ps`,
-`echo`, `kill`, `primes` (простые числа в N потоках — видно ускорение на нескольких CPU), `hello`, `guess` (читает
-клавиатуру), `usertest` (проверки ABI для `make test`).
-**Ctrl+C** завершает программу на переднем плане; `init=sh` в `cmdline` (`boot/limine.conf`) загружает сразу в `sh`.
-
-```
-neko en /> sh
-sh /$ primes 3000000 4
-216816 primes below 3000000
-1 thread: 805 ms, 4 threads: 211 ms — x3.82
-sh /$ cd /tmp
-sh /tmp$ echo hello > a.txt
-sh /tmp$ ls /bin | grep s | wc
-       6      18     192
-sh /tmp$ cat a.txt
-hello
-```
-
-Файлы живут в памяти (ramfs): `/bin`, `/etc`, `/home` приходят из initrd (файлы initrd читаются прямо из модуля,
-пока их не изменят), `/dev` — устройства `console`, `null`, `zero` и диски, `/proc` — состояние системы текстом (`cat /proc/meminfo`,
-`cat /proc/net/tcp`), `/tmp` — пустой каталог для своих файлов.
-
-**Сеть.** `make run` подключает user-сеть QEMU: DHCP выдаёт `10.0.2.15`, шлюз `10.0.2.2` (это хост), DNS идёт через хост,
-есть выход в интернет. Стек TCP/IP написан на C# (`kernel/Net`). В shell ядра — `ifconfig`, `ping 10.0.2.2`,
-`netstat`; в `sh` — `host example.com`, `fetch example.com | head -n 5`, `nc HOST PORT`, и `httpd &`: после этого
-`http://localhost:8080/` в браузере хоста показывает файлы Nekotia (порт 8080 хоста проброшен на 80).
-
-**Диск.** `make run` подключает `build/disk.img` (64 МиБ) как virtio-диск `/dev/vda`. Один раз отформатируйте его
-из shell ядра — `mkfs vda`, `mount vda /mnt`; дальше ядро само монтирует его в `/mnt` при загрузке. Всё, что
-записано в `/mnt`, остаётся на диске между запусками (FAT32 с длинными именами — образ читается и в Linux:
-`sudo mount -o loop build/disk.img /media`). `cp`/`mv` переносят файлы между `/tmp` и `/mnt`, программы можно
-запускать прямо с диска (`./prog`). `scripts/fatcheck.py build/disk.img` проверяет образ без dosfstools.
-
-## Команды
-
-| Команда | Что делает |
-|---|---|
-| `make` / `make kernel` | `build/nekotia.elf` |
-| `make gen` | только транспиляция → `build/gen/nekotia.gen.{hpp,cpp}` |
-| `make check` | диагностика nekoc без сборки (ядро и программы) |
-| `make user` | только программы → `build/user/bin/*` |
-| `make initrd` | `build/initrd.tar`: программы в `/bin` + содержимое `initrd/` |
-| `make iso` | загрузочный гибридный BIOS/UEFI ISO |
-| `make run` / `make run-uefi` | запуск в QEMU (`QEMU_FLAGS=...` чтобы поменять); диск `build/disk.img` (64 МиБ, `DISK=`, `DISK_SIZE=`) — `/dev/vda` |
-| `make debug` | отладочная `-O0`-сборка в `build/debug`, QEMU на паузе с gdb-сервером `:1234` |
-| `make test` | загрузить тестовый образ в QEMU (BIOS + UEFI), прогнать самотесты, код возврата = результат |
-| `make run-host` | ядро как Linux-процесс с ASan/UBSan — быстрый прогон самотестов (не замена QEMU) |
-| `make tools` | собрать nekoc |
-| `make vscode-ext` | собрать `.vsix` расширения |
-| `make clean` | удалить `build/` |
-
-Параметры: `HEAP_SIZE=33554432` (размер кучи ядра), `OPT=-O0`, `CXX=...`. После смены флагов — `make clean`.
-
-## VS Code
-
-```sh
-make vscode-ext
-code --install-extension build/vscode-nekotia-0.1.0.vsix
-```
-
-После установки: подсветка `.neko` (включая инструкции/регистры в `asm { }`), сниппеты (`kentry`, `kclass`, `forin`, `defer`…),
-ошибки nekoc при сохранении, команды *Nekotia: Run in QEMU*, *Show Desugared C#*, *Show Generated C++ for This Line*,
-кнопка `▶ Nekotia` в статус-баре. `Nekotia.slnx` даёт IntelliSense для `.cs` (C# Dev Kit / C# extension);
-проекты `.csproj` нужны только редактору — ядро ими не собирается.
+Граница проходит так: всё, что работает с железом и памятью напрямую, написано на C++ в `runtime/` — загрузка,
+таблицы страниц, планировщик, драйверы virtio/AHCI/NVMe/xHCI, VFS и FAT32. Логика поверх этого — на C# в `kernel/`:
+shell, сетевой стек, `/proc`, драйвер клавиатуры, системные вызовы. Программы пользуются SDK `sdk/Nekotia.User`.
+Подробное описание всех подсистем — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Отладка
 
-**Экран смерти.** Любое фатальное событие — необработанный `throw`, `Debug.Assert`/`Debug.Panic`, повреждение кучи,
-нехватка памяти, исключение процессора — показывает экран «NEKOTIA HAS STOPPED»:
+<div align="center">
+<img src="docs/images/stop.png" alt="Экран смерти: исключение, стек вызовов с C#-методами и строками, регистры" width="820">
+</div>
 
-- **STOP-код** и имя: `0x0000000E PAGE_FAULT`, `0x000000E0 UNHANDLED_EXCEPTION`, `0x000000E1 ASSERTION_FAILED`,
-  `0x000000E2 KERNEL_PANIC`, `0x000000E3 HEAP_CORRUPTION`, `0x000000E4 OUT_OF_MEMORY` (коды 0x00–0x1F — векторы CPU);
-- **тип исключения** — для аппаратных ошибок в терминах .NET: `#DE` → `DivideByZeroException`, `#PF` около нуля →
-  `NullReferenceException`, `#GP` → `AccessViolationException`, `#UD` → `InvalidProgramException`, `#DF` → `StackOverflowException`;
-- **сообщение, место** (`Nekotia.OS.Commands.Crash at kernel/Shell/Commands.neko:190`), для `#PF` — адрес и причина;
-- **стек вызовов** с C#-методами и строками `.cs`/`.neko` (таблица символов вшивается в ядро вторым проходом линковки,
-  `scripts/gen-symbols.py`), **регистры** с `cr0–cr4`, **состояние системы** (uptime, куча, страницы, CPU).
+- **Экран смерти** показывает тип исключения в терминах .NET (`NullReferenceException`, `StackOverflowException`…),
+  место в C#-файле, стек вызовов и регистры. Проверить все варианты: `crash null|div|throw|assert|pf|gp|ud|stack|nx|wp|deadlock`.
+- **F5 в VS Code** собирает отладочное ядро, запускает QEMU с gdb и останавливается на точках останова прямо в `.cs` и
+  `.neko`. Без VS Code: `make debug` и `gdb build/debug/nekotia.elf -ex 'target remote :1234'`.
+- **`make run-host`** запускает ядро как обычный Linux-процесс с ASan/UBSan — быстрый прогон самотестов.
 
-Текст дублируется в serial. **R** — перезагрузка. Проверить все варианты:
-`crash null|div|throw|custom|assert|pf|gp|ud|bp|double-free|stack|nx|wp|deadlock|relock` (`stack` — переполнение стека
-в guard-страницу, `nx` — выполнение кода из кучи, `wp` — запись в код ядра, `deadlock` — два потока ждут mutex друг друга).
-`addr2line -e build/nekotia.elf <адрес>` тоже указывает **на строку в C#-файле** — nekoc пишет `#line` перед каждым оператором.
-- **F5 в VS Code** (нужно расширение C/C++ `ms-vscode.cpptools`): собирает `-O0`-ядро, запускает QEMU с gdb-сервером
-  и подключается. Breakpoint'ы ставятся кликом прямо в `.cs` и `.neko`, видны стек вызовов и переменные.
-  Окно QEMU до подключения отладчика пишет «guest has not initialized the display» — это нормально.
-- Без VS Code: `make debug`, затем `gdb build/debug/nekotia.elf -ex 'target remote :1234'`, `break Graphics.neko:29`, `continue`.
-  В обычной `-O2`-сборке строки C# могут не совпадать с кодом — для отладки используйте `make debug`.
-- *Nekotia: Show Generated C++ for This Line* открывает C++, в который превратилась текущая строка.
+## Команды сборки
 
-## Структура
+| Команда | Что делает |
+|---|---|
+| `make run` / `make run-uefi` | собрать и запустить в QEMU (BIOS / UEFI) с диском, сетью и USB-клавиатурой |
+| `make test` | самотесты в QEMU на BIOS и UEFI + проверка FAT32-образа (то же делает CI) |
+| `make test-nekoc` | тесты транслятора |
+| `make run-host` | ядро как Linux-процесс с санитайзерами |
+| `make debug` | отладочная сборка, QEMU ждёт gdb на `:1234` |
+| `make iso`, `make kernel`, `make user`, `make initrd` | отдельные этапы сборки |
+| `make check` | только диагностика nekoc |
+| `make vscode-ext` | расширение VS Code: подсветка `.neko`, сниппеты, ошибки nekoc, «показать C++ для строки» |
+| `make doctor`, `make clean` | проверить инструменты, удалить `build/` |
 
-```
-kernel/                 ядро на C# (.cs и .neko) + Nekotia.Kernel.csproj (только для IDE)
-kernel/Drivers/         драйверы на C# (PS/2 клавиатура)
-kernel/Shell/           командная строка ядра
-sdk/Nekotia.Sdk/        C# API ядра: атрибуты, Asm, Terminal/Serial/Cpu/Port/Time/Irq/Power/SysInfo, Heap/Pages/Memory, Process
-sdk/Nekotia.User/       C# API программ: Console, Process, Thread, SpinLock, Atomic, Memory, Time
-user/                   программы (C#, ring 3): sh, ls, ps, echo, kill, primes, hello, guess, usertest
-                        + Nekotia.User.Programs.csproj (только для IDE)
-runtime/user/           рантайм программ: crt0, системные вызовы, вывод, куча, linker.ld
-runtime/include/neko/   C++ заголовки, которые использует сгенерированный код
-runtime/src/core/       куча, buddy-аллокатор, консоль (PSF/UTF-8/ANSI), экран смерти, вывод, планировщик, процессы и ELF
-runtime/src/arch/x86_64 Limine boot, GDT/TSS, IDT + isr.S, ACPI, APIC/таймер/IRQ, vmm (таблицы страниц), syscall, COM1, linker.ld
-runtime/assets/fonts/   шрифт консоли Terminus (OFL 1.1)
-runtime/src/freestanding memcpy/memset…, operator new/delete
-runtime/src/host/       host-режим (ядро как Linux-процесс)
-runtime/third_party/    limine.h (0BSD)
-tools/nekoc/            транспилятор C# → C++ (Roslyn)
-editor/vscode-nekotia/  VS Code расширение (JS без зависимостей)
-boot/limine.conf        конфигурация загрузчика
-scripts/                setup-arch.sh, doctor.sh, fetch-limine.sh, package-vscode-extension.py
-nekotia.json            проект nekoc: исходники и каталог вывода
-```
+## Структура репозитория
+
+| Каталог | Что там |
+|---|---|
+| `kernel/` | ядро на C#: shell, сетевой стек (`Net/`), `/proc`, драйвер клавиатуры, системные вызовы, самотесты |
+| `user/` | программы для ring 3: `sh`, `ls`, `cat`, `grep`, `wc`, `httpd`, `fetch`, `nc`, `primes`… |
+| `sdk/` | C# API: `Nekotia.Sdk` для ядра, `Nekotia.User` для программ |
+| `runtime/` | C++: загрузка, память, планировщик, процессы, драйверы, VFS, FAT32, рантайм программ |
+| `tools/nekoc/` | транслятор C# → C++ |
+| `tests/nekoc/` | тесты транслятора |
+| `editor/vscode-nekotia/` | расширение VS Code |
+| `initrd/` | файлы, которые попадают в `/etc` и `/home` системы |
+| `docs/` | [архитектура](docs/ARCHITECTURE.md), [язык](docs/LANGUAGE.md) |
 
 ## Статус
 
-- **Фаза 0** (фундамент): загрузка BIOS/UEFI, куча, page allocator, исключения, транспилятор с диагностикой, сахар, VS Code.
-- **Фаза 2** (основное): своя GDT/TSS с IST, ACPI MADT, LAPIC-таймер 1 кГц, IOAPIC, IRQ из C#, консоль во фреймбуфере,
-  PS/2 клавиатура с EN/RU, командная строка, экран смерти.
-- **Фаза 3** (основное): свои таблицы страниц с NX/W^X, buddy-аллокатор, растущая куча, стек ядра с guard-страницей.
-- **Фаза 4**: потоки, вытесняющий планировщик с приоритетами на нескольких CPU (SMP, QEMU `-smp 4`),
-  Mutex/Semaphore/SpinLock, обнаружение deadlock, FPU/SSE (`float`/`double` в C#), `make test`.
+| Фаза | |
+|---|---|
+| 0–1. Фундамент и транслятор | ✅ загрузка, nekoc с диагностикой, сахар `.neko`, тесты транслятора, CI |
+| 2. Прерывания, время, консоль | ✅ APIC, IRQ на C#, консоль с кириллицей, экран смерти, `try/catch` |
+| 3. Виртуальная память | ✅ свои таблицы страниц, buddy, растущая куча, глобальные страницы |
+| 4. Многозадачность | ✅ потоки, SMP, мьютексы и семафоры, обнаружение deadlock |
+| 5. Пользовательский режим | ✅ процессы, ELF, системные вызовы на C#, SMEP/SMAP, futex, TLS |
+| 6. Драйверы и файловые системы | ✅ PCI, virtio, AHCI, NVMe, xHCI, VFS, FAT32, `/proc`, каналы, TCP/IP |
+| 7. Инструменты разработчика | ⏳ language server, отладка в один клик |
+| 8. Графика | ⏳ композитор окон, шрифты, GUI-программы |
 
-- **Фаза 5** (основное): ring 3, `syscall`/`sysret`, процессы со своими адресными пространствами и несколькими потоками,
-  загрузчик ELF, `spawn`/`wait`/`exit`/`kill`, Ctrl+C, SMEP/SMAP, программы на C# (`"target": "user"`), системные вызовы
-  на C# (`[Syscall(n)]`), изоляция падений, shell и утилиты в userspace.
+Подробный план и то, что осталось в каждой фазе, — в [ROADMAP.md](ROADMAP.md).
 
-Дальше — драйверы и файловые системы (фаза 6): PCI, virtio-blk, VFS, initrd, FAT32. См. [ROADMAP.md](ROADMAP.md).
+## Лицензия
+
+Nekotia распространяется под [Nekotia Noncommercial License](LICENSE). Коротко:
+
+- ✅ можно использовать, изучать, изменять и распространять — и исходники, и собранные образы;
+- ✅ кто получил от вас сборку, вправе запросить у вас её исходный код, и вы обязаны его предоставить;
+- ❌ нельзя использовать в коммерческих целях без отдельного разрешения автора;
+- ❌ нельзя выдавать весь проект за свой: сохраняйте указание автора и отмечайте, что версия изменена.
+
+Это некоммерческая лицензия с открытым исходным кодом (source-available): по определению OSI «open source» не
+должен ограничивать коммерческое использование. Шрифт Terminus (SIL OFL 1.1), заголовок `limine.h` (0BSD) и
+загрузчик Limine (BSD-2-Clause) остаются под своими лицензиями.
