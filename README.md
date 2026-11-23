@@ -56,7 +56,7 @@ public static unsafe class Kernel
 
 - **База на C++** (`runtime/`) — всё, что чувствительно к памяти и железу: аллокатор кучи (first-fit free list,
   coalescing, проверка заголовков, детект double free), физический page allocator, GDT/TSS/IDT с дампом регистров на
-  исключениях, ACPI (MADT, MCFG), LAPIC-таймер, IOAPIC, PCI/PCIe, драйверы virtio-blk/virtio-net/AHCI/NVMe, VFS (ramfs + initrd + /dev), текстовая консоль
+  исключениях, ACPI (MADT, MCFG), LAPIC-таймер, IOAPIC, PCI/PCIe, драйверы virtio-blk/virtio-net/AHCI/NVMe/xHCI (USB-клавиатура и мышь), VFS (ramfs + initrd + /dev), текстовая консоль
   во фреймбуфере, serial, старт ядра.
 - **Логика ядра на C#** (`kernel/`) — подмножество C# без GC: `static class`, `struct`, `enum`, указатели, `unsafe`,
   `fixed`-буферы, `stackalloc`, перегрузка операторов, свойства, generic-методы (→ шаблоны C++), function pointers,

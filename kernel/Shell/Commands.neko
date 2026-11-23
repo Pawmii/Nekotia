@@ -13,7 +13,7 @@ namespace Nekotia.OS;
 public static unsafe class Commands
 {
     /// Space-separated, used by Tab completion.
-    public const string Names = "help clear info ps lspci ifconfig ping arp dhcp netstat disks mount umount mkfs sync ls cd pwd cat mkdir rm mv write df run progs kill spawn mem vm pages alloc uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
+    public const string Names = "help clear info ps lspci lsusb ifconfig ping arp dhcp netstat disks mount umount mkfs sync ls cd pwd cat mkdir rm mv write df run progs kill spawn mem vm pages alloc uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
 
     public static void Run(byte* cmd, byte* args)
     {
@@ -22,6 +22,7 @@ public static unsafe class Commands
         else if (Is(cmd, "info")) Info();
         else if (Is(cmd, "ps")) Ps();
         else if (Is(cmd, "lspci")) Lspci(args);
+        else if (Is(cmd, "lsusb")) Lsusb();
         else if (Is(cmd, "ifconfig")) Network.Ifconfig();
         else if (Is(cmd, "ping")) Network.Ping(args);
         else if (Is(cmd, "arp")) Network.ArpTable();
@@ -164,6 +165,7 @@ public static unsafe class Commands
         Section("System:");
         Line("info", "system information");
         Line("lspci [-v]", "PCI devices (-v: BARs, IRQ, capabilities)");
+        Line("lsusb", "USB devices (xHCI root ports), keyboard and mouse activity");
         Line("mem", "memory, heap and page allocator statistics");
         Line("vm", "virtual memory layout and page tables");
         Line("pages", "buddy allocator: free blocks per order");
@@ -276,6 +278,36 @@ public static unsafe class Commands
             Pad(Digits(p.MemoryKib) + 4, 11);
             Terminal.WriteLine($"{p.UptimeMs} ms");
         }
+    }
+
+    // ---------------------------------------------------------------- USB
+
+    static void Lsusb()
+    {
+        uint n = Usb.Count();
+        if (n == 0) {
+            Terminal.WriteLine("no USB devices (QEMU: -device qemu-xhci -device usb-kbd -device usb-mouse)");
+            return;
+        }
+        UsbDevice d = default;
+        for (uint i = 0; Usb.GetInfo(i, out d); i++) {
+            Terminal.Write($"port {d.Port}  slot {d.Slot}  ");
+            Terminal.SetColor(AnsiColor.BrightCyan);
+            Hex(d.VendorId, 4);
+            Terminal.Write(":");
+            Hex(d.ProductId, 4);
+            Terminal.ResetColor();
+            Terminal.Write(d.Speed == 4 ? "  5 Gbit/s  " : d.Speed == 3 ? "  480 Mbit/s  " : d.Speed == 2 ? "  1.5 Mbit/s  " : "  12 Mbit/s  ");
+            Terminal.Write(d.Kind == 1 ? "keyboard" : d.Kind == 2 ? "mouse" : "device");
+            if (d.Product[0] != 0) {
+                Terminal.Write(" — ");
+                Terminal.Write(d.Product);
+            }
+            Terminal.WriteLine($", {d.Reports} report(s)");
+        }
+        UsbMouse m = Usb.Mouse();
+        if (m.Reports > 0)
+            Terminal.WriteLine($"mouse: moved to ({m.X}, {m.Y}), wheel {m.Wheel}, buttons {m.Buttons}");
     }
 
     // ---------------------------------------------------------------- PCI
@@ -618,7 +650,7 @@ public static unsafe class Commands
             Terminal.Write(name);
             Terminal.Write(":");
             Pad((int)Str.Length(name) + 1, 12);
-            Terminal.WriteLine($"{count} interrupts (MSI-X → vector {(ulong)vector:X})");
+            Terminal.WriteLine($"{count} interrupts (message-signalled, vector {(ulong)vector:X})");
         }
     }
 

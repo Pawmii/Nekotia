@@ -65,7 +65,7 @@
 - [ ] HPET, TSC-deadline, tickless-режим
 - [x] IRQ API в C#: `[Irq(n)]`, `Irq.Register(line, &Handler)`, счётчики прерываний
 - [x] PS/2 клавиатура на C# (scancode set 1, раскладки EN/RU по Alt+Shift, Caps Lock, Ctrl-коды, стрелки, F1–F12)
-- [ ] PS/2 мышь, USB HID (фаза 6)
+- [x] USB HID клавиатура и мышь (фаза 6); [ ] PS/2 мышь
 - [x] Текстовая консоль во фреймбуфере: PSF1/PSF2 (Terminus 8×16, кириллица), UTF-8, ANSI-цвета, прокрутка, курсор; `Terminal` в SDK
 - [x] Командная строка ядра на C#: история, Tab-дополнение, `info/mem/uptime/sleep/irq/colors/neko/selftest/reboot/shutdown…`
 - [ ] Двойная буферизация консоли и быстрая прокрутка (memmove по видеопамяти → теневой буфер)
@@ -150,7 +150,9 @@
       системные вызовы 40–48 на C# (`@syscall`); `ifconfig`, `ping`, `arp`, `netstat`; программы `httpd`, `fetch`,
       `nc`, `host`; `make run` пробрасывает localhost:8080 → :80
 - [ ] TCP: контроль перегрузки (slow start), SACK, масштабирование окна; IPv6; ICMP «порт недоступен»
-- [ ] (*) USB (xHCI), HID
+- [x] USB: xHCI (передача от BIOS, сброс, кольца команд/событий, scratchpad, MSI-X), перечисление устройств на
+      корневых портах, HID boot-клавиатура (→ скан-коды PS/2 для драйвера на C#, автоповтор через SET_IDLE) и мышь; `lsusb`
+- [ ] USB: хабы, горячее подключение, накопители (mass storage)
 
 ## Фаза 7 — Инструменты разработчика
 

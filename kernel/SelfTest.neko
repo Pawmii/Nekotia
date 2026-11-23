@@ -550,6 +550,24 @@ public static unsafe class SelfTest
               && Block.Read((uint)cd, 16, 1, sector) == 0 && sector[1] == 'C' && sector[2] == 'D' && sector[5] == '1',
               "disk: the boot CD reads over ATAPI (ISO 9660 volume descriptor)");
         Check(Block.Write((uint)cd, 16, 1, sector) == Process.ErrAccess, "disk: the CD is read-only");
+
+        UsbDevice u = default;
+        bool keyboard = false, mouse = false;
+        for (uint i = 0; Usb.GetInfo(i, out u); i++) {
+            keyboard |= u.Kind == 1 && u.VendorId == 0x0627;
+            mouse |= u.Kind == 2;
+        }
+        Check(keyboard && mouse, "usb: xHCI enumerated the HID keyboard and mouse");
+        ulong before = 0;
+        for (uint i = 0; Usb.GetInfo(i, out u); i++) {
+            before += u.Reports;
+        }
+        Thread.Sleep(100);
+        ulong after = 0;
+        for (uint i = 0; Usb.GetInfo(i, out u); i++) {
+            after += u.Reports;
+        }
+        Check(after > before, "usb: interrupt endpoints deliver reports");
     }
 
     /// Writes, reads back and byte-addresses a scratch disk (only ever under `make test` or a RAM disk).

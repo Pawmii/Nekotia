@@ -49,12 +49,16 @@ public static unsafe class Keyboard
     /// Drains whatever the controller buffered before the driver was ready.
     public static void Init()
     {
+        Usb.SetKeyboardSink(&Feed);   // USB keyboards arrive as the same scancodes
         for int i in 0..64 {
             if ((Port.In8(StatusPort) & 1) == 0)
                 break;
             Port.In8(DataPort);
         }
     }
+
+    /// A scancode from a USB keyboard (xHCI interrupt handler: also interrupt context).
+    static void Feed(byte scancode) => Handle(scancode);
 
     @irq(1)
     static void OnInterrupt()

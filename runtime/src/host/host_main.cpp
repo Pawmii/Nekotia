@@ -156,6 +156,13 @@ bool msix_route(uint32_t, uint32_t, uint8_t) { return false; }
 bool msi_enable(uint32_t, uint8_t) { return false; }
 }  // namespace neko::pci
 
+namespace neko::usb {  // no USB in host mode
+uint32_t count() { return 0; }
+bool info(uint32_t, Info&) { return false; }
+void set_keyboard_sink(ScancodeSink) {}
+Mouse mouse() { return Mouse{}; }
+}  // namespace neko::usb
+
 namespace neko::arch {
 void enter_user(uint64_t, uint64_t, uint64_t, uint64_t) { neko::panic("user mode is not available in host mode"); }
 bool user_mode_available() { return false; }
