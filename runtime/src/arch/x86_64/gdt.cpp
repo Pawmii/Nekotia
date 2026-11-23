@@ -2,8 +2,10 @@
 // NMI and machine check handlers their own stacks (IST), so even a kernel stack
 // overflow produces a readable report instead of a triple fault.
 //
-// Layout (ready for syscall/sysret later):
+// Layout (the order syscall/sysret expect, see STAR in usermode.cpp):
 //   0x00 null   0x08 kernel code   0x10 kernel data   0x18 user data   0x20 user code   0x28 TSS (16 bytes)
+// TSS.rsp0 is the kernel stack used when an interrupt arrives in ring 3; the scheduler points it
+// at the incoming thread's stack on every switch.
 #include "arch.hpp"
 
 #include <neko/smp.hpp>
@@ -35,6 +37,8 @@ alignas(16) Tss g_tsses[smp::kMaxCpus];
 alignas(16) uint8_t g_ist_stacks[smp::kMaxCpus][3][kIstStackSize];
 
 }  // namespace
+
+void set_kernel_stack(uint32_t cpu, uint64_t top) { g_tsses[cpu].rsp[0] = top; }
 
 void gdt_init(uint32_t cpu) {
     uint64_t* g_gdt = g_gdts[cpu];

@@ -11,6 +11,7 @@
 #include <time.h>
 
 #include <neko/runtime.hpp>
+#include <neko/process.hpp>
 #include <neko/sched.hpp>
 
 namespace {
@@ -119,7 +120,19 @@ void* map_mmio(uint64_t phys, size_t) { return reinterpret_cast<void*>(phys); }
 uint64_t create_stack(size_t) { return 0; }
 bool is_stack_guard(uint64_t) { return false; }
 Stats stats() { return Stats{}; }
+uint64_t* space_create() { return nullptr; }
+void space_destroy(uint64_t*) {}
+bool space_map(uint64_t*, uint64_t, uint64_t, PageFlags) { return false; }
+void space_add_flags(uint64_t*, uint64_t, PageFlags) {}
+uint64_t space_translate(uint64_t*, uint64_t) { return ~0ull; }
+bool space_check(uint64_t*, uint64_t, uint64_t, bool) { return false; }
 }  // namespace neko::vmm
+
+// No ring 3 in host mode: spawning a program reports "no user mode".
+namespace neko::arch {
+void enter_user(uint64_t, uint64_t, uint64_t, uint64_t) { neko::panic("user mode is not available in host mode"); }
+bool user_mode_available() { return false; }
+}  // namespace neko::arch
 
 namespace {
 // Heap growth in host mode: extra malloc'd arenas (not adjacent, which the heap handles).
@@ -144,6 +157,8 @@ uint64_t neko_sched_new_stack(size_t size) {
     if (g_host_stack_count < 256) g_host_stacks[g_host_stack_count++] = p;
     return reinterpret_cast<uint64_t>(p + size);
 }
+
+void neko_sched_switch_to(neko::sched::Thread*) {}
 
 void neko_sched_idle() {
     if (!neko::sched::has_sleepers()) {

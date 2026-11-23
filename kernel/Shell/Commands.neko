@@ -4,6 +4,7 @@ using Nekotia;
 using Nekotia.Hal;
 using Nekotia.Mem;
 using Nekotia.OS.Drivers;
+using Nekotia.Processes;
 using Nekotia.Threading;
 
 namespace Nekotia.OS;
@@ -11,7 +12,7 @@ namespace Nekotia.OS;
 public static unsafe class Commands
 {
     /// Space-separated, used by Tab completion.
-    public const string Names = "help clear info ps spawn mem vm pages alloc uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
+    public const string Names = "help clear info ps run progs spawn mem vm pages alloc uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
 
     public static void Run(byte* cmd, byte* args)
     {
@@ -19,6 +20,8 @@ public static unsafe class Commands
         else if (Is(cmd, "clear")) Terminal.Clear();
         else if (Is(cmd, "info")) Info();
         else if (Is(cmd, "ps")) Ps();
+        else if (Is(cmd, "run")) RunProgram(args);
+        else if (Is(cmd, "progs")) Programs();
         else if (Is(cmd, "spawn")) Spawn(args);
         else if (Is(cmd, "mem")) Mem();
         else if (Is(cmd, "vm")) Vm();
@@ -36,6 +39,7 @@ public static unsafe class Commands
         else if (Is(cmd, "crash")) Crash(args);
         else if (Is(cmd, "reboot")) Power.Reboot();
         else if (Is(cmd, "shutdown")) Power.Shutdown();
+        else if (HasProgram(cmd)) Execute(cmd, args);   // `hello a b` = `run hello a b`
         else {
             Terminal.Write(AnsiColor.BrightRed, "unknown command: ");
             Terminal.Write(cmd);
@@ -57,7 +61,9 @@ public static unsafe class Commands
     {
         Terminal.WriteLine("Commands:");
         Line("info", "system information");
-        Line("ps", "threads: state, priority, CPU time, context switches");
+        Line("ps", "threads and processes: state, priority, CPU time, context switches");
+        Line("run PROG ARGS", "run a user program in ring 3 (or just type its name; `&` at the end: background)");
+        Line("progs", "user programs in /boot/bin");
         Line("spawn KIND", "start a demo thread: spinner primes burn counter");
         Line("mem", "memory, heap and page allocator statistics");
         Line("vm", "virtual memory layout and page tables");
@@ -119,11 +125,16 @@ public static unsafe class Commands
     {
         ulong up = Time.UptimeMs();
         if (up == 0) up = 1;
-        Terminal.WriteLine(AnsiColor.BrightCyan, "  ID  NAME                 STATE     PRI    CPU    CPU ms   CPU%  SWITCHES  STACK  WAITS FOR");
+        Terminal.WriteLine(AnsiColor.BrightCyan, "  ID  PID  NAME                 STATE     PRI    CPU    CPU ms   CPU%  SWITCHES  STACK  WAITS FOR");
         ThreadInfo info = default;
         for (uint i = 0; Thread.GetInfo(i, out info); i++) {
             Terminal.Write($"  {info.Id}");
             Pad(Digits(info.Id), 4);
+            if (info.Pid != 0)
+                Terminal.Write($"{info.Pid}");
+            else
+                Terminal.Write("-");
+            Pad(info.Pid != 0 ? Digits(info.Pid) : 1, 5);
             Terminal.Write(info.Name);
             Pad((int)Str.Length(info.Name), 21);
             Terminal.Write(StateName(info.State));
@@ -144,6 +155,104 @@ public static unsafe class Commands
         }
         uint cpus = SysInfo.CpuCount();
         Terminal.WriteLine($"{Thread.Count()} threads on {cpus} CPU(s), {Thread.ContextSwitches()} context switches, idle {Thread.IdleMs() * 100.0 / (up * cpus):F1}%");
+
+        if (Process.Count() == 0)
+            return;
+        Terminal.WriteLine(AnsiColor.BrightCyan, "  PID  PARENT  NAME                 STATE    MEMORY     RUNNING FOR");
+        ProcessInfo p = default;
+        for (uint i = 0; Process.GetInfo(i, out p); i++) {
+            Terminal.Write($"  {p.Pid}");
+            Pad(Digits(p.Pid), 5);
+            if (p.Parent != 0)
+                Terminal.Write($"{p.Parent}");
+            else
+                Terminal.Write("kernel");
+            Pad(p.Parent != 0 ? Digits(p.Parent) : 6, 8);
+            Terminal.Write(p.Name);
+            Pad((int)Str.Length(p.Name), 21);
+            Terminal.Write(p.State == ProcessState.Running ? "running  " : "exited   ");
+            Terminal.Write($"{p.MemoryKib} KiB");
+            Pad(Digits(p.MemoryKib) + 4, 11);
+            Terminal.WriteLine($"{p.UptimeMs} ms");
+        }
+    }
+
+    // ---------------------------------------------------------------- user programs
+
+    static bool HasProgram(byte* name)
+    {
+        for (uint i = 0; i < Process.ProgramCount(); i++) {
+            if (Str.Equals(name, Process.ProgramName(i)))
+                return true;
+        }
+        return false;
+    }
+
+    static void Programs()
+    {
+        uint n = Process.ProgramCount();
+        if (n == 0) {
+            Terminal.WriteLine("no programs (host mode, or the ISO has no /boot/bin)");
+            return;
+        }
+        for (uint i = 0; i < n; i++) {
+            Terminal.Write("  ");
+            Terminal.Write(AnsiColor.BrightCyan, Process.ProgramName(i));
+            Pad((int)Str.Length(Process.ProgramName(i)), 14);
+            Terminal.WriteLine($"{Process.ProgramSize(i):size}");
+        }
+        Terminal.WriteLine($"{n} program(s) in /boot/bin — run one with `run NAME ARGS` or just `NAME ARGS`");
+    }
+
+    static void RunProgram(byte* args)
+    {
+        if (*args == 0) {
+            Terminal.WriteLine("usage: run PROGRAM [ARGS] [&]   (programs: `progs`)");
+            return;
+        }
+        byte* rest = args;
+        while (*rest != 0 && *rest != ' ')
+            rest++;
+        if (*rest != 0) {
+            *rest = 0;
+            rest++;
+        }
+        Execute(args, rest);
+    }
+
+    /// Runs `name` in the foreground (the shell waits for it) or, with a trailing `&`, in the background.
+    static void Execute(byte* name, byte* args)
+    {
+        bool background = false;
+        int n = (int)Str.Length(args);
+        while (n > 0 && args[n - 1] == ' ')
+            n--;
+        if (n > 0 && args[n - 1] == '&') {
+            background = true;
+            args[n - 1] = 0;
+        }
+
+        long pid = Process.Start(name, args, background);
+        if (pid < 0) {
+            Terminal.Write(AnsiColor.BrightRed, "run: ");
+            Terminal.Write(name);
+            Terminal.Write(": ");
+            Terminal.WriteLine(Process.ErrorText(pid));
+            return;
+        }
+        if (background) {
+            Terminal.WriteLine($"[{pid}] running in the background");
+            return;
+        }
+        long code = Process.Wait((uint)pid);
+        if (code != 0) {
+            Terminal.SetColor(AnsiColor.Gray);
+            Terminal.Write("[");
+            Terminal.Write(name);
+            Terminal.Write($" exited with code {code}]");
+            Terminal.ResetColor();
+            Terminal.WriteLine();
+        }
     }
 
     static string StateName(ThreadState state)

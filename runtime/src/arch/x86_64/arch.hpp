@@ -7,6 +7,8 @@ namespace neko::arch {
 
 constexpr uint16_t kKernelCode = 0x08;
 constexpr uint16_t kKernelData = 0x10;
+constexpr uint16_t kUserData = 0x18 | 3;  // selectors with RPL 3
+constexpr uint16_t kUserCode = 0x20 | 3;
 constexpr uint16_t kTss = 0x28;
 
 // Interrupt vectors
@@ -17,6 +19,10 @@ constexpr uint8_t kVectorSpurious = 0xFF;
 void gdt_init(uint32_t cpu);  // own GDT + TSS with IST stacks for #DF, NMI, #MC (per CPU)
 void idt_init();              // builds the shared IDT and loads it
 void idt_load();              // loads it on an AP
+void set_kernel_stack(uint32_t cpu, uint64_t top);  // TSS.rsp0: stack for interrupts from ring 3
+
+// User mode (usermode.cpp, syscall.S)
+void syscall_init_this_cpu();  // EFER.SCE, STAR/LSTAR/SFMASK
 
 // Interrupt vectors for inter-processor interrupts
 constexpr uint8_t kVectorKick = 0xF0;      // reschedule

@@ -18,6 +18,15 @@ public sealed class ProjectConfig
 
     public List<string> Defines { get; set; } = ["NEKOTIA"];
 
+    /// <summary>
+    /// "kernel" (default): entry point [KernelEntry], generated code includes &lt;neko/runtime.hpp&gt;.
+    /// "user": a ring-3 program — entry point <c>static int Main()</c> / <c>Main(int argc, byte** argv)</c>,
+    /// generated code includes &lt;neko/user.hpp&gt; (runtime/user/).
+    /// </summary>
+    public string Target { get; set; } = "kernel";
+
+    public bool IsUser => Target == "user";
+
     public string RootDirectory { get; private set; } = ".";
 
     public static ProjectConfig Load(string path)
@@ -35,6 +44,8 @@ public sealed class ProjectConfig
         config.RootDirectory = Path.GetDirectoryName(Path.GetFullPath(path))!;
         if (config.Sources.Count == 0)
             throw new InvalidDataException($"config '{path}' has no \"sources\"");
+        if (config.Target is not ("kernel" or "user"))
+            throw new InvalidDataException($"config '{path}': \"target\" must be \"kernel\" or \"user\", not \"{config.Target}\"");
         return config;
     }
 

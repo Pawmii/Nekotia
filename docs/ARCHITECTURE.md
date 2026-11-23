@@ -17,6 +17,11 @@ clang++ (freestanding, -mcmodel=kernel, -mno-red-zone, без SSE) ──► *.o
                   │  + runtime/src/core, freestanding, arch/x86_64 (boot.cpp, idt.cpp, isr.S, serial.cpp)
 ld.lld -T runtime/src/arch/x86_64/linker.ld ──► build/nekotia.elf
 xorriso + limine bios-install ──► build/nekotia.iso (гибрид BIOS/UEFI)
+
+user/NAME/nekotia.json ("target": "user") ──► nekoc build ──► build/user/NAME/gen/*.cpp
+clang++ (freestanding, ring 3) + runtime/user (crt0, user.cpp) + core/math.cpp + freestanding/libc.cpp
+ld.lld -T runtime/user/linker.ld (0x400000) ──► build/user/bin/NAME ──► /boot/bin/NAME на ISO
+                                                  (module_path в build/limine.conf → модуль Limine)
 ```
 
 ## nekoc (`tools/nekoc`)
@@ -150,6 +155,43 @@ ANSI-последовательности (`ESC[…m`, `ESC[2J`, `ESC[H`, `ESC[K
   Без блокировок (одно ядро, без вытеснения) — фаза 4.
 - **Переполнение стека**: запись в guard-страницу → #PF, который процессор не может положить на тот же стек → #DF на
   IST-стеке → экран смерти распознаёт адрес guard-страницы и пишет `StackOverflowException`.
+
+### Пользовательский режим и процессы
+
+`core/process.cpp`, `arch/x86_64/usermode.cpp`, `arch/x86_64/syscall.S`, ABI — `include/neko/process.hpp`.
+
+```
+адресное пространство процесса (нижняя половина; верхняя — общая с ядром)
+ 0x0000000000400000  образ программы: PT_LOAD-сегменты, R / RX / RW (+NX, где нет X)
+ 0x0000100000000000  память от системного вызова alloc (куча программы), растёт вверх, до 256 МиБ
+ 0x00007fffffff0000  вершина стека 256 КиБ; argv-строки и массив argv — на самом верху
+```
+
+- **Общая верхняя половина**: `vmm::init` заранее создаёт все 256 записей PML4[256…511], поэтому новое пространство
+  копирует их один раз, а любые последующие отображения ядра (куча, стеки, MMIO) сразу видны во всех процессах.
+- **Процесс = адресное пространство + один поток.** `proc::spawn` проверяет ELF (статический ET_EXEC x86_64, сегменты в
+  пользовательской зоне, точка входа в исполняемом сегменте), отображает сегменты и стек через HHDM (пространство при
+  этом не активно), кладёт argc/argv и запускает поток ядра `sched::spawn_for(process, …)`. Его первая функция загружает
+  чистое состояние FPU и делает `iretq` в ring 3 (`neko_enter_user`, CS 0x23 / SS 0x1B, `swapgs`).
+- **Переключение**: перед каждым `neko_switch_context` хук `neko_sched_switch_to` ставит `TSS.rsp0` и `gs:8` на вершину
+  стека ядра входящего потока и загружает его CR3 (у потоков ядра — таблицы ядра).
+- **`syscall`**: STAR = 0x08/0x10 (sysret → 0x23/0x1B), SFMASK гасит IF/DF/TF/AC. `neko_syscall_entry` делает `swapgs`,
+  переходит на стек ядра потока, строит `SyscallFrame` (как кадр прерывания без вектора), `fxsave`, `sti` и вызывает
+  `neko_syscall_dispatch`. Номер — `rax`, аргументы — `rdi rsi rdx r10 r8 r9`, результат — `rax` (отрицательный = ошибка).
+  Встроенные вызовы (exit, write, getpid, yield, sleep, uptime, spawn, wait, alloc, process_info) — в C++;
+  остальные регистрирует C#-код ядра атрибутом `[Syscall(n)]` (так сделан `read` с клавиатуры: `kernel/Syscalls.neko`).
+  Указатели от программы проверяются обходом её таблиц страниц (`proc::check_read/check_write`, `UserMemory.CanRead`).
+- **Прерывания из ring 3**: `isr.S` смотрит на CS в кадре и делает `swapgs` на входе и выходе. Исключение CPU в ring 3
+  не вызывает экран смерти: `proc::user_exception` печатает .NET-имя исключения, адрес и `rip` и завершает процесс с
+  кодом 128 + вектор (`#PF` → 142, `#GP` → 141, `#UD` → 134).
+- **Завершение**: `exit` → `sched::exit()`; когда поток снят с CPU, планировщик вызывает `proc::thread_freed` (вне своего
+  замка): освобождаются все страницы и таблицы нижней половины, и `Semaphore exited` будит родителя в `wait`, который
+  забирает код выхода и освобождает запись процесса. Фоновые (`detached`) процессы освобождаются сразу.
+
+Рантайм программ (`runtime/user/`): `crt0.S` (`_start` → `neko_user_start`: `__init_array`, `Main`, `exit`), обёртки
+системных вызовов, буферизованный вывод (сброс на `\n`, перед `read` и при выходе), first-fit куча поверх `alloc`,
+`str::*`, а `throw`/`Debug.Assert` печатают сообщение и завершают программу с кодом 134. C#-API — `sdk/Nekotia.User`
+(`Console`, `Process`, `Memory`, `Time`); `Attributes.cs`, `Intrinsics.cs`, `Debug.cs`, `Maths.cs` общие с ядром.
 
 ### Исключения
 

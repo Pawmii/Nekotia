@@ -115,6 +115,7 @@ extern "C" [[noreturn]] void neko_ap_main(limine_mp_info* info) {
     arch::gdt_init(c->index);  // reloads GS, so the GS base is set afterwards
     arch::idt_load();
     smp::set_gs_base(c);
+    arch::syscall_init_this_cpu();
     arch::lapic_init_this_cpu();
 
     uint64_t top = c->stack_top;

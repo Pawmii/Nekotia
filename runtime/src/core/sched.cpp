@@ -9,6 +9,7 @@
 //   * a running thread is in no queue; Ready threads are in exactly one run queue
 //   * Sleeping threads are in g_sleepers; Blocked ones in the wait queue of a Mutex/Semaphore
 //   * each CPU has its own idle thread, which is never queued
+#include <neko/process.hpp>
 #include <neko/runtime.hpp>
 #include <neko/sched.hpp>
 #include <neko/smp.hpp>
@@ -19,6 +20,7 @@ extern "C" void neko_thread_trampoline();
 // Platform hooks (arch/x86_64/sched_arch.cpp, host/host_main.cpp).
 uint64_t neko_sched_new_stack(size_t size);  // returns the top, 16-byte aligned; 0 when out of memory
 void neko_sched_idle();                      // wait for an interrupt (hardware) / for time to pass (host)
+void neko_sched_switch_to(neko::sched::Thread* next);  // kernel stack for ring 3 entries, address space
 
 namespace neko::sched {
 namespace {
@@ -140,7 +142,10 @@ void after_switch() {
         z = nullptr;
     }
     g_lock.release();
-    if (z) heap::free(z);  // outside the scheduler lock
+    if (z) {  // outside the scheduler lock
+        if (z->process) proc::thread_freed(z);
+        heap::free(z);
+    }
 }
 
 // g_lock held, interrupts off. Returns with g_lock released.
@@ -172,6 +177,7 @@ void schedule_locked() {
     ++next->switches;
     ++g_switches;
     c->current = next;
+    neko_sched_switch_to(next);
     neko_switch_context(&prev->rsp, next->rsp);
     after_switch();  // possibly on another CPU now
 }
@@ -232,7 +238,20 @@ void run_idle() { idle_loop(0); }
 
 bool running() { return g_running; }
 
+namespace {
+uint32_t start_thread(proc::Process* process, const char* name, Entry entry, uint64_t arg, Priority priority);
+}
+
 uint32_t spawn(const char* name, Entry entry, uint64_t arg, Priority priority) {
+    return start_thread(nullptr, name, entry, arg, priority);
+}
+
+uint32_t spawn_for(proc::Process* process, const char* name, Entry entry, uint64_t arg) {
+    return start_thread(process, name, entry, arg, Priority::Normal);
+}
+
+namespace {
+uint32_t start_thread(proc::Process* process, const char* name, Entry entry, uint64_t arg, Priority priority) {
     if (!g_running || !entry) return 0;
     uint64_t top = 0;
     {
@@ -247,6 +266,7 @@ uint32_t spawn(const char* name, Entry entry, uint64_t arg, Priority priority) {
     if (!t) return 0;
     t->stack_top = top;
     t->stack_size = kStackSize;
+    t->process = process;
     build_frame(t, top, reinterpret_cast<uint64_t>(entry), arg);
     cpu::InterruptGuard g;
     g_lock.acquire();
@@ -254,6 +274,7 @@ uint32_t spawn(const char* name, Entry entry, uint64_t arg, Priority priority) {
     g_lock.release();
     return t->id;
 }
+}  // namespace
 
 void yield() {
     if (!g_running) return;
@@ -364,6 +385,7 @@ bool thread_info(uint32_t index, ThreadInfo& out) {
         out.stack_kib = t->stack_size / 1024;
         out.cpu = t->cpu;
         out.blocked_on = t->blocked_on ? t->blocked_on : "";
+        out.pid = t->process ? t->process->pid : 0;
     }
     g_lock.release();
     return t != nullptr;

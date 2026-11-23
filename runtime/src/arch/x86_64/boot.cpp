@@ -7,6 +7,7 @@
 
 #include "arch.hpp"
 
+#include <neko/process.hpp>
 #include <neko/sched.hpp>
 #include <neko/smp.hpp>
 
@@ -49,6 +50,10 @@ volatile limine_executable_address_request executable_address_request = {.id = L
 
 __attribute__((used, section(".limine_requests")))
 volatile limine_mp_request mp_request = {.id = LIMINE_MP_REQUEST_ID, .revision = 0, .response = nullptr, .flags = 0};
+
+__attribute__((used, section(".limine_requests")))
+volatile limine_module_request module_request = {.id = LIMINE_MODULE_REQUEST_ID, .revision = 0, .response = nullptr,
+                                                 .internal_module_count = 0, .internal_modules = nullptr};
 
 __attribute__((used, section(".limine_requests_end")))
 volatile uint64_t limine_requests_end[] = LIMINE_REQUESTS_END_MARKER;
@@ -129,6 +134,16 @@ using Constructor = void (*)();
 extern "C" Constructor __init_array_start[];
 extern "C" Constructor __init_array_end[];
 
+// Programs on the ISO (/boot/bin/*, listed as module_path in limine.conf) become runnable modules.
+void init_modules() {
+    auto* res = module_request.response;
+    if (!res) return;
+    for (uint64_t i = 0; i < res->module_count; ++i) {
+        limine_file* f = res->modules[i];
+        neko::proc::add_module(f->path, f->address, f->size);
+    }
+}
+
 void init_interrupts() {
     neko::arch::MadtInfo madt;
     void* rsdp = rsdp_request.response ? rsdp_request.response->address : nullptr;
@@ -181,6 +196,7 @@ uint64_t g_kernel_stack_top = 0;
     neko::term::write(", kernel stack with guard page\n");
 
     init_interrupts();
+    init_modules();
 
     // Dynamic initialisers of generated static fields, then [Irq] handler registration.
     for (Constructor* c = __init_array_start; c != __init_array_end; ++c) (*c)();
@@ -193,6 +209,9 @@ uint64_t g_kernel_stack_top = 0;
     neko::term::write(" of ");
     neko::term::write_udec(mp_request.response ? mp_request.response->cpu_count : 1);
     neko::term::write(" CPU(s) online\n");
+    neko::term::write("[neko] user mode: syscall/sysret, ");
+    neko::term::write_udec(neko::proc::module_count());
+    neko::term::write(" program(s) in /boot/bin\n");
 
     neko::term::write("[neko] heap ");
     neko::term::write_size(neko::heap::total_bytes());
@@ -219,6 +238,7 @@ extern "C" NEKO_NORETURN void kmain() {
     neko::arch::gdt_init(0);
     neko::arch::percpu_init_bsp();
     neko::arch::idt_init();
+    neko::arch::syscall_init_this_cpu();
     init_physical_memory();
     init_virtual_memory();
 

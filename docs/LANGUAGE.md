@@ -33,6 +33,8 @@
 | `[CallerFilePath]`, `[CallerLineNumber]`, `[CallerMemberName]` | относительный путь, строка, `Ns.Type.Method` | |
 | `volatile` поля | `volatile T` | |
 | `[Irq(n)]` | регистрация в `neko_kernel_init()` | обработчик IRQ |
+| `[Syscall(n)] static long Read(int fd, byte* buf, ulong len)` | адаптер `(uint64_t×6) → int64_t` + регистрация в `neko_kernel_init()` | системный вызов для программ; до 6 аргументов (целые, bool, enum, указатели); номера 2 и 32–63 |
+| `static int Main(int argc, byte** argv)` (цель `user`) | `extern "C" int neko_user_main(argc, argv)` | точка входа программы; также `Main()` и `void` |
 
 ### Типы
 
@@ -125,6 +127,7 @@ for i in 1..=n { }              // включительно
 | `@noreturn` | `[NoReturn]` | `[[noreturn]]` |
 | `@native("::neko::x")` | `[Native("::neko::x")]` | реализация в `runtime/` |
 | `@irq(1)` | `[Irq(1)]` | обработчик ISA IRQ, регистрируется до `sti` |
+| `@syscall(32)` | `[Syscall(32)]` | системный вызов на C#, выполняется в потоке вызвавшей программы |
 
 ## Связь с C++: `[Native]`
 
@@ -140,6 +143,19 @@ public static class Port
 `enum` (`[Native("::neko::vmm::PageFlags")]` — члены с теми же именами) и статическое поле.
 Новый примитив добавляется так: объявление в `runtime/include/neko/*.hpp`, реализация в `runtime/src/`,
 C#-обёртка в `sdk/Nekotia.Sdk/`.
+
+## Программы (`"target": "user"`)
+
+`nekotia.json` программы (`user/NAME/`) отличается полем `"target": "user"`: точка входа — `static Main`, сгенерированный
+код подключает `<neko/user.hpp>` (`runtime/user/`) вместо рантайма ядра, `[KernelEntry]`/`[Irq]`/`[Syscall]` запрещены.
+Язык тот же; `throw` и `Debug.Assert` печатают сообщение и завершают программу (код 134), а не останавливают систему.
+
+| Класс (`sdk/Nekotia.User`) | Что умеет |
+|---|---|
+| `Nekotia.User.Console` | `Write*`, `WriteLine` (с интерполяцией), `WriteError`, `Read`, `ReadLine`; цвета — `Ansi.*` |
+| `Nekotia.User.Process` | `Exit`, `Id`, `Yield`, `Sleep`, `Start(name, args)`, `Wait(pid)`, `GetInfo`, `ArgCount`/`Arg(i)`, `Syscall(n, …)` |
+| `Nekotia.User.Memory` | `Alloc`, `AllocZeroed`, `Free`, `New<T>`, `NewArray<T>`, `Delete<T>`, `UsedBytes`, `TotalBytes` |
+| `Nekotia.User.Time` | `UptimeMs` |
 
 ## SDK (кратко)
 
@@ -157,6 +173,8 @@ C#-обёртка в `sdk/Nekotia.Sdk/`.
 | `Nekotia.Mem.VirtualMemory` | `Map`, `Unmap`, `Protect`, `Translate`, `MapFresh`, `PageFlags` (Write/Execute/User/Uncached/WriteCombining) |
 | `Nekotia.Mem.Memory` | `Set`, `Copy`, `Move`, `Compare`, `Zero` |
 | `Nekotia.Threading.Thread` | `Start(name, &Entry, arg, priority)`, `Yield`, `Sleep`, `Exit`, `CurrentId`, `GetInfo` |
+| `Nekotia.Processes.Process` | `Start(name, args, detached)`, `Wait(pid)`, `Count`, `GetInfo`, `ProgramCount/Name/Size`, `ExitCurrent`, `ErrorText` |
+| `Nekotia.Processes.UserMemory` | `CanRead`, `CanWrite` — проверка указателей программы в `[Syscall]`-обработчиках |
 | `Nekotia.Threading.Mutex` / `Semaphore` / `SpinLock` | `Lock/Unlock/TryLock/SetName`; `Wait/Signal/TryWait` (Signal — и из IRQ) |
 | `Nekotia.Maths` | `Sqrt`, `Sin`, `Cos`, `Tan`, `Atan2`, `Exp`, `Log`, `Pow`, `Floor`, `Ceiling`, `Round`, `Abs`, `Pi` |
 | `Nekotia.Debug` | `Panic`, `Assert` — с файлом/строкой/методом вызывающего, экран смерти |
@@ -169,7 +187,9 @@ C#-обёртка в `sdk/Nekotia.Sdk/`.
 | Код | Значение |
 |---|---|
 | NEKO0001 | нет / несколько / неверная сигнатура `[KernelEntry]` |
+| NEKO0002 | нет / несколько / неверная сигнатура `Main` в программе |
 | NEKO0003 | неверный `[Irq]`-обработчик (сигнатура, номер линии, дубликат) |
+| NEKO0004 | неверный `[Syscall]`-обработчик (сигнатура, номер, дубликат) или атрибут ядра в программе |
 | NEKO0100 | неподдерживаемый вид типа (class, interface, record, вложенный, generic) |
 | NEKO0101 | неподдерживаемый член (статический конструктор, индексатор, params…) |
 | NEKO0200 | вызов API .NET |

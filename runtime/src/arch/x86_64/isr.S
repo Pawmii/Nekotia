@@ -1,5 +1,8 @@
 /* Interrupt stubs for all 256 vectors: normalise the stack (vector + error code),
-   save GPRs and the FPU/SSE state, call neko_isr_dispatch(frame). Generated layout, see idt.cpp. */
+   save GPRs and the FPU/SSE state, call neko_isr_dispatch(frame). Generated layout, see idt.cpp.
+
+   Interrupts that arrive in ring 3 (CS & 3 in the CPU-pushed frame) swap GS on the way in and
+   out, so the kernel always runs with GS = its per-CPU record (smp.hpp). */
 
 .section .text
 
@@ -274,6 +277,10 @@ ISR_NOERR 254
 ISR_NOERR 255
 
 isr_common:
+    testb $3, 24(%rsp)         /* CS of the interrupted code: [vector][error][rip][cs] */
+    jz 1f
+    swapgs
+1:
     pushq %rax
     pushq %rbx
     pushq %rcx
@@ -312,6 +319,10 @@ isr_common:
     popq %rbx
     popq %rax
     addq $16, %rsp
+    testb $3, 8(%rsp)          /* [rip][cs]: back to ring 3? */
+    jz 2f
+    swapgs
+2:
     iretq
 
 .section .rodata

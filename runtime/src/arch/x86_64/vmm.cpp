@@ -7,6 +7,7 @@
 // then enables EFER.NXE and CR0.WP and switches CR3. Limine's tables are not used afterwards.
 #include "arch.hpp"
 
+#include <neko/process.hpp>
 #include <neko/sched.hpp>
 #include <neko/smp.hpp>
 
@@ -52,9 +53,13 @@ uint64_t* table(uint64_t entry) { return static_cast<uint64_t*>(pmm::phys_to_vir
 
 uint64_t* root() { return g_pml4 ? g_pml4 : table(cpu::read_cr3()); }
 
-uint64_t* new_table() {
+// `soft`: return nullptr when out of memory instead of stopping (user address spaces).
+uint64_t* new_table(bool soft = false) {
     void* p = pmm::alloc_page();
-    if (!p) crash::fail(crash::StopCode::OutOfMemory, "vmm: no free page for a page table");
+    if (!p) {
+        if (soft) return nullptr;
+        crash::fail(crash::StopCode::OutOfMemory, "vmm: no free page for a page table");
+    }
     ++g_table_pages;
     return static_cast<uint64_t*>(p);
 }
@@ -71,13 +76,13 @@ uint64_t leaf_flags(PageFlags f, bool large) {
 
 // Entry at `level` (3 = PML4 … 0 = PT) for `virt`; creates missing tables down to `level`.
 // Returns nullptr when a large page already covers the address or `create` is false and a table is missing.
-uint64_t* entry(uint64_t virt, int level, bool create) {
-    uint64_t* t = root();
+uint64_t* entry_in(uint64_t* t, uint64_t virt, int level, bool create, bool soft = false) {
     for (int l = 3; l > level; --l) {
         uint64_t& e = t[(virt >> (12 + 9 * l)) & 0x1FF];
         if (!(e & kPresent)) {
             if (!create) return nullptr;
-            uint64_t* n = new_table();
+            uint64_t* n = new_table(soft);
+            if (!n) return nullptr;
             e = pmm::virt_to_phys(n) | kPresent | kWritable | kUser;  // permissions are decided by the leaf
             t = n;
             continue;
@@ -87,6 +92,8 @@ uint64_t* entry(uint64_t virt, int level, bool create) {
     }
     return &t[(virt >> (12 + 9 * level)) & 0x1FF];
 }
+
+uint64_t* entry(uint64_t virt, int level, bool create) { return entry_in(root(), virt, level, create); }
 
 void invalidate(uint64_t virt) { __asm__ volatile("invlpg (%0)" : : "r"(virt) : "memory"); }
 
@@ -160,6 +167,11 @@ void init(uint64_t hhdm, uint64_t kernel_phys, const MemoryRange* ranges, size_t
     map_kernel_section(__rodata_start, __rodata_end, PageFlags::None);
     map_kernel_section(__data_start, __data_end, PageFlags::Write);
     map_kernel_section(__symbols_start, __symbols_end, PageFlags::None);
+
+    // Every top-level entry of the kernel half exists from now on, so user address spaces can
+    // share it by copying PML4[256…511] once: later kernel mappings land in shared tables.
+    for (int i = 256; i < 512; ++i)
+        if (!(g_pml4[i] & kPresent)) g_pml4[i] = pmm::virt_to_phys(new_table()) | kPresent | kWritable;
 
     __asm__ volatile("mov %0, %%cr3" : : "r"(pmm::virt_to_phys(g_pml4)) : "memory");
     uint64_t cr0;
@@ -283,6 +295,80 @@ bool is_stack_guard(uint64_t address) {
     for (uint32_t i = 0; i < g_stack_count; ++i)
         if (address >= g_stack_guards[i] && address < g_stack_guards[i] + kPage) return true;
     return false;
+}
+
+// ---------------------------------------------------------------- user address spaces
+
+uint64_t* space_create() {
+    sync::ScopedLock vm_guard(g_vm_lock);
+    uint64_t* pml4 = new_table(true);
+    if (!pml4) return nullptr;
+    for (int i = 256; i < 512; ++i) pml4[i] = g_pml4[i];
+    return pml4;
+}
+
+void space_destroy(uint64_t* pml4) {
+    if (!pml4 || pml4 == g_pml4) return;
+    sync::ScopedLock vm_guard(g_vm_lock);
+    for (int i = 0; i < 256; ++i) {  // the lower half only: the upper half belongs to the kernel
+        if (!(pml4[i] & kPresent)) continue;
+        uint64_t* pdpt = table(pml4[i]);
+        for (int j = 0; j < 512; ++j) {
+            if (!(pdpt[j] & kPresent)) continue;
+            uint64_t* pd = table(pdpt[j]);
+            for (int k = 0; k < 512; ++k) {
+                if (!(pd[k] & kPresent)) continue;
+                uint64_t* pt = table(pd[k]);
+                for (int l = 0; l < 512; ++l)
+                    if (pt[l] & kPresent) pmm::free_page(pmm::phys_to_virt(pt[l] & kAddress));
+                pmm::free_page(pt);
+                --g_table_pages;
+            }
+            pmm::free_page(pd);
+            --g_table_pages;
+        }
+        pmm::free_page(pdpt);
+        --g_table_pages;
+    }
+    pmm::free_page(pml4);
+    --g_table_pages;
+}
+
+bool space_map(uint64_t* pml4, uint64_t virt, uint64_t phys, PageFlags flags) {
+    if (virt >= 0x0000800000000000ull) return false;
+    sync::ScopedLock vm_guard(g_vm_lock);
+    uint64_t* pte = entry_in(pml4, virt & ~(kPage - 1), 0, true, true);
+    if (!pte || (*pte & kPresent)) return false;
+    *pte = (phys & kAddress) | leaf_flags(flags | PageFlags::User, false);
+    return true;
+}
+
+void space_add_flags(uint64_t* pml4, uint64_t virt, PageFlags flags) {
+    sync::ScopedLock vm_guard(g_vm_lock);
+    uint64_t* pte = entry_in(pml4, virt & ~(kPage - 1), 0, false);
+    if (!pte || !(*pte & kPresent)) return;
+    if (has(flags, PageFlags::Write)) *pte |= kWritable;
+    if (has(flags, PageFlags::Execute)) *pte &= ~kNoExecute;
+}
+
+uint64_t space_translate(uint64_t* pml4, uint64_t virt) {
+    uint64_t* pte = entry_in(pml4, virt & ~(kPage - 1), 0, false);
+    if (!pte || !(*pte & kPresent)) return ~0ull;
+    return (*pte & kAddress) | (virt & (kPage - 1));
+}
+
+bool space_check(uint64_t* pml4, uint64_t virt, uint64_t length, bool write) {
+    if (!pml4) return false;
+    if (length == 0) return virt < 0x0000800000000000ull;
+    uint64_t end = virt + length;
+    if (end < virt || end > 0x0000800000000000ull) return false;
+    for (uint64_t page = virt & ~(kPage - 1); page < end; page += kPage) {
+        uint64_t* pte = entry_in(pml4, page, 0, false);
+        if (!pte) return false;
+        uint64_t e = *pte;
+        if (!(e & kPresent) || !(e & kUser) || (write && !(e & kWritable))) return false;
+    }
+    return true;
 }
 
 Stats stats() {

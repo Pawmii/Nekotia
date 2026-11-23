@@ -226,7 +226,7 @@ public static unsafe class Shell
         Commands.Run(cmd, args);
     }
 
-    static int EncodeUtf8(uint cp, byte* o)
+    public static int EncodeUtf8(uint cp, byte* o)
     {
         if (cp < 0x80) {
             o[0] = (byte)cp;

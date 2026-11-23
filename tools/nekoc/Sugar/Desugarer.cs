@@ -16,7 +16,7 @@ namespace Nekotia.Compiler.Sugar;
 ///   loop { ... }           infinite loop                        → while (true) { ... }
 ///   lock (m) { ... }       Mutex/SpinLock held for the block    → m.Lock(); defer m.Unlock();
 ///   for [T] i in a..b {    half-open range loop (..= inclusive) → for (T i = a; i < b; i++) {
-///   @entry @packed @inline @noreturn @native("x") @align(n) @irq(n) → [KernelEntry] ...
+///   @entry @packed @inline @noreturn @native("x") @align(n) @irq(n) @syscall(n) → [KernelEntry] ...
 /// </summary>
 public static partial class Desugarer
 {
@@ -217,6 +217,7 @@ public static partial class Desugarer
         ["native"] = "global::Nekotia.Native",
         ["align"] = "global::Nekotia.Align",
         ["irq"] = "global::Nekotia.Irq",
+        ["syscall"] = "global::Nekotia.Syscall",
     };
 
     static string RewriteAttributes(string text)

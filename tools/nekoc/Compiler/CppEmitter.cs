@@ -14,6 +14,8 @@ namespace Nekotia.Compiler;
 ///   enum                 → enum class with the same underlying type (+ bitwise operators)
 ///   [Native("x")]        → not emitted, references are spelled as x (implemented in runtime/)
 ///   [KernelEntry]        → called from extern "C" neko_kernel_main(BootInfo*)
+///   [Irq(n)], [Syscall(n)] → registered in extern "C" neko_kernel_init()
+///   target "user": Main  → called from extern "C" neko_user_main(argc, argv) (runtime/user/)
 /// </summary>
 sealed partial class CppEmitter
 {
@@ -28,6 +30,7 @@ sealed partial class CppEmitter
     readonly List<INamedTypeSymbol> _staticClasses = [];
     IMethodSymbol? _entry;
     readonly List<(IMethodSymbol Method, int Line)> _irqHandlers = [];
+    readonly List<(IMethodSymbol Method, int Number)> _syscalls = [];
 
     SemanticModel _model = null!;
     bool _inFunction;
@@ -56,8 +59,17 @@ sealed partial class CppEmitter
     public (string Header, string Source) Emit()
     {
         Collect();
-        FindEntry();
-        FindIrqHandlers();
+        if (_config.IsUser)
+        {
+            FindMain();
+            RejectKernelOnly();
+        }
+        else
+        {
+            FindEntry();
+            FindIrqHandlers();
+            FindSyscalls();
+        }
 
         var header = new CodeWriter();
         var source = new CodeWriter();
@@ -194,15 +206,81 @@ sealed partial class CppEmitter
         }
     }
 
+    void FindSyscalls()
+    {
+        var used = new Dictionary<int, IMethodSymbol>();
+        foreach (var m in AllTypes().SelectMany(t => t.GetMembers().OfType<IMethodSymbol>()))
+        {
+            if (Symbols.Attr(m, "Syscall") is not { ConstructorArguments: [{ Value: int number }, ..] })
+                continue;
+            var loc = m.Locations.FirstOrDefault();
+            bool okReturn = m.ReturnsVoid || TypeMapper.IsNumeric(m.ReturnType) && m.ReturnType.SpecialType != SpecialType.System_Char;
+            if (!m.IsStatic || m.IsGenericMethod || !okReturn)
+                _diag.Error("NEKO0004", "[Syscall] handlers must be `static` and return an integer (negative = error) or void", loc);
+            else if (m.Parameters.Length > 6)
+                _diag.Error("NEKO0004", "[Syscall] handlers take at most 6 parameters (rdi, rsi, rdx, r10, r8, r9)", loc);
+            else if (m.Parameters.FirstOrDefault(p => p.RefKind != RefKind.None || !IsRegisterType(p.Type)) is { } bad)
+                _diag.Error("NEKO0004", $"[Syscall] parameter '{bad.Name}' must be an integer, bool, enum or pointer passed by value", bad.Locations.FirstOrDefault() ?? loc);
+            else if (number != 2 && number is < 32 or > 63)
+                _diag.Error("NEKO0004", "[Syscall] number must be 2 (read) or 32–63 — the others belong to the runtime (neko/process.hpp)", loc);
+            else if (used.TryGetValue(number, out var other))
+                _diag.Error("NEKO0004", $"syscall {number} already has a handler: {other.ContainingType.Name}.{other.Name}", loc);
+            else
+            {
+                used[number] = m;
+                _syscalls.Add((m, number));
+            }
+        }
+    }
+
+    static bool IsRegisterType(ITypeSymbol t) =>
+        t is IPointerTypeSymbol || t.TypeKind == TypeKind.Enum || t.SpecialType == SpecialType.System_Boolean ||
+        TypeMapper.IsNumeric(t) && t.SpecialType != SpecialType.System_Char;
+
+    void FindMain()
+    {
+        var mains = AllTypes()
+            .SelectMany(t => t.GetMembers("Main").OfType<IMethodSymbol>())
+            .Where(m => m.IsStatic)
+            .ToList();
+        if (mains.Count != 1)
+        {
+            if (mains.Count == 0)
+                _diag.Error("NEKO0002", "a user program needs `static int Main()` (or `Main(int argc, byte** argv)`, or returning void)", (Location?)null);
+            foreach (var m in mains)
+                _diag.Error("NEKO0002", "only one static Main method is allowed in a user program", m.Locations.FirstOrDefault());
+            return;
+        }
+        var main = mains[0];
+        bool okReturn = main.ReturnsVoid || main.ReturnType.SpecialType == SpecialType.System_Int32;
+        bool okParams = main.Parameters.Length == 0 ||
+                        main.Parameters.Length == 2 && main.Parameters[0].Type.SpecialType == SpecialType.System_Int32 &&
+                        main.Parameters[1].Type is IPointerTypeSymbol { PointedAtType: IPointerTypeSymbol { PointedAtType.SpecialType: SpecialType.System_Byte } };
+        if (!okReturn || !okParams || main.IsGenericMethod)
+        {
+            _diag.Error("NEKO0002", "Main must be `static int Main()` or `static int Main(int argc, byte** argv)` (void is fine too)", main.Locations.FirstOrDefault());
+            return;
+        }
+        _entry = main;
+    }
+
+    void RejectKernelOnly()
+    {
+        foreach (var m in AllTypes().SelectMany(t => t.GetMembers().OfType<IMethodSymbol>()))
+            foreach (var name in new[] { "KernelEntry", "Irq", "Syscall" })
+                if (Symbols.Has(m, name))
+                    _diag.Error("NEKO0004", $"[{name}] is kernel-only and cannot be used in a user program (\"target\": \"user\")", m.Locations.FirstOrDefault());
+    }
+
     IEnumerable<INamedTypeSymbol> AllTypes() => _structs.Concat(_staticClasses);
 
     // ================================================================ header
 
     void EmitHeader(CodeWriter w)
     {
-        w.Line("// <auto-generated> by nekoc — do not edit. Source: the C# kernel (see nekotia.json).");
+        w.Line($"// <auto-generated> by nekoc — do not edit. Source: the C# {(_config.IsUser ? "program" : "kernel")} (see nekotia.json).");
         w.Line("#pragma once");
-        w.Line("#include <neko/runtime.hpp>");
+        w.Line(_config.IsUser ? "#include <neko/user.hpp>" : "#include <neko/runtime.hpp>");
         w.Line();
 
         w.Line("// ---- forward declarations");
@@ -225,7 +303,9 @@ sealed partial class CppEmitter
         ForEachInNamespace(w, _staticClasses, EmitTypeDeclaration);
         w.Line();
 
-        w.Line("extern \"C\" void neko_kernel_main(::neko::BootInfo* info);");
+        w.Line(_config.IsUser
+            ? "extern \"C\" int neko_user_main(int argc, uint8_t** argv);"
+            : "extern \"C\" void neko_kernel_main(::neko::BootInfo* info);");
     }
 
     /// <summary>Emits <paramref name="body"/> for each type, wrapping runs of types from the same namespace in one block; empty blocks are dropped.</summary>
@@ -489,7 +569,7 @@ sealed partial class CppEmitter
 
     void EmitSource(CodeWriter w)
     {
-        w.Line("// <auto-generated> by nekoc — do not edit. Source: the C# kernel (see nekotia.json).");
+        w.Line($"// <auto-generated> by nekoc — do not edit. Source: the C# {(_config.IsUser ? "program" : "kernel")} (see nekotia.json).");
         w.Line($"#include \"{Driver.HeaderName}\"");
         w.Line();
 
@@ -501,13 +581,29 @@ sealed partial class CppEmitter
         ForEachInNamespace(w, AllTypes(), EmitMemberDefinitions);
         w.Line();
 
-        w.Line("// ---- [Irq] handlers (registered before interrupts are enabled)");
+        if (_config.IsUser)
+        {
+            EmitUserEntry(w);
+            return;
+        }
+
+        if (_syscalls.Count > 0)
+        {
+            w.Line("// ---- [Syscall] adapters: six raw registers → the C# signature");
+            foreach (var (method, number) in _syscalls)
+                EmitSyscallAdapter(w, method, number);
+            w.Line();
+        }
+
+        w.Line("// ---- [Irq] and [Syscall] handlers (registered before interrupts are enabled)");
         w.OpenBrace("extern \"C\" void neko_kernel_init()");
         foreach (var (method, line) in _irqHandlers)
         {
             var target = $"{Qualified(method.ContainingType)}::{Symbols.Escape(method.Name)}";
             w.Line($"if (!::neko::irq::register_handler({line}, &{target})) ::neko::term::write(\"[neko] warning: IRQ {line} handler {method.ContainingType.Name}.{method.Name} not installed\\n\");");
         }
+        foreach (var (method, number) in _syscalls)
+            w.Line($"if (!::neko::proc::register_syscall({number}, &_neko_syscall_{number})) ::neko::term::write(\"[neko] warning: syscall {number} handler {method.ContainingType.Name}.{method.Name} not installed\\n\");");
         w.CloseBrace();
         w.Line();
 
@@ -518,6 +614,42 @@ sealed partial class CppEmitter
             var target = $"{Qualified(_entry.ContainingType)}::{Symbols.Escape(_entry.Name)}";
             w.Line(_entry.Parameters.Length == 1 ? $"{target}(info);" : $"(void)info; {target}();");
         }
+        w.CloseBrace();
+    }
+
+    void EmitSyscallAdapter(CodeWriter w, IMethodSymbol method, int number)
+    {
+        var target = $"{Qualified(method.ContainingType)}::{Symbols.Escape(method.Name)}";
+        var regs = Enumerable.Range(0, 6).Select(i => i < method.Parameters.Length ? $"uint64_t a{i}" : "uint64_t");
+        var args = method.Parameters.Select((p, i) => $"({Map(p.Type, null)})a{i}");
+        var call = $"{target}({string.Join(", ", args)})";
+        w.OpenBrace($"static int64_t _neko_syscall_{number}({string.Join(", ", regs)})");
+        if (method.ReturnsVoid)
+        {
+            w.Line($"{call};");
+            w.Line("return 0;");
+        }
+        else
+            w.Line($"return (int64_t){call};");
+        w.CloseBrace();
+    }
+
+    void EmitUserEntry(CodeWriter w)
+    {
+        w.Line("// ---- entry point (called by runtime/user/crt0.S through neko_user_start)");
+        w.OpenBrace("extern \"C\" int neko_user_main(int argc, uint8_t** argv)");
+        if (_entry is not null)
+        {
+            var target = $"{Qualified(_entry.ContainingType)}::{Symbols.Escape(_entry.Name)}";
+            var call = _entry.Parameters.Length == 2 ? $"{target}(argc, argv)" : $"{target}()";
+            if (_entry.Parameters.Length == 0)
+                w.Line("(void)argc; (void)argv;");
+            w.Line(_entry.ReturnsVoid ? $"{call};" : $"return {call};");
+            if (_entry.ReturnsVoid)
+                w.Line("return 0;");
+        }
+        else
+            w.Line("(void)argc; (void)argv; return 1;");
         w.CloseBrace();
     }
 

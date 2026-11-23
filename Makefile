@@ -7,6 +7,7 @@
 #   make run-uefi   same with OVMF firmware
 #   make debug      QEMU paused with a gdb stub on :1234
 #   make test       boot in QEMU (BIOS + UEFI), run the self tests, fail on any failure
+#   make user       user programs (user/NAME → build/user/bin/NAME → /boot/bin/NAME on the ISO)
 #   make check      nekoc diagnostics only
 #   make doctor     check that the toolchain is installed
 
@@ -66,7 +67,7 @@ HOST_FLAGS := $(COMMON_FLAGS) -O1 -DNEKO_HOSTED=1 $(HOST_SAN)
 KERNEL_OBJS := $(patsubst %,$(BUILD)/kernel/%.o,$(KERNEL_SRCS) $(KERNEL_ASM)) $(BUILD)/kernel/gen.o
 HOST_OBJS   := $(patsubst %,$(BUILD)/host/%.o,$(HOST_SRCS) $(CORE_ASM)) $(BUILD)/host/gen.o
 
-.PHONY: all kernel gen check host run-host iso run run-uefi debug test doctor tools clean vscode-ext
+.PHONY: all kernel gen check host run-host iso run run-uefi debug test doctor tools clean vscode-ext user
 
 all: kernel
 
@@ -85,6 +86,7 @@ $(GEN_CPP): $(NEKOC_DLL) $(CS_SOURCES) nekotia.json
 
 check: $(NEKOC_DLL)
 	$(NEKOC) check
+	@for p in $(USER_PROGRAMS); do $(NEKOC) check --config user/$$p/nekotia.json || exit 1; done
 
 # ---------------------------------------------------------------- kernel ELF
 
@@ -110,6 +112,56 @@ $(BUILD)/kernel/%.S.o: %.S $(FONT)
 $(BUILD)/kernel/gen.o: $(GEN_CPP)
 	@mkdir -p $(dir $@)
 	$(CXX) $(KERNEL_FLAGS) -c $< -o $@
+
+# ---------------------------------------------------------------- user programs
+#
+# Every directory user/NAME with a nekotia.json ("target": "user") is a program: nekoc turns its C# into
+# build/user/NAME/gen/*.cpp, which is linked with the user runtime (runtime/user/) into a static ELF at
+# 0x400000. The ISO carries them in /boot/bin and limine.conf hands them to the kernel as modules.
+
+USER_PROGRAMS := $(sort $(patsubst user/%/nekotia.json,%,$(wildcard user/*/nekotia.json)))
+USER_SDK      := $(shell find sdk/Nekotia.User -name '*.cs') $(wildcard sdk/Nekotia.Sdk/*.cs)
+USER_RT_SRCS  := runtime/user/src/user.cpp runtime/src/core/math.cpp runtime/src/freestanding/libc.cpp runtime/user/src/crt0.S
+USER_FLAGS := -std=c++20 $(OPT) -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable \
+              -Wno-unused-but-set-variable -Wno-parentheses-equality -fwrapv -MMD -MP \
+              -Iruntime/user/include -Iruntime/include --target=x86_64-unknown-none-elf -ffreestanding \
+              -fno-exceptions -fno-rtti -fno-stack-protector -fno-stack-check -fno-pic -fno-pie \
+              -fno-threadsafe-statics -fno-asynchronous-unwind-tables -fno-unwind-tables -mno-mmx -mno-avx \
+              -fno-math-errno -fno-omit-frame-pointer -fno-delete-null-pointer-checks -DNEKO_HOSTED=0
+USER_LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 --gc-sections -T runtime/user/linker.ld
+USER_RT_OBJS := $(patsubst %,$(BUILD)/user/rt/%.o,$(USER_RT_SRCS))
+USER_BINS    := $(patsubst %,$(BUILD)/user/bin/%,$(USER_PROGRAMS))
+
+user: $(USER_BINS)
+
+$(BUILD)/user/rt/%.cpp.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(USER_FLAGS) -c $< -o $@
+
+$(BUILD)/user/rt/%.S.o: %.S
+	@mkdir -p $(dir $@)
+	$(CXX) --target=x86_64-unknown-none-elf -c $< -o $@
+
+# $(call user-program,NAME)
+define user-program
+build/user/$(1)/gen/nekotia.gen.cpp: $(NEKOC_DLL) $(wildcard user/$(1)/*.cs user/$(1)/*.neko) user/$(1)/nekotia.json $(USER_SDK)
+	$(NEKOC) build --config user/$(1)/nekotia.json
+	@touch $$@
+
+$(BUILD)/user/$(1)/gen.o: build/user/$(1)/gen/nekotia.gen.cpp
+	@mkdir -p $$(dir $$@)
+	$(CXX) $(USER_FLAGS) -c $$< -o $$@
+
+$(BUILD)/user/bin/$(1): $(BUILD)/user/$(1)/gen.o $(USER_RT_OBJS) runtime/user/linker.ld
+	@mkdir -p $$(dir $$@)
+	$(LD) $(USER_LDFLAGS) $(USER_RT_OBJS) $(BUILD)/user/$(1)/gen.o -o $$@
+endef
+$(foreach p,$(USER_PROGRAMS),$(eval $(call user-program,$(p))))
+
+# boot/limine.conf + one module_path line per program (appended to the last entry).
+$(BUILD)/limine.conf: boot/limine.conf Makefile $(wildcard user/*/nekotia.json)
+	@mkdir -p $(BUILD)
+	{ cat boot/limine.conf; for p in $(USER_PROGRAMS); do echo "    module_path: boot():/boot/bin/$$p"; done; } > $@
 
 # ---------------------------------------------------------------- host build
 
@@ -143,6 +195,8 @@ define make-iso
 	rm -rf $(3)
 	mkdir -p $(3)/boot/limine $(3)/EFI/BOOT
 	cp $(BUILD)/nekotia.elf $(3)/boot/
+	mkdir -p $(3)/boot/bin
+	$(if $(USER_BINS),cp $(USER_BINS) $(3)/boot/bin/)
 	cp $(1) $(3)/boot/limine/limine.conf
 	cp $(LIMINE_DIR)/limine-bios.sys $(LIMINE_DIR)/limine-bios-cd.bin $(LIMINE_DIR)/limine-uefi-cd.bin $(3)/boot/limine/
 	cp $(LIMINE_DIR)/BOOTX64.EFI $(3)/EFI/BOOT/
@@ -153,14 +207,13 @@ define make-iso
 	@echo "iso: $(2)"
 endef
 
-$(BUILD)/nekotia.iso: $(BUILD)/nekotia.elf boot/limine.conf
-	$(call make-iso,boot/limine.conf,$@,$(BUILD)/iso_root)
+$(BUILD)/nekotia.iso: $(BUILD)/nekotia.elf $(BUILD)/limine.conf $(USER_BINS)
+	$(call make-iso,$(BUILD)/limine.conf,$@,$(BUILD)/iso_root)
 
 # Same kernel, but the command line says `test`: the kernel runs its self tests and leaves QEMU
 # through the isa-debug-exit device (exit status 1 = all passed, 3 = failures).
-$(BUILD)/nekotia-test.iso: $(BUILD)/nekotia.elf boot/limine.conf
-	@mkdir -p $(BUILD)
-	sed 's/^\( *cmdline:\).*/\1 test/' boot/limine.conf > $(BUILD)/limine-test.conf
+$(BUILD)/nekotia-test.iso: $(BUILD)/nekotia.elf $(BUILD)/limine.conf $(USER_BINS)
+	sed 's/^\( *cmdline:\).*/\1 test/' $(BUILD)/limine.conf > $(BUILD)/limine-test.conf
 	$(call make-iso,$(BUILD)/limine-test.conf,$@,$(BUILD)/iso_root_test)
 
 TEST_FLAGS ?= -M q35 -m 256M -smp 4 -display none -serial stdio -no-reboot \

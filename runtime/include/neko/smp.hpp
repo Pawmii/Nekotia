@@ -16,7 +16,9 @@ namespace neko::smp {
 constexpr uint32_t kMaxCpus = 16;
 
 struct Cpu {
-    Cpu* self;  // must stay first: this_cpu() reads gs:0
+    Cpu* self;            // gs:0  — must stay first: this_cpu() reads it
+    uint64_t kernel_rsp;  // gs:8  — top of the current thread's kernel stack (syscall entry, TSS.rsp0)
+    uint64_t user_rsp;    // gs:16 — scratch: user rsp while the syscall entry switches stacks
     uint32_t index;
     uint32_t lapic_id;
     volatile bool online;

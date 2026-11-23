@@ -23,6 +23,8 @@ public unsafe struct ThreadInfo
     [Native("cpu")] public uint Cpu;
     /// <summary>What a blocked thread waits for ("sleep", "semaphore", a mutex name), or "".</summary>
     [Native("blocked_on")] public string BlockedOn;
+    /// <summary>User process the thread runs; 0 for kernel threads.</summary>
+    [Native("pid")] public uint Pid;
 }
 
 /// <summary>

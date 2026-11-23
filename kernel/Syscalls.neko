@@ -1,0 +1,92 @@
+// System calls written in C#. The runtime (runtime/src/core/process.cpp) handles the basic ones
+// itself — exit, write, spawn, wait, alloc… — and routes every number registered with @syscall here.
+// Handlers run on the calling program's own thread, in kernel mode, with interrupts enabled.
+using Nekotia;
+using Nekotia.Hal;
+using Nekotia.Processes;
+using Nekotia.OS.Drivers;
+using Nekotia.Threading;
+
+namespace Nekotia.OS;
+
+public unsafe struct ReadBuffer
+{
+    public fixed byte Bytes[1024];   // UTF-8 of the line being returned to the program
+    public fixed byte Widths[256];   // bytes per typed character, for Backspace
+}
+
+public static unsafe class Syscalls
+{
+    const int MaxChars = 250;
+
+    static ReadBuffer _line;
+    static int _length;     // bytes in _line
+    static int _position;   // next byte read() hands out
+    static Mutex _reading;  // one program reads the keyboard at a time
+
+    /// read(fd, buffer, length): fd 0 is the keyboard, cooked like a terminal — the program gets whole lines
+    /// (with the final '\n') once Enter is pressed, the user can correct them with Backspace, Ctrl+D on an
+    /// empty line is end of input (0 bytes) and Ctrl+C ends the program (exit code 130).
+    @syscall(2)
+    static long Read(int fd, byte* buffer, ulong length)
+    {
+        if (fd != 0)
+            return Process.ErrBadArgument;
+        if (length == 0)
+            return 0;
+        if (!UserMemory.CanWrite(buffer, length))
+            return Process.ErrBadAddress;
+
+        long n = 0;
+        lock (_reading) {
+            if (_position == _length)
+                ReadLine();
+            while ((ulong)n < length && _position < _length) {
+                buffer[n] = _line.Bytes[_position];
+                n++;
+                _position++;
+            }
+        }
+        return n;
+    }
+
+    static void ReadLine()
+    {
+        _length = 0;
+        _position = 0;
+        int chars = 0;
+        loop {
+            uint key = Keyboard.ReadKey();
+            if (key == '\n') {
+                Terminal.WriteChar((byte)'\n');
+                _line.Bytes[_length++] = (byte)'\n';
+                return;
+            }
+            if (key == 4 && chars == 0)
+                return;   // Ctrl+D: end of input
+            if (key == 3) {
+                Terminal.WriteLine(AnsiColor.BrightRed, "^C");
+                _length = 0;
+                _reading.Unlock();
+                Process.ExitCurrent(130);
+            }
+            if (key == '\b') {
+                if (chars > 0) {
+                    chars--;
+                    _length -= _line.Widths[chars];
+                    Terminal.Write("\b \b");
+                }
+                continue;
+            }
+            if (key < 0x20 || key >= 0x110000 || chars == MaxChars)
+                continue;   // other control keys, arrows, F-keys
+            byte* utf8 = stackalloc byte[4];
+            int width = Shell.EncodeUtf8(key, utf8);
+            for int i in 0..width {
+                _line.Bytes[_length++] = utf8[i];
+            }
+            _line.Widths[chars++] = (byte)width;
+            Terminal.WriteCodepoint(key);
+        }
+    }
+}

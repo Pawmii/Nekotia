@@ -3,6 +3,7 @@ using System;
 using Nekotia;
 using Nekotia.Hal;
 using Nekotia.Mem;
+using Nekotia.Processes;
 using Nekotia.Threading;
 
 namespace Nekotia.OS;
@@ -63,6 +64,7 @@ public static unsafe class SelfTest
         BuddyBlocks();
         Paging();
         Threads();
+        UserMode();
         return _failed;
     }
 
@@ -369,5 +371,35 @@ public static unsafe class SelfTest
         Check(page != null && Pages.VirtToPhys(page) % Pages.Size == 0 && page[4095] == 0, "pages: alloc gives a zeroed, aligned frame");
         Pages.Free(page);
         Check(Pages.FreeCount() == free, "pages: free puts it back");
+    }
+
+    // ---------------------------------------------------------------- user mode (user/usertest)
+
+    static long RunAndWait(string name, string args)
+    {
+        long pid = Process.Start(name, args);
+        return pid > 0 ? Process.Wait((uint)pid) : pid;
+    }
+
+    static void UserMode()
+    {
+        if (Process.ProgramCount() == 0)
+            return;   // host mode, or an ISO without /boot/bin
+        Process.SetFaultReports(_verbose);
+        defer Process.SetFaultReports(true);
+
+        long code = RunAndWait("usertest", _verbose ? "-v alpha beta" : "alpha beta");
+        Check(code == 42, "user: usertest passes its own checks in ring 3 (syscalls, argv, heap, FPU, spawn/wait)");
+
+        ulong free = Pages.FreeCount();
+        ulong heap = Heap.UsedBytes();
+        Check(RunAndWait("usertest", "pf") == Process.KilledBase + 14, "user: a null dereference kills only that process (#PF → 142)");
+        Check(RunAndWait("usertest", "kernel") == Process.KilledBase + 14, "user: kernel memory is out of reach of ring 3");
+        Check(RunAndWait("usertest", "gp") == Process.KilledBase + 13, "user: a privileged instruction (cli) → #GP → killed");
+        Check(RunAndWait("usertest", "ud") == Process.KilledBase + 6, "user: an invalid opcode → #UD → killed");
+        Check(RunAndWait("usertest", "child") == 7, "user: the exit code reaches the kernel");
+        Check(Process.Start("no-such-program") == Process.ErrNotFound, "user: starting a missing program fails cleanly");
+        Check(Process.Count() == 0, "user: every process was reaped");
+        Check(Pages.FreeCount() == free && Heap.UsedBytes() == heap, "user: address spaces and process records are freed completely");
     }
 }

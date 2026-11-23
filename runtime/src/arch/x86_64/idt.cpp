@@ -1,6 +1,9 @@
 // Interrupt descriptor table: CPU exceptions (0–31) go to the stop screen
-// (core/crash.cpp); vectors 32–255 go to the IRQ dispatcher (apic.cpp).
+// (core/crash.cpp) — or end the process when a user program caused them (core/process.cpp);
+// vectors 32–255 go to the IRQ dispatcher (apic.cpp).
 #include "arch.hpp"
+
+#include <neko/process.hpp>
 
 namespace neko::arch {
 namespace {
@@ -38,6 +41,8 @@ extern "C" void* neko_isr_table[256];
 // isr.S pushes exactly the layout of crash::CpuState.
 extern "C" void neko_isr_dispatch(crash::CpuState* f) {
     if (f->vector == 2 && crash::in_progress()) cpu::halt_forever();  // another CPU is drawing the stop screen
+    // A fault in a user program ends that process, not the kernel (NMI, #DF and #MC are machine events).
+    if (f->vector < 32 && (f->cs & 3) && f->vector != 2 && f->vector != 8 && f->vector != 18) proc::user_exception(f);
     if (f->vector < 32) crash::cpu_exception(f);
     irq_dispatch(static_cast<uint8_t>(f->vector));
 }

@@ -239,6 +239,7 @@ const SUGAR_DOCS = {
     native: '**@native("cpp::name")** → `[Native(...)]` — implemented in the C++ runtime; calls are emitted as `cpp::name(...)`.',
     align: '**@align(n)** → `[Align(n)]` — struct alignment (`alignas(n)`).',
     irq: '**@irq(n)** → `[Irq(n)]` — interrupt handler for ISA IRQ `n` (1 = keyboard). Must be `static void Name()`; registered by nekoc before interrupts are enabled; runs with interrupts off, must not use the heap.',
+    syscall: '**@syscall(n)** → `[Syscall(n)]` — system call `n` for user programs (2 = read, 32–63 free). `static`, up to 6 integer/bool/enum/pointer parameters, returns an integer (negative = error) or void. Runs on the calling program\'s thread; check its pointers with `UserMemory.CanRead/CanWrite`.',
 };
 
 function provideHover(document, position) {
@@ -246,7 +247,7 @@ function provideHover(document, position) {
     if (!range) return undefined;
     const word = document.getText(range).replace(/^@/, '');
     const isAttribute = document.getText(range).startsWith('@');
-    const attributes = ['entry', 'packed', 'inline', 'noreturn', 'native', 'align', 'irq'];
+    const attributes = ['entry', 'packed', 'inline', 'noreturn', 'native', 'align', 'irq', 'syscall'];
     if (attributes.includes(word) && !isAttribute) return undefined;
     if (!SUGAR_DOCS[word]) return undefined;
     if (word === 'in' && !/\bfor\s+.*\bin\b/.test(document.lineAt(position.line).text)) return undefined;

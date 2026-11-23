@@ -21,6 +21,10 @@ struct RawLock {
 };
 }
 
+namespace neko::proc {
+struct Process;
+}
+
 namespace neko::sched {
 
 enum class Priority : uint8_t { High = 0, Normal = 1, Low = 2 };
@@ -40,6 +44,7 @@ struct Thread {
     uint32_t cpu;         // CPU it last ran on
     const char* blocked_on;     // what a Blocked thread waits for (for ps and deadlock reports)
     sync::Mutex* waiting_for;   // mutex a Blocked thread waits for (deadlock detection)
+    proc::Process* process;     // user process this thread runs (nullptr: kernel thread)
     Thread* next;         // run queue / wait queue link
     Thread* all_next;     // list of every thread
 };
@@ -52,6 +57,8 @@ bool running();
 
 // Starts a thread; returns its id (0 when out of memory). The thread ends when `entry` returns.
 uint32_t spawn(const char* name, Entry entry, uint64_t arg = 0, Priority priority = Priority::Normal);
+// Same, for the thread of a user process: it runs with that process's address space.
+uint32_t spawn_for(proc::Process* process, const char* name, Entry entry, uint64_t arg);
 
 void yield();
 void sleep_ms(uint64_t ms);
@@ -87,6 +94,7 @@ struct ThreadInfo {
     uint64_t stack_kib;
     uint32_t cpu;
     const char* blocked_on;  // "" unless Blocked/Sleeping
+    uint32_t pid;            // user process it runs, 0 for kernel threads
 };
 uint32_t thread_count();
 bool thread_info(uint32_t index, ThreadInfo& out);

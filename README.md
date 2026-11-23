@@ -59,7 +59,10 @@ public static unsafe class Kernel
   исключениях, ACPI (MADT), LAPIC-таймер, IOAPIC, текстовая консоль во фреймбуфере, serial, старт ядра.
 - **Логика ядра на C#** (`kernel/`) — подмножество C# без GC: `static class`, `struct`, `enum`, указатели, `unsafe`,
   `fixed`-буферы, `stackalloc`, перегрузка операторов, свойства, generic-методы (→ шаблоны C++), function pointers,
-  интерполяция `$"..."` в `Write` (без аллокаций), обработчики прерываний `[Irq(n)]`. На C# написаны драйвер клавиатуры и shell.
+  интерполяция `$"..."` в `Write` (без аллокаций), обработчики прерываний `[Irq(n)]` и системных вызовов `[Syscall(n)]`.
+  На C# написаны драйвер клавиатуры, shell и `read` для программ.
+- **Программы в ring 3** (`user/`) — тоже C#: nekoc с `"target": "user"` собирает их в статические ELF, ядро грузит их
+  из `/boot/bin` в отдельные адресные пространства и общается с ними через `syscall`. Падение программы убивает только её.
 - **Свой сахар** (`.neko` файлы) — `asm { }`, `defer`, `unless`, `loop`, `for T i in a..b`, `@entry`/`@packed`/`@native(...)`/`@irq(n)`.
   Подсветка и подсказки — в VS Code-расширении (`editor/vscode-nekotia`).
 
@@ -97,12 +100,30 @@ memory:     254 MiB usable of 255 MiB
 
 ### Командная строка ядра
 
-Кликните в окно QEMU и печатайте. Команды: `help`, `info`, `ps`, `spawn spinner|primes|burn|counter`, `mem`, `vm`, `pages`, `alloc MB`, `uptime`, `echo`, `sleep MS`, `irq`, `layout`,
+Кликните в окно QEMU и печатайте. Команды: `help`, `info`, `ps`, `run PROG ARGS` (или просто имя программы; `&` в конце —
+в фоне), `progs`, `spawn spinner|primes|burn|counter`, `mem`, `vm`, `pages`, `alloc MB`, `uptime`, `echo`, `sleep MS`, `irq`, `layout`,
 `colors`, `neko` (котик на весь экран), `selftest`, `clear`, `panic`, `crash KIND` (проверка экрана смерти),
 `reboot`, `shutdown`. Клавиши: **Alt+Shift** — EN/RU, **↑/↓** — история, **Tab** — дополнение команды,
 **Ctrl+L** — очистить, **Ctrl+U** — стереть строку, **Ctrl+C** — отменить.
 
 Всё это — C#-код: драйвер клавиатуры `kernel/Drivers/Keyboard.neko` (обработчик `@irq(1)`), shell — `kernel/Shell/`.
+
+### Программы
+
+```
+neko en> hello world 42
+Hello from ring 3!
+I am a C# program running as process 8, 5125 ms after boot.
+arguments: 2 — world, 42
+neko en> guess
+I am thinking of a number between 1 and 100.
+guess #1: 50
+lower
+```
+
+Программа — каталог `user/NAME` с `nekotia.json` (`"target": "user"`) и C#-кодом со `static int Main(int argc, byte** argv)`;
+API — `sdk/Nekotia.User` (`Console`, `Process`, `Memory`, `Time`). `make` сам найдёт новый каталог, соберёт ELF и положит
+его в `/boot/bin` на ISO. Сейчас есть `hello`, `guess` (читает клавиатуру) и `usertest` (проверки ABI для `make test`).
 
 ## Команды
 
@@ -110,7 +131,8 @@ memory:     254 MiB usable of 255 MiB
 |---|---|
 | `make` / `make kernel` | `build/nekotia.elf` |
 | `make gen` | только транспиляция → `build/gen/nekotia.gen.{hpp,cpp}` |
-| `make check` | диагностика nekoc без сборки |
+| `make check` | диагностика nekoc без сборки (ядро и программы) |
+| `make user` | только программы → `build/user/bin/*` |
 | `make iso` | загрузочный гибридный BIOS/UEFI ISO |
 | `make run` / `make run-uefi` | запуск в QEMU (`QEMU_FLAGS=...` чтобы поменять) |
 | `make debug` | отладочная `-O0`-сборка в `build/debug`, QEMU на паузе с gdb-сервером `:1234` |
@@ -164,10 +186,13 @@ code --install-extension build/vscode-nekotia-0.1.0.vsix
 kernel/                 ядро на C# (.cs и .neko) + Nekotia.Kernel.csproj (только для IDE)
 kernel/Drivers/         драйверы на C# (PS/2 клавиатура)
 kernel/Shell/           командная строка ядра
-sdk/Nekotia.Sdk/        C# API ядра: атрибуты, Asm, Terminal/Serial/Cpu/Port/Time/Irq/Power/SysInfo, Heap/Pages/Memory
+sdk/Nekotia.Sdk/        C# API ядра: атрибуты, Asm, Terminal/Serial/Cpu/Port/Time/Irq/Power/SysInfo, Heap/Pages/Memory, Process
+sdk/Nekotia.User/       C# API программ: Console, Process, Memory, Time
+user/                   программы (C#, ring 3): hello, guess, usertest
+runtime/user/           рантайм программ: crt0, системные вызовы, вывод, куча, linker.ld
 runtime/include/neko/   C++ заголовки, которые использует сгенерированный код
-runtime/src/core/       куча, buddy-аллокатор, консоль (PSF/UTF-8/ANSI), экран смерти, вывод (общие для всех платформ)
-runtime/src/arch/x86_64 Limine boot, GDT/TSS, IDT + isr.S, ACPI, APIC/таймер/IRQ, vmm (таблицы страниц), COM1, linker.ld
+runtime/src/core/       куча, buddy-аллокатор, консоль (PSF/UTF-8/ANSI), экран смерти, вывод, планировщик, процессы и ELF
+runtime/src/arch/x86_64 Limine boot, GDT/TSS, IDT + isr.S, ACPI, APIC/таймер/IRQ, vmm (таблицы страниц), syscall, COM1, linker.ld
 runtime/assets/fonts/   шрифт консоли Terminus (OFL 1.1)
 runtime/src/freestanding memcpy/memset…, operator new/delete
 runtime/src/host/       host-режим (ядро как Linux-процесс)
@@ -188,4 +213,7 @@ nekotia.json            проект nekoc: исходники и каталог
 - **Фаза 4**: потоки, вытесняющий планировщик с приоритетами на нескольких CPU (SMP, QEMU `-smp 4`),
   Mutex/Semaphore/SpinLock, обнаружение deadlock, FPU/SSE (`float`/`double` в C#), `make test`.
 
-Дальше — userspace (фаза 5): ring 3, системные вызовы, процессы и ELF. См. [ROADMAP.md](ROADMAP.md).
+- **Фаза 5** (начало): ring 3, `syscall`/`sysret`, процессы со своими адресными пространствами, загрузчик ELF, `spawn`/`wait`/`exit`,
+  программы на C# (`"target": "user"`), системные вызовы на C# (`[Syscall(n)]`), изоляция падений.
+
+Дальше — `init` и shell в userspace, IPC; затем драйверы и файловые системы (фаза 6). См. [ROADMAP.md](ROADMAP.md).
