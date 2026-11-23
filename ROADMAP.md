@@ -131,7 +131,9 @@
       capabilities; `Pci` в SDK, команда `lspci [-v]`
 - [x] virtio-blk (virtio 1.x modern PCI, split virtqueue, 8 запросов параллельно, MSI-X или опрос); слой блочных
       устройств (`Block`, `/dev/vda` с побайтовым доступом, RAM-диски); MSI/MSI-X в рантайме; `disks`, MSI в `irq`
-- [ ] AHCI (SATA), NVMe
+- [x] AHCI (SATA): ATA-диски `sda…` (READ/WRITE DMA EXT, 48-битный LBA, FLUSH), ATAPI `cd0…` только на чтение
+      (SCSI READ(10)/READ CAPACITY через PACKET), 8 слотов с DMA-буферами, MSI или опрос, восстановление порта после ошибки
+- [ ] NVMe
 - [x] VFS: дерево узлов с подсчётом ссылок, ramfs, initrd (ustar-модуль Limine, copy-on-write из модуля),
       `/dev/{console,null,zero}`, рабочие каталоги, системные вызовы 16–29; команды `ls/cd/cat/mkdir/rm/mv/write/df`
 - [x] Монтирование ФС в каталоги VFS (`FsOps`: ввод-вывод вне замка VFS, дерево каталогов в памяти)
