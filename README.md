@@ -139,7 +139,7 @@ sh /$ primes 3000000 4
 sh /$ cd /tmp
 sh /tmp$ echo hello > a.txt
 sh /tmp$ ls /bin | grep s | wc
-       6      12     150
+       6      18     192
 sh /tmp$ cat a.txt
 hello
 ```
