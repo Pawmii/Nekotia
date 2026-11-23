@@ -69,6 +69,7 @@ public static unsafe class SelfTest
         PciBus();
         FileSystem();
         Disks();
+        ProcFiles();
         FatVolume();
         Networking();
         UserMode();
@@ -509,6 +510,22 @@ public static unsafe class SelfTest
 
     /// The block layer on a RAM disk (host mode) or, under `make test` only, on the scratch virtio disk
     /// QEMU gets there — a normal boot never writes to a disk.
+    static void ProcFiles()
+    {
+        if (!Vfs.Exists("/proc/version"))
+            return;
+        byte* buf = stackalloc byte[64];
+        Check(Get("/proc/version", buf, 64) > 20 && Str.StartsWith(buf, "Nekotia "), "proc: /proc/version is generated");
+        OpenFile* f = null;
+        Vfs.Open("/proc/version", Vfs.Read, out f);
+        long a = Vfs.ReadFile(f, buf, 4);
+        long b = Vfs.ReadFile(f, buf + 4, 4);
+        Vfs.Close(f);
+        Check(a == 4 && b == 4 && buf[0] == 'N' && buf[4] == 't', "proc: reads continue at the file offset");
+        Check(Vfs.Open("/proc/version", Vfs.Write, out f) == 0 && Vfs.WriteFile(f, buf, 1) == Process.ErrNotSupported, "proc: files are read-only");
+        Vfs.Close(f);
+    }
+
     static void Disks()
     {
         if (Kernel.Info->Hosted) {

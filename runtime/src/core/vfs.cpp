@@ -274,8 +274,12 @@ int64_t resize(Node* n, uint64_t size) {
     return 0;
 }
 
+int64_t generated_read(void* context, uint64_t offset, void* buffer, uint64_t length);
+
+// Under the VFS lock: a generated file reports 0 (its generator may take sleeping locks).
 uint64_t size_of(const Node* n) {
     if (n->type == Type::Directory) return n->child_count;
+    if (n->type == Type::Device && n->ops->read == generated_read) return 0;
     if (n->type == Type::Device) return n->ops->size ? n->ops->size(n->context) : 0;
     return n->size;
 }
@@ -990,6 +994,42 @@ int64_t create_device(const char* path, const DeviceOps* ops, void* context) {
     if (e < 0) return e;
     if (child(dir, name, uint32_t(str::length(name)))) return kErrExists;
     return make_device_locked(dir, name, ops, context) ? 0 : kErrNoMemory;
+}
+
+namespace {
+
+constexpr uint64_t kGeneratedMax = 64 * 1024;
+
+int64_t generated_read(void* context, uint64_t offset, void* buffer, uint64_t length) {
+    auto generate = reinterpret_cast<Generator>(context);
+    auto* text = static_cast<uint8_t*>(heap::alloc(kGeneratedMax));
+    if (!text) return kErrNoMemory;
+    int64_t n = generate(text, kGeneratedMax);
+    int64_t r = 0;
+    if (n < 0) r = n;
+    else if (offset < uint64_t(n)) {
+        r = int64_t(uint64_t(n) - offset < length ? uint64_t(n) - offset : length);
+        mem::copy(buffer, text + offset, uint64_t(r));
+    }
+    heap::free(text);
+    return r;
+}
+
+uint64_t generated_size(void* context) {
+    auto generate = reinterpret_cast<Generator>(context);
+    auto* text = static_cast<uint8_t*>(heap::alloc(kGeneratedMax));
+    if (!text) return 0;
+    int64_t n = generate(text, kGeneratedMax);
+    heap::free(text);
+    return n > 0 ? uint64_t(n) : 0;
+}
+
+const DeviceOps kGeneratedOps = {generated_read, nullptr, generated_size, nullptr, nullptr};
+
+}  // namespace
+
+int64_t create_generated(const char* path, Generator generate) {
+    return create_device(path, &kGeneratedOps, reinterpret_cast<void*>(generate));
 }
 
 int64_t read_all(const char* path, uint8_t*& data, uint64_t max_size) {

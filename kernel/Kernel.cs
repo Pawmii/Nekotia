@@ -21,6 +21,7 @@ public static unsafe class Kernel
         Syscalls.Init();
         Banner();
         StartNetwork();   // before the self tests: they ping the gateway
+        Proc.Init();
         if (Str.StartsWith(info->CommandLine, "test")) {
             // `make test`: verbose self tests, then leave QEMU with the result.
             int failed = SelfTest.Run(true);

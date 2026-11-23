@@ -162,6 +162,10 @@ public static unsafe class Vfs
     [Native("::neko::vfs::getcwd")]
     public static extern long CurrentDirectory(byte* buffer, ulong capacity);
 
+    /// <summary>A file whose text <paramref name="generate"/> writes at each read (≤ 64 KiB); for /proc.</summary>
+    [Native("::neko::vfs::create_generated")]
+    public static extern long CreateGenerated(string path, delegate*<byte*, ulong, long> generate);
+
     [Native("::neko::vfs::unpack_tar")]
     public static extern long UnpackTar(string directory, void* data, ulong size);
 

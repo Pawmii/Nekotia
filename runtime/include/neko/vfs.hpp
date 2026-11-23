@@ -107,6 +107,11 @@ inline int64_t remove(const uint8_t* path) { return remove(reinterpret_cast<cons
 int64_t rename(const char* from, const char* to);  // also moves between directories
 inline int64_t rename(const uint8_t* from, const uint8_t* to) { return rename(reinterpret_cast<const char*>(from), reinterpret_cast<const char*>(to)); }
 int64_t create_device(const char* path, const DeviceOps* ops, void* context);
+// A generated file (/proc): every read calls `generate` to write the whole text (≤ 64 KiB) and returns
+// the part at the file offset. Generators run without the VFS lock and may take other locks.
+using Generator = int64_t (*)(uint8_t* buffer, uint64_t capacity);
+int64_t create_generated(const char* path, Generator generate);
+inline int64_t create_generated(const uint8_t* path, Generator generate) { return create_generated(reinterpret_cast<const char*>(path), generate); }
 
 // Whole file into a fresh heap block (caller frees with heap::free). Size or Error.
 int64_t read_all(const char* path, uint8_t*& data, uint64_t max_size);
