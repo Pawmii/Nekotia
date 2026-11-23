@@ -1,0 +1,47 @@
+# Build, nekoc tests, host-mode self tests and the QEMU self tests (BIOS + UEFI) on every push.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld qemu-system-x86 xorriso ovmf python3 make
+          scripts/fetch-limine.sh
+
+      - name: nekoc
+        run: make tools
+
+      - name: nekoc tests
+        run: make test-nekoc
+
+      - name: Diagnostics (kernel and programs)
+        run: make check
+
+      - name: Host-mode self tests (ASan/UBSan)
+        run: |
+          make run-host < /dev/null | tee build/host.log
+          grep -q "selftest: .*ok" build/host.log
+
+      - name: QEMU self tests (BIOS + UEFI, TCG)
+        run: make test LIMINE=third_party/limine-bin/limine OVMF=/usr/share/OVMF/OVMF_CODE.fd TEST_TIMEOUT=240
+
+      - name: Logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs
+          path: build/*.log

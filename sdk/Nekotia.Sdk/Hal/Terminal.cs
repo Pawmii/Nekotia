@@ -20,6 +20,13 @@ public static unsafe class Terminal
     [Native("::neko::term::write")]
     public static extern void Write(byte* cString);
 
+    /// <summary><c>Terminal.Write($"…")</c> — see <see cref="Interpolated"/> for the holes nekoc understands.</summary>
+    [Native("::neko::term::write")]
+    public static extern void Write(Interpolated text);
+
+    [Native("::neko::term::write")]
+    public static extern void WriteLine(Interpolated text);
+
     [Native("::neko::term::write_char")]
     public static extern void WriteChar(byte c);
 

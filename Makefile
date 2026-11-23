@@ -10,6 +10,7 @@
 #   make user       user programs (user/NAME → build/user/bin/NAME → /bin/NAME in the initrd)
 #   make initrd     build/initrd.tar: /bin (the programs) + everything under initrd/
 #   make check      nekoc diagnostics only
+#   make test-nekoc nekoc's own tests (tests/nekoc)
 #   make doctor     check that the toolchain is installed
 
 BUILD      ?= build
@@ -69,7 +70,7 @@ HOST_FLAGS := $(COMMON_FLAGS) -O1 -DNEKO_HOSTED=1 $(HOST_SAN)
 KERNEL_OBJS := $(patsubst %,$(BUILD)/kernel/%.o,$(KERNEL_SRCS) $(KERNEL_ASM)) $(BUILD)/kernel/gen.o
 HOST_OBJS   := $(patsubst %,$(BUILD)/host/%.o,$(HOST_SRCS) $(CORE_ASM)) $(BUILD)/host/gen.o
 
-.PHONY: all kernel gen check host run-host iso run run-uefi debug test doctor tools clean vscode-ext user initrd
+.PHONY: all kernel gen check test-nekoc host run-host iso run run-uefi debug test doctor tools clean vscode-ext user initrd
 
 all: kernel
 
@@ -85,6 +86,10 @@ gen: $(GEN_CPP)
 
 $(GEN_CPP): $(NEKOC_DLL) $(CS_SOURCES) nekotia.json
 	$(NEKOC) build
+
+# nekoc's own tests: expected diagnostics, and valid code whose C++ must compile (tests/nekoc/).
+test-nekoc: $(NEKOC_DLL)
+	@python3 -I tests/nekoc/run.py
 
 check: $(NEKOC_DLL)
 	$(NEKOC) check

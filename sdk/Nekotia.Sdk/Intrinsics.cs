@@ -35,3 +35,26 @@ public static class Sugar
     /// <summary><c>defer stmt;</c> is lowered to <c>if (Sugar.Defer) stmt;</c> and nekoc turns it into a scope guard.</summary>
     public static readonly bool Defer = true;
 }
+
+/// <summary>
+/// What an interpolated string <c>$"…"</c> becomes when passed to <c>Write</c>/<c>WriteLine</c> of Terminal, Serial,
+/// Console or <see cref="Text"/>. It only exists for the C# compiler (it accepts <c>byte*</c> holes and
+/// alignment through it); nekoc turns the string into one Write* call per part, without allocating.
+/// Holes: integers, <c>:X</c> (0x…), <c>:X4</c> (4 hex digits), <c>:D2</c> (zero-padded), <c>:size</c>, floats with <c>:F2</c>, bool, char,
+/// string, <c>byte*</c> C strings, enums; <c>{value,8}</c> right-aligns, <c>{value,-8}</c> left-aligns.
+/// </summary>
+[Intrinsic]
+[System.Runtime.CompilerServices.InterpolatedStringHandler]
+public unsafe ref struct Interpolated
+{
+    public Interpolated(int literalLength, int formattedCount) { }
+    public void AppendLiteral(string text) { }
+    public void AppendFormatted<T>(T value) { }
+    public void AppendFormatted<T>(T value, string format) { }
+    public void AppendFormatted<T>(T value, int alignment) { }
+    public void AppendFormatted<T>(T value, int alignment, string format) { }
+    public void AppendFormatted(byte* text) { }
+    public void AppendFormatted(byte* text, int alignment) { }
+    public void AppendFormatted(void* pointer) { }
+    public void AppendFormatted(void* pointer, string format) { }
+}

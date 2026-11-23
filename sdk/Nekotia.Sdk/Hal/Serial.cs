@@ -9,6 +9,12 @@ public static unsafe class Serial
     [Native("::neko::serial::write")]
     public static extern void Write(byte* cString);
 
+    [Native("::neko::serial::write")]
+    public static extern void Write(Interpolated text);
+
+    [Native("::neko::serial::write")]
+    public static extern void WriteLine(Interpolated text);
+
     [Native("::neko::serial::write_char")]
     public static extern void WriteChar(byte c);
 

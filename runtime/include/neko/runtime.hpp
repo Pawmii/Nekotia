@@ -9,6 +9,7 @@
 #include <neko/console.hpp>
 #include <neko/crash.hpp>
 #include <neko/fat.hpp>
+#include <neko/fmt.hpp>
 #include <neko/cpu.hpp>
 #include <neko/math.hpp>
 #include <neko/memory.hpp>

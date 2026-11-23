@@ -189,6 +189,11 @@ sealed partial class CppEmitter
 
     void Switch(CodeWriter w, SwitchStatementSyntax sw)
     {
+        if (NeedsPatternSwitch(sw))
+        {
+            PatternSwitch(w, sw);
+            return;
+        }
         w.OpenBrace($"switch ({Expr(sw.Expression)})");
         foreach (var section in sw.Sections)
         {

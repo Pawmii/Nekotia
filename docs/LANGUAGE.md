@@ -24,9 +24,13 @@
 | `ref` / `out` / `in` параметры | `T&` / `T&` / `const T&` | |
 | `const`, `static readonly` | `static constexpr` / статическое поле | |
 | `if/while/do/for/switch/break/continue/return/goto label` | то же | `switch` по целым и enum |
+| `x switch { < 0 => -1, 1 or 2 => 1, _ when f(x) => 2, _ => 0 }` | IIFE-лямбда с цепочкой `if … return` | нет совпадения → `SwitchExpressionException` на экране смерти |
+| `c is >= 'a' and <= 'z'`, `p is null`, `x is not (1 or 2)` | условие (сложный операнд вычисляется один раз) | паттерны: константы, `null`, `_`, `< <= > >=`, `and`/`or`/`not`, скобки, `when` |
+| `case >= 10 when ok:` в `switch`-операторе | `switch (0) { default: if … else if … }` | `break` выходит из switch, `continue` — к циклу, как в C# |
 | `nameof`, `sizeof`, `default`, `new S { F = 1 }` | константа / `sizeof` / `T{}` / IIFE-лямбда | |
 | `string` (только литералы) | `const char*` (UTF-8, NUL в конце) | сравнение — `Str.Equals` |
-| `Terminal.WriteLine($"{n} ms, {x:X}, {bytes:size}")` | `(Write("…"), WriteDec(n), …)` | без аллокаций; `:X` — hex, `:size` — KiB/MiB |
+| `Terminal.WriteLine($"{n} ms, {x:X}, {bytes:size}")` | `(Write("…"), WriteDec(n), …)` | без аллокаций; `:X` — 0x…, `:X4` — 4 hex-цифры, `:D2` — с нулями, `:size` — KiB/MiB, `:F2` |
+| `t.WriteLine($"{name,-12}{size,8:size}")` (`Nekotia.Text`) | то же на построителе в вашем буфере | интерполяция в буфер; `{v,8}` / `{v,-8}` — выравнивание; `byte*` в дырах |
 | `"const"[i]`, `Const.Length` (константные строки) | `u"…"[i]`, число | семантика UTF-16 как в C# — таблицы символов |
 | `throw new T("msg")` | `neko::crash::unhandled_exception(...)` | экран смерти: тип, сообщение, файл:строка, метод |
 | `class MyError : Exception` | не генерируется | только как тип для `throw` |
@@ -53,8 +57,9 @@
 | `foreach` | NEKO0300 | `for i in a..b { }` (.neko) или `for` |
 | `try/catch/finally` | NEKO0300 | `defer` для очистки; любой `throw` пока необработанный → экран смерти |
 | `throw;`, `throw ex;`, throw-выражения | NEKO0300 | `throw new SomeException("...")` |
-| `"a" + b` | NEKO0300 | несколько `Write*` подряд или `$"..."` в `Write/WriteLine` |
-| `$"..."` вне `Write/WriteLine`, указатели в `$"..."` | NEKO0300 / CS0306 | отдельный `Write(ptr)` |
+| `"a" + b` | NEKO0300 | несколько `Write*` подряд, `$"..."` в `Write/WriteLine` или `Text` |
+| `$"..."` вне `Write/WriteLine` (например, в `string s = $"…"`) | NEKO0300 | `Text` над своим буфером: `t.Write($"…")` |
+| паттерны с переменными (`x is int y`, `var v`), списки, свойства | NEKO0300 | сравнить значение, которое уже есть |
 | лямбды, делегаты, LINQ, `async` | NEKO0300/0100 | статические методы + function pointers |
 | любой API .NET (`System.Console`…) | NEKO0200 / CS0234 | SDK Nekotia (`Nekotia.Hal`, `Nekotia.Mem`) |
 | статические конструкторы | NEKO0101 | инициализаторы полей или явный `Init()` |

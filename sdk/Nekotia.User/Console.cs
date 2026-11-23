@@ -13,6 +13,13 @@ public static unsafe class Console
     [Native("::neko::user::write")]
     public static extern void Write(byte* cString);
 
+    /// <summary><c>Console.Write($"…")</c> — see <see cref="Interpolated"/> for the holes nekoc understands.</summary>
+    [Native("::neko::user::write")]
+    public static extern void Write(Interpolated text);
+
+    [Native("::neko::user::write")]
+    public static extern void WriteLine(Interpolated text);
+
     [Native("::neko::user::write_char")]
     public static extern void WriteChar(byte c);
 

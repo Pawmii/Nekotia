@@ -15,7 +15,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="../sdk/Nekotia.Sdk/Attributes.cs;../sdk/Nekotia.Sdk/Intrinsics.cs;../sdk/Nekotia.Sdk/Debug.cs;../sdk/Nekotia.Sdk/Maths.cs" />
+    <Compile Include="../sdk/Nekotia.Sdk/Attributes.cs;../sdk/Nekotia.Sdk/Intrinsics.cs;../sdk/Nekotia.Sdk/Debug.cs;../sdk/Nekotia.Sdk/Maths.cs;../sdk/Nekotia.Sdk/Text.cs" />
     <Compile Include="../sdk/Nekotia.User/**/*.cs" />
   </ItemGroup>
 

@@ -66,5 +66,5 @@ public sealed class SyscallAttribute(int number) : Attribute
 }
 
 /// <summary>Compiler-internal: the type is handled by nekoc itself and never emitted.</summary>
-[AttributeUsage(AttributeTargets.Class)]
+[AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct)]
 public sealed class IntrinsicAttribute : Attribute { }

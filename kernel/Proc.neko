@@ -15,85 +15,6 @@ using Nekotia.Threading;
 
 namespace Nekotia.OS;
 
-/// Appends text to a fixed buffer (what is too much is cut off).
-public unsafe struct Text
-{
-    public byte* Data;
-    public int Length;
-    public int Capacity;
-
-    public Text(byte* data, ulong capacity)
-    {
-        Data = data;
-        Length = 0;
-        Capacity = (int)capacity;
-    }
-
-    public void Char(byte c)
-    {
-        if (Length < Capacity)
-            Data[Length++] = c;
-    }
-
-    public void Add(string s) => Add(Str.Bytes(s));
-
-    public void Add(byte* s)
-    {
-        for (; *s != 0; s++)
-            Char(*s);
-    }
-
-    public void Dec(ulong v)
-    {
-        byte* digits = stackalloc byte[24];
-        int n = 0;
-        do {
-            digits[n++] = (byte)('0' + v % 10);
-            v /= 10;
-        } while (v > 0);
-        while (n > 0)
-            Char(digits[--n]);
-    }
-
-    public void Hex(ulong v, int width)
-    {
-        for (int shift = (width - 1) * 4; shift >= 0; shift -= 4) {
-            int d = (int)((v >> shift) & 15);
-            Char((byte)(d < 10 ? '0' + d : 'a' + d - 10));
-        }
-    }
-
-    public void Ip(uint ip)
-    {
-        Dec(ip >> 24);
-        Char((byte)'.');
-        Dec((ip >> 16) & 255);
-        Char((byte)'.');
-        Dec((ip >> 8) & 255);
-        Char((byte)'.');
-        Dec(ip & 255);
-    }
-
-    /// Spaces up to `column` characters since the last newline (at least one).
-    public void Column(int column)
-    {
-        int start = Length;
-        while (start > 0 && Data[start - 1] != '\n')
-            start--;
-        int used = 0;
-        for (int i = start; i < Length; i++) {
-            if ((Data[i] & 0xC0) != 0x80)
-                used++;
-        }
-        do {
-            Char((byte)' ');
-            used++;
-        } while (used < column);
-    }
-
-    public void Line() => Char((byte)'\n');
-}
-
 public static unsafe class Proc
 {
     public static void Init()
@@ -121,9 +42,7 @@ public static unsafe class Proc
     static long Version(byte* buffer, ulong capacity)
     {
         Text t = new Text(buffer, capacity);
-        t.Add("Nekotia ");
-        t.Add(Kernel.Version);
-        t.Add(" — x86_64 kernel written in C#, transpiled to C++ by nekoc\n");
+        t.WriteLine($"Nekotia {Kernel.Version} — x86_64 kernel written in C#, transpiled to C++ by nekoc");
         return t.Length;
     }
 
@@ -131,80 +50,47 @@ public static unsafe class Proc
     {
         Text t = new Text(buffer, capacity);
         ulong ms = Time.UptimeMs();
-        t.Dec(ms / 1000);
-        t.Char((byte)'.');
-        t.Dec(ms % 1000 / 100);
-        t.Dec(ms % 100 / 10);
-        t.Add(" seconds\n");
+        t.WriteLine($"{ms / 1000}.{ms % 1000 / 10:D2} seconds");
         return t.Length;
     }
 
     static long CommandLine(byte* buffer, ulong capacity)
     {
         Text t = new Text(buffer, capacity);
-        t.Add((byte*)Kernel.Info->CommandLine);
-        t.Line();
+        t.WriteLine($"{(byte*)Kernel.Info->CommandLine}");
         return t.Length;
     }
 
     static long CpuInfo(byte* buffer, ulong capacity)
     {
         Text t = new Text(buffer, capacity);
-        t.Add("model name:");
-        t.Column(14);
-        t.Add(SysInfo.CpuBrand());
-        t.Add("\nprocessors:");
-        t.Column(14);
-        t.Dec(SysInfo.CpuCount());
-        t.Add("\ncpu MHz:");
-        t.Column(14);
-        t.Dec(SysInfo.CpuMhz());
-        t.Line();
+        t.WriteLine($"{"model name:",-14}{SysInfo.CpuBrand()}");
+        t.WriteLine($"{"processors:",-14}{SysInfo.CpuCount()}");
+        t.WriteLine($"{"cpu MHz:",-14}{SysInfo.CpuMhz()}");
         return t.Length;
-    }
-
-    static void Kib(ref Text t, string name, ulong bytes)
-    {
-        t.Add(name);
-        t.Column(16);
-        t.Dec(bytes / 1024);
-        t.Add(" kB\n");
     }
 
     static long MemInfo(byte* buffer, ulong capacity)
     {
         Text t = new Text(buffer, capacity);
-        BootInfo* boot = Kernel.Info;
-        Kib(ref t, "MemTotal:", boot->UsableMemory);
-        Kib(ref t, "MemFree:", Pages.FreeCount() * Pages.Size);
-        Kib(ref t, "HeapTotal:", Heap.TotalBytes());
-        Kib(ref t, "HeapUsed:", Heap.UsedBytes());
         VfsStats v = Vfs.Statistics();
-        Kib(ref t, "FilesInHeap:", v.HeapBytes);
-        Kib(ref t, "FilesInInitrd:", v.InitrdBytes);
+        t.WriteLine($"{"MemTotal:",-16}{Kernel.Info->UsableMemory / 1024,10} kB");
+        t.WriteLine($"{"MemFree:",-16}{Pages.FreeCount() * Pages.Size / 1024,10} kB");
+        t.WriteLine($"{"HeapTotal:",-16}{(ulong)Heap.TotalBytes() / 1024,10} kB");
+        t.WriteLine($"{"HeapUsed:",-16}{(ulong)Heap.UsedBytes() / 1024,10} kB");
+        t.WriteLine($"{"FilesInHeap:",-16}{v.HeapBytes / 1024,10} kB");
+        t.WriteLine($"{"FilesInInitrd:",-16}{v.InitrdBytes / 1024,10} kB");
         return t.Length;
     }
 
     static long Processes(byte* buffer, ulong capacity)
     {
         Text t = new Text(buffer, capacity);
-        t.Add("PID  PARENT  THREADS  MEMORY_KB  RUNNING_MS  NAME\n");
+        t.WriteLine("PID  PARENT  THREADS  MEMORY_KB  RUNNING_MS  NAME");
         ProcessInfo p = default;
         for (uint i = 0; Process.GetInfo(i, out p); i++) {
-            t.Dec(p.Pid);
-            t.Column(5);
-            t.Dec(p.Parent);
-            t.Column(13);
-            t.Dec(p.Threads);
-            t.Column(22);
-            t.Dec(p.MemoryKib);
-            t.Column(33);
-            t.Dec(p.UptimeMs);
-            t.Column(45);
-            t.Add(p.Name);
-            if (p.State == ProcessState.Exited)
-                t.Add(" (exited)");
-            t.Line();
+            t.Write($"{p.Pid,-5}{p.Parent,-8}{p.Threads,-9}{p.MemoryKib,-11}{p.UptimeMs,-12}{p.Name}");
+            t.WriteLine(p.State == ProcessState.Exited ? " (exited)" : "");
         }
         return t.Length;
     }
@@ -212,22 +98,10 @@ public static unsafe class Proc
     static long Threads(byte* buffer, ulong capacity)
     {
         Text t = new Text(buffer, capacity);
-        t.Add("ID   PID  CPU  CPU_MS     SWITCHES  NAME\n");
+        t.WriteLine("ID   PID  CPU  CPU_MS     SWITCHES  NAME");
         ThreadInfo info = default;
-        for (uint i = 0; Thread.GetInfo(i, out info); i++) {
-            t.Dec(info.Id);
-            t.Column(5);
-            t.Dec(info.Pid);
-            t.Column(10);
-            t.Dec(info.Cpu);
-            t.Column(15);
-            t.Dec(info.CpuMs);
-            t.Column(26);
-            t.Dec(info.Switches);
-            t.Column(36);
-            t.Add(info.Name);
-            t.Line();
-        }
+        for (uint i = 0; Thread.GetInfo(i, out info); i++)
+            t.WriteLine($"{info.Id,-5}{info.Pid,-5}{info.Cpu,-5}{info.CpuMs,-11}{info.Switches,-10}{info.Name}");
         return t.Length;
     }
 
@@ -235,19 +109,8 @@ public static unsafe class Proc
     {
         Text t = new Text(buffer, capacity);
         MountInfo m = default;
-        for (uint i = 0; Vfs.GetMount(i, out m); i++) {
-            t.Add("/dev/");
-            t.Add(m.Source);
-            t.Char((byte)' ');
-            t.Add(m.Path);
-            t.Char((byte)' ');
-            t.Add(m.Type);
-            t.Add(" rw ");
-            t.Dec(m.FreeBytes / 1024);
-            t.Char((byte)'/');
-            t.Dec(m.TotalBytes / 1024);
-            t.Add(" kB free\n");
-        }
+        for (uint i = 0; Vfs.GetMount(i, out m); i++)
+            t.WriteLine($"/dev/{m.Source} {m.Path} {m.Type} rw {m.FreeBytes / 1024}/{m.TotalBytes / 1024} kB free");
         return t.Length;
     }
 
@@ -255,17 +118,8 @@ public static unsafe class Proc
     {
         Text t = new Text(buffer, capacity);
         BlockInfo d = default;
-        for (uint i = 0; Block.GetInfo(i, out d); i++) {
-            t.Add(d.Name);
-            t.Column(10);
-            t.Dec(d.Sectors);
-            t.Add(" × ");
-            t.Dec(d.SectorSize);
-            t.Column(30);
-            t.Add(d.ReadOnly ? "ro  " : "rw  ");
-            t.Add(d.Model);
-            t.Line();
-        }
+        for (uint i = 0; Block.GetInfo(i, out d); i++)
+            t.WriteLine($"{d.Name,-10}{d.Sectors,10} × {d.SectorSize,-6}{(d.ReadOnly ? "ro" : "rw"),-4}{d.Model}");
         return t.Length;
     }
 
@@ -273,66 +127,41 @@ public static unsafe class Proc
     {
         Text t = new Text(buffer, capacity);
         PciDevice d = default;
-        for (uint i = 0; Pci.GetInfo(i, out d); i++) {
-            t.Hex(d.Bus, 2);
-            t.Char((byte)':');
-            t.Hex(d.Slot, 2);
-            t.Char((byte)'.');
-            t.Dec(d.Function);
-            t.Char((byte)' ');
-            t.Hex(d.VendorId, 4);
-            t.Char((byte)':');
-            t.Hex(d.DeviceId, 4);
-            t.Char((byte)' ');
-            t.Add(Pci.ClassName(d.Class, d.Subclass, d.ProgIf));
-            t.Line();
-        }
+        for (uint i = 0; Pci.GetInfo(i, out d); i++)
+            t.WriteLine($"{d.Bus:X2}:{d.Slot:X2}.{d.Function} {d.VendorId:X4}:{d.DeviceId:X4} {Pci.ClassName(d.Class, d.Subclass, d.ProgIf)}");
         return t.Length;
     }
 
     static long NetDev(byte* buffer, ulong capacity)
     {
         Text t = new Text(buffer, capacity);
-        t.Add("NAME  RX_PACKETS  RX_BYTES  TX_PACKETS  TX_BYTES  DROPPED  ADDRESS\n");
+        t.WriteLine("NAME  RX_PACKETS  RX_BYTES  TX_PACKETS  TX_BYTES  DROPPED  ADDRESS");
         NetInfo n = default;
         for (uint i = 0; NetDevice.GetInfo(i, out n); i++) {
-            t.Add(n.Name);
-            t.Column(6);
-            t.Dec(n.RxPackets);
-            t.Column(18);
-            t.Dec(n.RxBytes);
-            t.Column(28);
-            t.Dec(n.TxPackets);
-            t.Column(40);
-            t.Dec(n.TxBytes);
-            t.Column(50);
-            t.Dec(n.RxDropped);
-            t.Column(59);
+            t.Write($"{n.Name,-6}{n.RxPackets,-12}{n.RxBytes,-10}{n.TxPackets,-12}{n.TxBytes,-10}{n.RxDropped,-9}");
             if (Stack.Configured && i == Stack.Device)
-                t.Ip(Stack.Address);
-            t.Line();
+                WriteIp(ref t, Stack.Address);
+            t.WriteLine();
         }
         return t.Length;
     }
+
+    static void WriteIp(ref Text t, uint ip) => t.Write($"{ip >> 24}.{(ip >> 16) & 255}.{(ip >> 8) & 255}.{ip & 255}");
 
     static long NetArp(byte* buffer, ulong capacity)
     {
         Text t = new Text(buffer, capacity);
         if (!Stack.Up)
             return 0;
+        byte* ip = stackalloc byte[20];
         lock (Stack.Lock) {
             for int i in 0..Arp.Size {
                 ArpEntry* e = &Arp.Table[i];
                 if (!e->Valid)
                     continue;
-                t.Ip(e->Ip);
-                t.Column(17);
-                for int b in 0..6 {
-                    if (b > 0)
-                        t.Char((byte)':');
-                    t.Hex(e->Mac[b], 2);
-                }
-                t.Line();
+                Text address = new Text(ip, 20);
+                WriteIp(ref address, e->Ip);
+                t.WriteLine($"{ip,-17}{e->Mac[0]:X2}:{e->Mac[1]:X2}:{e->Mac[2]:X2}:{e->Mac[3]:X2}:{e->Mac[4]:X2}:{e->Mac[5]:X2}");
             }
         }
         return t.Length;
@@ -343,28 +172,21 @@ public static unsafe class Proc
         Text t = new Text(buffer, capacity);
         if (!Stack.Up)
             return 0;
-        t.Add("LOCAL                  REMOTE                 STATE  OWNER  IN/OUT\n");
+        t.WriteLine("LOCAL                  REMOTE                 STATE  OWNER  IN/OUT");
+        byte* local = stackalloc byte[24];
+        byte* remote = stackalloc byte[24];
         lock (Stack.Lock) {
             for int i in 0..Tcp.Connections {
                 TcpConnection* c = &Tcp.Table[i];
                 if (!c->Used)
                     continue;
-                t.Ip(c->LocalIp);
-                t.Char((byte)':');
-                t.Dec(c->LocalPort);
-                t.Column(23);
-                t.Ip(c->RemoteIp);
-                t.Char((byte)':');
-                t.Dec(c->RemotePort);
-                t.Column(46);
-                t.Dec((ulong)c->State);
-                t.Column(53);
-                t.Dec(c->Owner);
-                t.Column(60);
-                t.Dec((ulong)c->ReceiveCount);
-                t.Char((byte)'/');
-                t.Dec((ulong)c->SendCount);
-                t.Line();
+                Text l = new Text(local, 24);
+                WriteIp(ref l, c->LocalIp);
+                l.Write($":{c->LocalPort}");
+                Text r = new Text(remote, 24);
+                WriteIp(ref r, c->RemoteIp);
+                r.Write($":{c->RemotePort}");
+                t.WriteLine($"{local,-23}{remote,-23}{(byte)c->State,-7}{c->Owner,-7}{c->ReceiveCount}/{c->SendCount}");
             }
         }
         return t.Length;
@@ -375,18 +197,12 @@ public static unsafe class Proc
         Text t = new Text(buffer, capacity);
         if (!Stack.Up)
             return 0;
-        t.Add("PORT   OWNER  QUEUED\n");
+        t.WriteLine("PORT   OWNER  QUEUED");
         lock (Stack.Lock) {
             for int i in 0..Udp.Sockets {
                 UdpSocket* s = &Udp.Table[i];
-                if (!s->Used)
-                    continue;
-                t.Dec(s->Port);
-                t.Column(7);
-                t.Dec(s->Owner);
-                t.Column(14);
-                t.Dec((ulong)s->Count);
-                t.Line();
+                if (s->Used)
+                    t.WriteLine($"{s->Port,-7}{s->Owner,-7}{s->Count}");
             }
         }
         return t.Length;

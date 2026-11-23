@@ -1,0 +1,17 @@
+// .neko sugar: a defer body may not leave the function.
+using Nekotia;
+using Nekotia.User;
+
+namespace NekocTests;
+
+public static unsafe class Program
+{
+    public static int Main()
+    {
+        defer { return 1; }   // error NEKO0301
+        loop {
+            break;
+        }
+        return 0;
+    }
+}

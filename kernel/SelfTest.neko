@@ -57,6 +57,8 @@ public static unsafe class SelfTest
         defer Report();
 
         Language();
+        Patterns();
+        Interpolation();
         Sugar();
         HeapBasics();
         HeapLinkedList();
@@ -95,6 +97,82 @@ public static unsafe class SelfTest
             Terminal.Write(AnsiColor.BrightRed, "  FAIL  ");
         }
         Terminal.WriteLine(name);
+    }
+
+    static int Classify(int v) => v switch
+    {
+        < 0 => -1,
+        0 => 0,
+        >= 1 and <= 9 => 1,
+        10 or 20 or 30 => 2,
+        _ when v % 2 == 0 => 3,
+        _ => 4,
+    };
+
+    static string Size(ulong bytes) => bytes switch
+    {
+        < 1024 => "small",
+        < 1024 * 1024 => "medium",
+        _ => "large",
+    };
+
+    static int _sideEffects;
+    static int Next() => ++_sideEffects;
+
+    static int PatternLoop()
+    {
+        int sum = 0;
+        for int i in 0..20 {
+            switch (i)
+            {
+                case < 5:
+                    continue;   // must continue the loop, not leave a hidden do/while
+                case 7 or 9:
+                    sum += 100;
+                    break;
+                case > 15 when i % 2 == 0:
+                    sum += 1000;
+                    break;
+                default:
+                    sum += 1;
+                    break;
+            }
+        }
+        return sum;
+    }
+
+    static void Interpolation()
+    {
+        byte* buf = stackalloc byte[128];
+        Text t = new Text(buf, 128);
+        int n = -42;
+        ulong big = 4096;
+        byte* name = Str.Bytes("neko");
+        t.Write($"[{n}|{big:size}|{name}|{255:X}|{0xBEEF:X6}|{7:D3}|{1.5:F2}|{true}]");
+        Check(Str.Equals(buf, "[-42|4 KiB|neko|0xff|00beef|007|1.50|true]"), "interpolation into a Text buffer (numbers, sizes, byte* C strings, formats)");
+        t = new Text(buf, 128);
+        t.Write($"<{n,5}|{n,-5}|{"ab",4}|{name,-6}|{3,4:X2}>");
+        Check(Str.Equals(buf, "<  -42|-42  |  ab|neko  |  03>"), "interpolation alignment: right, left, strings, byte*, hex digits");
+        Text small = new Text(buf, 6);
+        small.Write($"{123456789}");
+        Check(small.Length == 5 && Str.Equals(buf, "12345"), "Text never writes past its capacity");
+    }
+
+    static void Patterns()
+    {
+        Check(Classify(-5) == -1 && Classify(0) == 0 && Classify(7) == 1 && Classify(20) == 2 && Classify(44) == 3 && Classify(45) == 4,
+              "switch expression: relational, or/and, when, discard");
+        Check(Str.Equals(Size(10), "small") && Str.Equals(Size(5000), "medium") && Str.Equals(Size(1UL << 30), "large"),
+              "switch expression producing strings");
+        char c = 'q';
+        Check(c is >= 'a' and <= 'z' && c is not ('x' or 'y') && !(c is >= '0' and <= '9'), "is-patterns on a char");
+        _sideEffects = 0;
+        bool small = Next() is > 0 and < 10;
+        Check(small && _sideEffects == 1, "the subject of a pattern is evaluated once");
+        byte* none = null;
+        Check(none is null && Str.Bytes("x") is not null, "null patterns");
+        // 5…19 except 7, 9 and the even ones above 15: 11 × 1 + 2 × 100 + 2 × 1000 (16, 18)
+        Check(PatternLoop() == 1 * 11 + 200 + 2000, "switch statement with patterns: break, continue, when, default");
     }
 
     static void Language()

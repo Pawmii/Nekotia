@@ -105,8 +105,10 @@ sealed partial class CppEmitter
                 return Unsupported(e, "throw expressions", "use a throw statement");
             case LambdaExpressionSyntax or AnonymousMethodExpressionSyntax:
                 return Unsupported(e, "lambdas", "use a static method and a function pointer (&Method)");
-            case IsPatternExpressionSyntax or SwitchExpressionSyntax:
-                return Unsupported(e, "pattern matching");
+            case IsPatternExpressionSyntax ip:
+                return IsPattern(ip);
+            case SwitchExpressionSyntax se:
+                return SwitchExpression(se);
             default:
                 return Unsupported(e, e.Kind().ToString());
         }
@@ -600,11 +602,33 @@ sealed partial class CppEmitter
     /// WriteCodepoint, WriteSize, WriteLine(). No string is ever built, so this works without a heap.
     /// Format specifiers: {x:X} hex, {n:size} human-readable bytes.
     /// </summary>
+    /// <summary>
+    /// <c>sink.Write($"…")</c> / <c>WriteLine</c> → one Write* call per part, on a static sink (Terminal, Serial,
+    /// Console) or an instance (Text). Alignment (<c>{v,8}</c>, <c>{v,-8}</c>) and <c>:X4</c> format into a small
+    /// stack buffer with neko::fmt first.
+    /// </summary>
     string InterpolatedWrite(IMethodSymbol target, InterpolatedStringExpressionSyntax interpolated, InvocationExpressionSyntax inv)
     {
         var type = target.ContainingType;
         if (target.Name is not ("Write" or "WriteLine"))
-            return Unsupported(inv, "string interpolation", "it is only supported as the only argument of Write/WriteLine on Serial, Terminal, Console or a type with the same Write* methods");
+            return Unsupported(inv, "string interpolation", "it is only supported as the only argument of Write/WriteLine on Serial, Terminal, Console, Text or a type with the same Write* methods");
+
+        string receiver = "";
+        if (!target.IsStatic)
+        {
+            switch (inv.Expression)
+            {
+                case MemberAccessExpressionSyntax { Expression: ThisExpressionSyntax }:
+                case IdentifierNameSyntax:
+                    receiver = "this->";
+                    break;
+                case MemberAccessExpressionSyntax ma when IsSimple(ma.Expression):
+                    receiver = Expr(ma.Expression) + (ma.IsKind(SyntaxKind.PointerMemberAccessExpression) ? "->" : ".");
+                    break;
+                default:
+                    return Unsupported(inv.Expression, "interpolation into this receiver", "use a local or a field: `t.Write($\"…\")`");
+            }
+        }
 
         IMethodSymbol? Find(string name, SpecialType? param)
         {
@@ -618,6 +642,10 @@ sealed partial class CppEmitter
             return null;
         }
 
+        string Callee(IMethodSymbol m) => m.IsStatic
+            ? Symbols.NativeName(m) ?? $"{Qualified(m.ContainingType)}::{Symbols.Escape(m.Name)}"
+            : receiver + (Symbols.NativeName(m) ?? Symbols.Escape(m.Name));
+
         string Call(IMethodSymbol? m, string arg, SyntaxNode at, string what)
         {
             if (m is null)
@@ -625,11 +653,10 @@ sealed partial class CppEmitter
                 Unsupported(at, $"interpolating {what}", $"'{type.Name}' has no matching Write* method");
                 return "((void)0)";
             }
-            var callee = Symbols.NativeName(m) ?? $"{Qualified(m.ContainingType)}::{Symbols.Escape(m.Name)}";
             var cast = m.Parameters.Length == 1 && m.Parameters[0].Type.SpecialType != SpecialType.System_String
                 ? $"(({Map(m.Parameters[0].Type, at)})({arg}))"
                 : arg;
-            return $"{callee}({cast})";
+            return $"{Callee(m)}({cast})";
         }
 
         var parts = new List<string>();
@@ -643,13 +670,26 @@ sealed partial class CppEmitter
             }
 
             var hole = (InterpolationSyntax)content;
-            if (hole.AlignmentClause is not null)
-                Unsupported(hole.AlignmentClause, "interpolation alignment");
             var format = hole.FormatClause?.FormatStringToken.ValueText;
             var value = Expr(hole.Expression);
             var t = TypeOf(hole.Expression);
             if (t is INamedTypeSymbol { TypeKind: TypeKind.Enum } e)
                 t = e.EnumUnderlyingType;
+
+            int alignment = 0;
+            if (hole.AlignmentClause is { } align)
+            {
+                if (_model.GetConstantValue(align.Value) is { HasValue: true, Value: int a })
+                    alignment = a;
+                else
+                    Unsupported(align, "a non-constant alignment");
+            }
+            bool hexDigits = format is { Length: >= 2 } && format[0] is 'X' or 'x' or 'D' or 'd' && format[1..].All(char.IsDigit);
+            if (alignment != 0 || hexDigits)
+            {
+                parts.Add(AlignedHole(hole, value, t, format, alignment, writeString, Call));
+                continue;
+            }
 
             switch (t)
             {
@@ -665,7 +705,7 @@ sealed partial class CppEmitter
                     var writeFloat = type.GetMembers("WriteFloat").OfType<IMethodSymbol>().FirstOrDefault();
                     parts.Add(writeFloat is null
                         ? Unsupported(hole, "interpolating a floating-point value", $"'{type.Name}' has no WriteFloat(double, int)")
-                        : $"{Symbols.NativeName(writeFloat) ?? Qualified(type) + "::WriteFloat"}((double)({value}), {digits})");
+                        : $"{Callee(writeFloat)}((double)({value}), {digits})");
                     break;
                 case { SpecialType: SpecialType.System_Char }:
                     parts.Add(Call(Find("WriteCodepoint", SpecialType.System_UInt32) ?? Find("WriteChar", SpecialType.System_Byte), value, hole, "a char"));
@@ -684,7 +724,7 @@ sealed partial class CppEmitter
                         _ => null,
                     };
                     if (format is not null and not ("X" or "x" or "size"))
-                        Unsupported(hole.FormatClause!, $"format ':{format}'", "supported: :X (hex), :size (bytes)");
+                        Unsupported(hole.FormatClause!, $"format ':{format}'", "supported: :X (0x…), :X4 (hex digits), :D2 (zero-padded), :size (bytes), :F2 (floats)");
                     parts.Add(Call(method, arg, hole, "a number"));
                     break;
                 default:
@@ -698,6 +738,56 @@ sealed partial class CppEmitter
                 ? Call(newline, "", inv, "a newline")
                 : Call(writeString, "\"\\n\"", inv, "a newline"));
         return "(" + string.Join(", ", parts) + ")";
+    }
+
+    /// <summary>
+    /// A hole with alignment or fixed hex digits: formatted into a stack buffer, padded with spaces
+    /// (right-aligned for a positive width, left-aligned for a negative one), written with Write(string).
+    /// </summary>
+    string AlignedHole(InterpolationSyntax hole, string value, ITypeSymbol? t, string? format, int alignment,
+                       IMethodSymbol? writeString, Func<IMethodSymbol?, string, SyntaxNode, string, string> call)
+    {
+        string fill;   // statement(s) that leave the text in _neko_text and its width in _neko_width
+        switch (t)
+        {
+            case { SpecialType: SpecialType.System_String }:
+            case IPointerTypeSymbol { PointedAtType.SpecialType: SpecialType.System_Byte }:
+                fill = $"const char* _neko_text = (const char*)({value}); int _neko_width = ::neko::fmt::width(_neko_text);";
+                break;
+            case { SpecialType: SpecialType.System_Boolean }:
+                fill = $"const char* _neko_text = ({value}) ? \"true\" : \"false\"; int _neko_width = ::neko::fmt::width(_neko_text);";
+                break;
+            case { SpecialType: SpecialType.System_Single or SpecialType.System_Double }:
+                var digits = format is { Length: 2 } && format[0] is 'F' or 'f' && char.IsDigit(format[1]) ? format[1] - '0' : 3;
+                fill = $"char _neko_text[48]; int _neko_width = ::neko::fmt::fixed(_neko_text, (double)({value}), {digits});";
+                break;
+            case var _ when TypeMapper.IsNumeric(t) || t is IPointerTypeSymbol:
+                var unsigned = $"(uint64_t)({(t is IPointerTypeSymbol ? $"(uintptr_t)({value})" : value)})";
+                bool signed = t?.SpecialType is SpecialType.System_SByte or SpecialType.System_Int16 or SpecialType.System_Int32
+                    or SpecialType.System_Int64 or SpecialType.System_IntPtr;
+                string formatted = format switch
+                {
+                    null => signed ? $"::neko::fmt::dec(_neko_text, (int64_t)({value}))" : $"::neko::fmt::udec(_neko_text, {unsigned})",
+                    "X" or "x" => $"::neko::fmt::hex(_neko_text, {unsigned})",
+                    "size" => $"::neko::fmt::size(_neko_text, {unsigned})",
+                    _ when format.Length >= 2 && format[0] is 'D' or 'd' && format[1..].All(char.IsDigit) =>
+                        $"::neko::fmt::dec_digits(_neko_text, (int64_t)({value}), {int.Parse(format[1..], System.Globalization.CultureInfo.InvariantCulture)})",
+                    _ when format.Length >= 2 && format[0] is 'X' or 'x' && format[1..].All(char.IsDigit) =>
+                        $"::neko::fmt::hex_digits(_neko_text, {unsigned}, {int.Parse(format[1..], System.Globalization.CultureInfo.InvariantCulture)})",
+                    _ => Unsupported(hole.FormatClause!, $"format ':{format}'", "supported: :X, :X4, :size"),
+                };
+                fill = $"char _neko_text[48]; int _neko_width = {formatted};";
+                break;
+            default:
+                return Unsupported(hole, $"alignment or this format for a value of type '{t?.ToDisplayString()}'");
+        }
+        var write = call(writeString, "_neko_text", hole, "text");
+        var space = call(writeString, "\" \"", hole, "padding");
+        var width = Math.Abs(alignment);
+        var pad = $"for (int _neko_i = _neko_width; _neko_i < {width}; ++_neko_i) {space};";
+        return alignment >= 0
+            ? $"([&]() {{ {fill} {pad} {write}; }}())"
+            : $"([&]() {{ {fill} {write}; {pad} }}())";
     }
 
     IMethodSymbol? FindPointerWrite(INamedTypeSymbol type) =>
