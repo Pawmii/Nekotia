@@ -3,6 +3,7 @@ using System;
 using Nekotia;
 using Nekotia.Hal;
 using Nekotia.IO;
+using Nekotia.OS.Net;
 using Nekotia.Mem;
 using Nekotia.Processes;
 using Nekotia.Threading;
@@ -69,6 +70,7 @@ public static unsafe class SelfTest
         FileSystem();
         Disks();
         FatVolume();
+        Networking();
         UserMode();
         return _failed;
     }
@@ -648,6 +650,35 @@ public static unsafe class SelfTest
               && Put("/tmp/fat/readme.txt", Str.Bytes("nekotia\n"), 8, Vfs.Write | Vfs.Create) == 8, "fat32: files with Cyrillic and short names");
         Check(Vfs.Unmount(dir) == 0 && Vfs.Remove(dir) == 0, "fat32: final unmount");
         Check(Vfs.Statistics().Nodes == nodes && Heap.UsedBytes() == heap, "fat32: nodes and memory are freed");
+    }
+
+    /// Under QEMU's user network (`make test` and `make run` attach one): DHCP, ARP, ping, UDP over loopback.
+    static void Networking()
+    {
+        if (!Stack.Up)
+            return;
+        Check(Stack.Configured && Stack.Address == 0x0A00020F && Stack.Gateway == 0x0A000202, "net: DHCP gave 10.0.2.15 via 10.0.2.2");
+        byte* mac = stackalloc byte[6];
+        Check(Arp.Resolve(Stack.Gateway, mac), "net: ARP resolves the gateway");
+        byte ttl = 0;
+        int bytes = 0;
+        Icmp.SendEcho(Stack.Gateway, 7001, 32);
+        Check(Icmp.WaitReply(7001, 1000, out ttl, out bytes) && bytes == 40, "net: the gateway answers ping");
+        Icmp.SendEcho(0x7F000001, 7002, 1000);
+        Check(Icmp.WaitReply(7002, 1000, out ttl, out bytes) && bytes == 1008, "net: ping over loopback (127.0.0.1)");
+
+        int a = Udp.Bind(0, 0);
+        int b = Udp.Bind(4444, 0);
+        Check(a >= 0 && b >= 0 && Udp.Bind(4444, 0) == (int)Process.ErrExists, "udp: bind; a taken port is refused");
+        byte* buf = stackalloc byte[64];
+        Check(Udp.SendTo(a, Stack.Address, 4444, Str.Bytes("hello udp"), 9) == 9, "udp: send to our own address");
+        uint from = 0;
+        ushort port = 0;
+        long n = Udp.ReceiveFrom(b, buf, 64, out from, out port, 1000);
+        Check(n == 9 && buf[0] == 'h' && buf[8] == 'p' && from == Stack.Address && port == Udp.PortOf(a), "udp: the datagram arrives with its sender");
+        Check(Udp.ReceiveFrom(b, buf, 64, out from, out port, 50) == 0, "udp: an empty queue times out");
+        Udp.Close(a);
+        Udp.Close(b);
     }
 
     static void UserMode()

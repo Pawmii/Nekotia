@@ -1,0 +1,134 @@
+// ARP: IPv4 address → MAC address on the local network. A small cache filled from replies, from
+// requests aimed at us and from every IPv4 packet we receive; requests for our address are answered.
+using Nekotia;
+using Nekotia.Hal;
+using Nekotia.Mem;
+using Nekotia.Threading;
+
+namespace Nekotia.OS.Net;
+
+public unsafe struct ArpEntry
+{
+    public uint Ip;
+    public fixed byte Mac[6];
+    public ulong SeenMs;
+    public bool Valid;
+}
+
+public static unsafe class Arp
+{
+    public const int Size = 32;
+    const ulong LifetimeMs = 10 * 60 * 1000;
+
+    public static ArpEntry* Table;
+    static int _next;   // round-robin replacement
+
+    public static void Init() => Table = Heap.NewArray<ArpEntry>(Size);
+
+    /// MAC of `ip` from the cache (Lock held); false when unknown or stale.
+    public static bool Lookup(uint ip, byte* mac)
+    {
+        if (ip == 0xFFFFFFFF) {
+            Stack.CopyMac(mac, Stack.Broadcast);
+            return true;
+        }
+        ulong now = Time.UptimeMs();
+        for int i in 0..Size {
+            ArpEntry* e = &Table[i];
+            if (e->Valid && e->Ip == ip && now - e->SeenMs < LifetimeMs) {
+                Stack.CopyMac(mac, e->Mac);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Remembers ip → mac (Lock held).
+    public static void Learn(uint ip, byte* mac)
+    {
+        if (ip == 0 || ip == 0xFFFFFFFF)
+            return;
+        ArpEntry* slot = null;
+        for int i in 0..Size {
+            if (Table[i].Valid && Table[i].Ip == ip)
+                slot = &Table[i];
+        }
+        if (slot == null) {
+            for int i in 0..Size {
+                if (!Table[i].Valid && slot == null)
+                    slot = &Table[i];
+            }
+        }
+        if (slot == null) {
+            slot = &Table[_next];
+            _next = (_next + 1) % Size;
+        }
+        slot->Ip = ip;
+        Stack.CopyMac(slot->Mac, mac);
+        slot->SeenMs = Time.UptimeMs();
+        slot->Valid = true;
+    }
+
+    /// Who has `ip`? (Lock held)
+    public static void Request(uint ip)
+    {
+        byte* p = Stack.Frame() + Stack.EthHeader;
+        Fill(p, 1, Stack.Broadcast, ip);
+        for int i in 0..6 { p[18 + i] = 0; }   // target MAC unknown
+        Stack.SendFrame(Stack.Broadcast, Stack.EtherArp, 28);
+    }
+
+    /// Ethernet/IPv4 ARP packet: operation, our addresses as the sender, the target.
+    static void Fill(byte* p, uint operation, byte* targetMac, uint targetIp)
+    {
+        Stack.Put16(p, 1);         // hardware: Ethernet
+        Stack.Put16(p + 2, 0x0800); // protocol: IPv4
+        p[4] = 6;
+        p[5] = 4;
+        Stack.Put16(p + 6, operation);
+        Stack.CopyMac(p + 8, Stack.Mac);
+        Stack.Put32(p + 14, Stack.Address);
+        Stack.CopyMac(p + 18, targetMac);
+        Stack.Put32(p + 24, targetIp);
+    }
+
+    public static void Receive(byte* p, int length)
+    {
+        if (length < 28 || Stack.Get16(p) != 1 || Stack.Get16(p + 2) != 0x0800 || p[4] != 6 || p[5] != 4)
+            return;
+        uint operation = Stack.Get16(p + 6);
+        uint senderIp = Stack.Get32(p + 14);
+        uint targetIp = Stack.Get32(p + 24);
+        bool forUs = Stack.Address != 0 && targetIp == Stack.Address;
+        if (operation == 2 || forUs)
+            Learn(senderIp, p + 8);
+        if (operation == 1 && forUs) {
+            byte* mac = stackalloc byte[6];
+            Stack.CopyMac(mac, p + 8);
+            byte* q = Stack.Frame() + Stack.EthHeader;
+            Fill(q, 2, mac, senderIp);
+            Stack.SendFrame(mac, Stack.EtherArp, 28);
+        }
+    }
+
+    /// MAC of the next hop toward `ip`, asking up to three times (sleeps: call WITHOUT the lock).
+    public static bool Resolve(uint ip, byte* mac)
+    {
+        uint hop = Stack.NextHop(ip);
+        for int attempt in 0..3 {
+            lock (Stack.Lock) {
+                if (Lookup(hop, mac))
+                    return true;
+                Request(hop);
+            }
+            for int wait in 0..50 {   // up to 500 ms per request
+                Thread.Sleep(10);
+                lock (Stack.Lock) {
+                    if (Lookup(hop, mac))
+                        return true;
+                }
+            }
+        }
+        return false;
+    }
+}

@@ -1,0 +1,206 @@
+// UDP sockets: a port, and a queue of up to 8 received datagrams with their sender.
+using Nekotia;
+using Nekotia.Hal;
+using Nekotia.Mem;
+using Nekotia.Processes;
+using Nekotia.Threading;
+
+namespace Nekotia.OS.Net;
+
+public unsafe struct Datagram
+{
+    public uint From;
+    public ushort FromPort;
+    public ushort Length;
+    public fixed byte Data[1472];
+}
+
+public unsafe struct UdpSocket
+{
+    public bool Used;
+    public ushort Port;
+    public int Head;
+    public int Count;
+    public Datagram* Queue;
+    public Semaphore Ready;   // one unit per queued datagram
+    public uint Owner;        // pid (0 = kernel): closed when that process goes
+}
+
+public static unsafe class Udp
+{
+    public const int Sockets = 32;
+    public const int QueueLength = 8;
+    public const int MaxData = 1472;
+
+    public static UdpSocket* Table;
+    static ushort _ephemeral = 49152;
+    public static ulong NoListener;
+
+    public static void Init() => Table = Heap.NewArray<UdpSocket>(Sockets);
+
+    static bool PortTaken(ushort port)
+    {
+        for int i in 0..Sockets {
+            if (Table[i].Used && Table[i].Port == port)
+                return true;
+        }
+        return false;
+    }
+
+    /// A socket on `port` (0: any free port ≥ 49152). Its index, or a negative error.
+    public static int Bind(ushort port, uint owner)
+    {
+        if (!Stack.Up)
+            return (int)Process.ErrNoSyscall;
+        lock (Stack.Lock) {
+            if (port == 0) {
+                for int tries in 0..16384 {
+                    ushort p = _ephemeral++;
+                    if (_ephemeral == 0)
+                        _ephemeral = 49152;
+                    if (!PortTaken(p)) {
+                        port = p;
+                        break;
+                    }
+                }
+            }
+            if (port == 0 || PortTaken(port))
+                return (int)Process.ErrExists;
+            for int i in 0..Sockets {
+                UdpSocket* s = &Table[i];
+                if (s->Used)
+                    continue;
+                if (s->Queue == null)
+                    s->Queue = Heap.NewArray<Datagram>(QueueLength);
+                if (s->Queue == null)
+                    return (int)Process.ErrNoMemory;
+                s->Used = true;
+                s->Port = port;
+                s->Head = 0;
+                s->Count = 0;
+                s->Owner = owner;
+                while (s->Ready.TryWait()) { }
+                return i;
+            }
+        }
+        return (int)Process.ErrTooManyFiles;
+    }
+
+    public static void Close(int socket)
+    {
+        if (socket < 0 || socket >= Sockets)
+            return;
+        lock (Stack.Lock) {
+            Table[socket].Used = false;
+            Table[socket].Count = 0;
+        }
+    }
+
+    public static ushort PortOf(int socket) => socket >= 0 && socket < Sockets ? Table[socket].Port : (ushort)0;
+
+    /// Sends `length` bytes to ip:port. Resolves the next hop first (may sleep up to ~1.5 s).
+    public static long SendTo(int socket, uint ip, ushort port, byte* data, int length)
+    {
+        if (socket < 0 || socket >= Sockets || !Table[socket].Used)
+            return Process.ErrBadFd;
+        if (length > MaxData)
+            return Process.ErrBadArgument;
+        byte* mac = stackalloc byte[6];
+        if (!Stack.IsLocal(ip) && !Arp.Resolve(ip, mac))
+            return Process.ErrNotFound;   // nobody answers ARP for the next hop
+        lock (Stack.Lock) {
+            byte* u = Stack.Payload();
+            Stack.Put16(u, Table[socket].Port);
+            Stack.Put16(u + 2, port);
+            Stack.Put16(u + 4, (uint)(8 + length));
+            Stack.Put16(u + 6, 0);
+            Memory.Copy(u + 8, data, (nuint)length);
+            uint source = Stack.IsLocal(ip) && (ip >> 24) == 127 ? ip : Stack.Address;
+            ushort sum = Stack.Fold(Stack.Sum(u, 8 + length, Pseudo(source, ip, Ip.ProtoUdp, 8 + length)));
+            Stack.Put16(u + 6, sum == 0 ? 0xFFFFu : sum);
+            long e = Ip.Send(Ip.ProtoUdp, ip, 8 + length);
+            return e < 0 ? e : length;
+        }
+    }
+
+    /// Sum of the IPv4 pseudo header (for UDP and TCP checksums).
+    public static uint Pseudo(uint source, uint destination, byte protocol, int length)
+    {
+        return (source >> 16) + (source & 0xFFFF) + (destination >> 16) + (destination & 0xFFFF) + protocol + (uint)length;
+    }
+
+    /// Next datagram: its length (copied up to `capacity`), 0 after `timeoutMs` (0 = wait forever),
+    /// or ErrInterrupted when the calling program is being killed.
+    public static long ReceiveFrom(int socket, byte* buffer, int capacity, out uint from, out ushort fromPort, ulong timeoutMs)
+    {
+        from = 0;
+        fromPort = 0;
+        if (socket < 0 || socket >= Sockets || !Table[socket].Used)
+            return Process.ErrBadFd;
+        UdpSocket* s = &Table[socket];
+        if (timeoutMs == 0) {
+            if (!s->Ready.WaitInterruptible())
+                return Process.ErrInterrupted;
+        } else {
+            ulong until = Time.UptimeMs() + timeoutMs;
+            while (!s->Ready.TryWait()) {
+                if (Time.UptimeMs() >= until)
+                    return 0;
+                if (Process.CurrentPid() != 0 && Thread.Killed())
+                    return Process.ErrInterrupted;
+                Thread.Sleep(2);
+            }
+        }
+        lock (Stack.Lock) {
+            if (!s->Used || s->Count == 0)
+                return Process.ErrBadFd;
+            Datagram* d = &s->Queue[s->Head];
+            s->Head = (s->Head + 1) % QueueLength;
+            s->Count--;
+            int n = d->Length < capacity ? d->Length : capacity;
+            Memory.Copy(buffer, d->Data, (nuint)n);
+            from = d->From;
+            fromPort = d->FromPort;
+            return n;
+        }
+    }
+
+    public static void Receive(uint source, uint destination, byte* p, int length)
+    {
+        if (length < 8)
+            return;
+        int size = Stack.Get16(p + 4);
+        if (size < 8 || size > length)
+            return;
+        if (Stack.Get16(p + 6) != 0 && Stack.Fold(Stack.Sum(p, size, Pseudo(source, destination, Ip.ProtoUdp, size))) != 0)
+            return;   // a bad checksum (0 = none sent)
+        ushort port = Stack.Get16(p + 2);
+        for int i in 0..Sockets {
+            UdpSocket* s = &Table[i];
+            if (!s->Used || s->Port != port)
+                continue;
+            if (s->Count == QueueLength)
+                return;   // full: dropped, like any UDP
+            Datagram* d = &s->Queue[(s->Head + s->Count) % QueueLength];
+            d->From = source;
+            d->FromPort = Stack.Get16(p);
+            d->Length = (ushort)(size - 8 > MaxData ? MaxData : size - 8);
+            Memory.Copy(d->Data, p + 8, (nuint)d->Length);
+            s->Count++;
+            s->Ready.Signal();
+            return;
+        }
+        NoListener++;
+    }
+
+    /// Closes every socket of process `pid` (when it exits).
+    public static void CloseOwnedBy(uint pid)
+    {
+        lock (Stack.Lock) {
+            for int i in 0..Sockets {
+                if (Table[i].Used && Table[i].Owner == pid)
+                    Table[i].Used = false;
+            }
+        }
+    }
+}

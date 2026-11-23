@@ -1,0 +1,163 @@
+// DHCP client: DISCOVER → OFFER → REQUEST → ACK gives the address, netmask, gateway and DNS server.
+using Nekotia;
+using Nekotia.Hal;
+using Nekotia.Mem;
+using Nekotia.Processes;
+
+namespace Nekotia.OS.Net;
+
+public static unsafe class Dhcp
+{
+    const ushort ClientPort = 68, ServerPort = 67;
+    const byte Discover = 1, Offer = 2, Request = 3, Ack = 5, Nak = 6;
+    const uint Magic = 0x63825363;
+
+    public static uint Server;
+    public static ulong LeaseSeconds;
+
+    /// Runs the exchange (up to three attempts); true when an address was configured.
+    public static bool Configure()
+    {
+        if (!Stack.Up)
+            return false;
+        int socket = Udp.Bind(ClientPort, 0);
+        if (socket < 0)
+            return false;
+        defer Udp.Close(socket);
+        byte* packet = (byte*)Heap.AllocZeroed(576);
+        defer Heap.Free(packet);
+        uint xid = (uint)Cpu.ReadTimestamp();
+
+        for int attempt in 0..3 {
+            uint offered = 0;
+            uint server = 0;
+            Build(packet, xid, Discover, 0, 0);
+            Udp.SendTo(socket, 0xFFFFFFFF, ServerPort, packet, 300);
+            if (!Wait(socket, packet, xid, Offer, out offered, out server))
+                continue;
+            Build(packet, xid, Request, offered, server);
+            Udp.SendTo(socket, 0xFFFFFFFF, ServerPort, packet, 300);
+            uint acked = 0;
+            if (Wait(socket, packet, xid, Ack, out acked, out server)) {
+                Apply(packet, acked, server);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static void Build(byte* p, uint xid, byte type, uint requested, uint server)
+    {
+        Memory.Set(p, 0, 576);
+        p[0] = 1;   // BOOTREQUEST
+        p[1] = 1;   // Ethernet
+        p[2] = 6;
+        Stack.Put32(p + 4, xid);
+        Stack.Put16(p + 10, 0x8000);   // please broadcast the answer: we have no address yet
+        Stack.CopyMac(p + 28, Stack.Mac);
+        Stack.Put32(p + 236, Magic);
+        byte* o = p + 240;
+        *o++ = 53;   // message type
+        *o++ = 1;
+        *o++ = type;
+        *o++ = 61;   // client identifier: hardware type + MAC
+        *o++ = 7;
+        *o++ = 1;
+        Stack.CopyMac(o, Stack.Mac);
+        o += 6;
+        *o++ = 12;   // host name
+        *o++ = 7;
+        byte* name = Str.Bytes("nekotia");
+        for int i in 0..7 { *o++ = name[i]; }
+        if (requested != 0) {
+            *o++ = 50;   // requested address
+            *o++ = 4;
+            Stack.Put32(o, requested);
+            o += 4;
+            *o++ = 54;   // server identifier
+            *o++ = 4;
+            Stack.Put32(o, server);
+            o += 4;
+        }
+        *o++ = 55;   // parameter request list: subnet mask, router, DNS, lease time
+        *o++ = 4;
+        *o++ = 1;
+        *o++ = 3;
+        *o++ = 6;
+        *o++ = 51;
+        *o = 255;
+    }
+
+    /// Value of option `code` (its length in `length`), or null.
+    static byte* Option(byte* p, int size, byte code, out int length)
+    {
+        length = 0;
+        byte* o = p + 240;
+        byte* end = p + size;
+        while (o < end && *o != 255) {
+            if (*o == 0) {
+                o++;
+                continue;
+            }
+            if (o + 2 > end || o + 2 + o[1] > end)
+                break;
+            if (*o == code) {
+                length = o[1];
+                return o + 2;
+            }
+            o += 2 + o[1];
+        }
+        return null;
+    }
+
+    static int _size;
+
+    /// Waits up to 2 s for a reply of `type` to our `xid`.
+    static bool Wait(int socket, byte* p, uint xid, byte type, out uint address, out uint server)
+    {
+        address = 0;
+        server = 0;
+        ulong until = Time.UptimeMs() + 2000;
+        while (Time.UptimeMs() < until) {
+            uint from = 0;
+            ushort port = 0;
+            long n = Udp.ReceiveFrom(socket, p, 576, out from, out port, 200);
+            if (n < 244 || p[0] != 2 || Stack.Get32(p + 4) != xid || Stack.Get32(p + 236) != Magic)
+                continue;
+            int len = 0;
+            byte* t = Option(p, (int)n, 53, out len);
+            if (t == null || len != 1)
+                continue;
+            if (*t == Nak)
+                return false;
+            if (*t != type)
+                continue;
+            address = Stack.Get32(p + 16);   // yiaddr
+            byte* id = Option(p, (int)n, 54, out len);
+            server = id != null && len == 4 ? Stack.Get32(id) : from;
+            _size = (int)n;
+            return true;
+        }
+        return false;
+    }
+
+    static void Apply(byte* p, uint address, uint server)
+    {
+        int len = 0;
+        byte* mask = Option(p, _size, 1, out len);
+        byte* router = Option(p, _size, 3, out len);
+        uint routerIp = router != null && len >= 4 ? Stack.Get32(router) : 0;
+        byte* dns = Option(p, _size, 6, out len);
+        uint dnsIp = dns != null && len >= 4 ? Stack.Get32(dns) : 0;
+        byte* lease = Option(p, _size, 51, out len);
+        lock (Stack.Lock) {
+            Stack.Address = address;
+            Stack.Netmask = mask != null ? Stack.Get32(mask) : 0xFFFFFF00;
+            Stack.Gateway = routerIp;
+            Stack.Dns = dnsIp;
+            Stack.Configured = true;
+        }
+        Server = server;
+        LeaseSeconds = lease != null && len == 4 ? Stack.Get32(lease) : 0;
+    }
+}

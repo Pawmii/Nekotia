@@ -1,0 +1,93 @@
+// IPv4: header checks and dispatch on receive; header, checksum and next-hop MAC on send.
+// No fragmentation: fragments are dropped, and nothing we send is bigger than the MTU.
+using Nekotia;
+using Nekotia.Hal;
+using Nekotia.Net;
+using Nekotia.Processes;
+
+namespace Nekotia.OS.Net;
+
+public static unsafe class Ip
+{
+    public const byte ProtoIcmp = 1, ProtoTcp = 6, ProtoUdp = 17;
+    public const int MaxPayload = 1500 - Stack.IpHeader;
+
+    static ushort _id;
+    public static ulong Received, Sent, Bad;
+
+    /// Sends the `length` payload bytes already at Stack.Payload() to `destination` (Lock held).
+    /// ErrNotFound when the next hop's MAC is not known yet (an ARP request goes out instead).
+    public static long Send(byte protocol, uint destination, int length)
+    {
+        if (length > MaxPayload)
+            return Process.ErrBadArgument;
+        byte* frame = Stack.Frame();
+        byte* h = frame + Stack.EthHeader;
+        bool local = Stack.IsLocal(destination);
+        uint source = local && (destination >> 24) == 127 ? destination : Stack.Address;
+        h[0] = 0x45;   // version 4, 20-byte header
+        h[1] = 0;
+        Stack.Put16(h + 2, (uint)(Stack.IpHeader + length));
+        Stack.Put16(h + 4, ++_id);
+        Stack.Put16(h + 6, 0x4000);   // don't fragment
+        h[8] = 64;                    // TTL
+        h[9] = protocol;
+        Stack.Put16(h + 10, 0);
+        Stack.Put32(h + 12, source);
+        Stack.Put32(h + 16, destination);
+        Stack.Put16(h + 10, Stack.Checksum(h, Stack.IpHeader));
+        Sent++;
+        if (local) {   // loopback: back into our own receive queue
+            Stack.CopyMac(frame, Stack.Mac);
+            Stack.CopyMac(frame + 6, Stack.Mac);
+            Stack.Put16(frame + 12, Stack.EtherIp);
+            NetDevice.Inject(Stack.Device, frame, (ulong)(Stack.EthHeader + Stack.IpHeader + length));
+            return 0;
+        }
+        byte* mac = stackalloc byte[6];
+        uint hop = Stack.NextHop(destination);
+        if (!Arp.Lookup(hop, mac)) {
+            Arp.Request(hop);   // reuses the transmit buffer: the packet is dropped
+            return Process.ErrNotFound;
+        }
+        return Stack.SendFrame(mac, Stack.EtherIp, Stack.IpHeader + length);
+    }
+
+    public static void Receive(byte* frame, int length)
+    {
+        byte* h = frame + Stack.EthHeader;
+        int available = length - Stack.EthHeader;
+        if (available < Stack.IpHeader || (h[0] >> 4) != 4) {
+            Bad++;
+            return;
+        }
+        int header = (h[0] & 15) * 4;
+        int total = Stack.Get16(h + 2);
+        if (header < Stack.IpHeader || total < header || total > available || Stack.Checksum(h, header) != 0) {
+            Bad++;
+            return;
+        }
+        if ((Stack.Get16(h + 6) & 0x3FFF) != 0) {   // a fragment
+            Bad++;
+            return;
+        }
+        uint source = Stack.Get32(h + 12);
+        uint destination = Stack.Get32(h + 16);
+        uint subnetBroadcast = Stack.Address | ~Stack.Netmask;
+        bool forUs = destination == Stack.Address || destination == 0xFFFFFFFF || (Stack.Configured && destination == subnetBroadcast)
+                     || Stack.IsLocal(destination) || Stack.Address == 0;
+        if (!forUs)
+            return;
+        Received++;
+        // Whoever sent it (or the gateway that forwarded it) is reachable at the frame's source MAC.
+        if (!Stack.IsLocal(source) && Stack.Configured)
+            Arp.Learn(Stack.NextHop(source), frame + 6);
+
+        byte* payload = h + header;
+        int size = total - header;
+        if (h[9] == ProtoIcmp)
+            Icmp.Receive(source, payload, size, h[8]);
+        else if (h[9] == ProtoUdp)
+            Udp.Receive(source, destination, payload, size);
+    }
+}

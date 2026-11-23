@@ -50,6 +50,10 @@ public static unsafe class Thread
     [NoReturn]
     public static extern void Exit();
 
+    /// <summary>The calling thread is being killed (its program exits): long waits should give up.</summary>
+    [Native("::neko::sched::killed")]
+    public static extern bool Killed();
+
     [Native("::neko::sched::current_id")]
     public static extern uint CurrentId();
 

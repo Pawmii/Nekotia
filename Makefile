@@ -236,7 +236,10 @@ $(BUILD)/nekotia-test.iso: $(BUILD)/nekotia.elf $(BUILD)/limine.conf $(BUILD)/in
 # `make test` a fresh scratch disk the self test writes to.
 DISK       ?= $(BUILD)/disk.img
 DISK_SIZE  ?= 64M
-DISK_FLAGS  = -drive file=$(DISK),if=none,id=disk0,format=raw -device virtio-blk-pci,drive=disk0
+DISK_FLAGS  = -drive file=$(DISK),if=none,id=disk0,format=raw -device virtio-blk-pci,drive=disk0 $(NET_FLAGS)
+# Network: QEMU's user-mode network (10.0.2.0/24: gateway .2, DNS .3, DHCP gives .15). Host port 8080
+# reaches port 80 inside (the HTTP server), `ssh`-free and no root needed.
+NET_FLAGS  ?= -netdev user,id=net0,hostfwd=tcp::8080-:80,hostfwd=udp::5555-:5555 -device virtio-net-pci,netdev=net0
 TEST_DISK  := $(BUILD)/test-disk.img
 TEST_FAT   := $(BUILD)/test-fat.img
 
@@ -250,7 +253,8 @@ TEST_TIMEOUT ?= 60
 
 # vda: raw sectors for the block tests; vdb: formatted as FAT32 by the self test (needs ≥ 33 MiB).
 TEST_DISK_FLAGS = -drive file=$(TEST_DISK),if=none,id=disk0,format=raw -device virtio-blk-pci,drive=disk0 \
-                  -drive file=$(TEST_FAT),if=none,id=disk1,format=raw -device virtio-blk-pci,drive=disk1
+                  -drive file=$(TEST_FAT),if=none,id=disk1,format=raw -device virtio-blk-pci,drive=disk1 \
+                  -netdev user,id=net0 -device virtio-net-pci,netdev=net0
 
 test: $(BUILD)/nekotia-test.iso
 	@rm -f $(TEST_DISK) $(TEST_FAT); truncate -s 8M $(TEST_DISK); truncate -s 64M $(TEST_FAT)

@@ -1,0 +1,225 @@
+// The network stack, in C#: Ethernet → ARP / IPv4 → ICMP / UDP (→ DHCP). Frames come from the
+// runtime's interface layer (Nekotia.Net.NetDevice, driver: virtio-net).
+//
+//   net-rx thread   waits for frames and handles them with the stack lock held: answers ARP and
+//                   ping, queues UDP datagrams, learns MAC addresses from what it receives
+//   callers         (shell commands, DHCP, sockets) build packets in the shared transmit buffer
+//                   under the same lock; they resolve the next hop's MAC *before* taking it
+//                   (Arp.Resolve sleeps), so the receive thread is never blocked behind them
+//
+// IPv4 addresses are uints in host order (10.0.2.15 = 0x0A00020F); on the wire, big-endian.
+using Nekotia;
+using Nekotia.Hal;
+using Nekotia.Mem;
+using Nekotia.Net;
+using Nekotia.Threading;
+
+namespace Nekotia.OS.Net;
+
+public static unsafe class Stack
+{
+    public const ushort EtherArp = 0x0806, EtherIp = 0x0800;
+    public const int EthHeader = 14, IpHeader = 20;
+
+    /// An interface exists (eth0); the stack runs.
+    public static bool Up;
+    public static uint Device;
+    public static byte* Mac;        // ours, 6 bytes
+    public static byte* Broadcast;  // ff:ff:ff:ff:ff:ff
+
+    // Configuration (DHCP fills it in).
+    public static uint Address;
+    public static uint Netmask;
+    public static uint Gateway;
+    public static uint Dns;
+    public static bool Configured;
+
+    /// Everything below: ARP cache, sockets, ping state, the transmit buffer.
+    public static Mutex Lock;
+    static byte* _tx;   // one frame being built (Lock held)
+    static byte* _rx;
+    public static ulong Dropped;
+
+    public static void Init()
+    {
+        if (NetDevice.Count() == 0)
+            return;
+        Device = 0;
+        NetInfo info = default;
+        NetDevice.GetInfo(Device, out info);
+        Mac = (byte*)Heap.Alloc(6);
+        Broadcast = (byte*)Heap.Alloc(6);
+        for int i in 0..6 {
+            Mac[i] = info.Mac[i];
+            Broadcast[i] = 0xFF;
+        }
+        _tx = (byte*)Heap.AllocZeroed(NetDevice.MaxFrame);
+        _rx = (byte*)Heap.AllocZeroed(NetDevice.MaxFrame);
+        Lock.SetName("net stack");
+        Arp.Init();
+        Udp.Init();
+        Up = true;
+        Thread.Start("net-rx", &ReceiveLoop, 0, ThreadPriority.High);
+    }
+
+    // ---------------------------------------------------------------- byte order and checksums
+
+    public static ushort Get16(byte* p) => (ushort)((p[0] << 8) | p[1]);
+    public static uint Get32(byte* p) => ((uint)p[0] << 24) | ((uint)p[1] << 16) | ((uint)p[2] << 8) | p[3];
+
+    public static void Put16(byte* p, uint v)
+    {
+        p[0] = (byte)(v >> 8);
+        p[1] = (byte)v;
+    }
+
+    public static void Put32(byte* p, uint v)
+    {
+        p[0] = (byte)(v >> 24);
+        p[1] = (byte)(v >> 16);
+        p[2] = (byte)(v >> 8);
+        p[3] = (byte)v;
+    }
+
+    /// One's-complement sum of 16-bit words, folded — the Internet checksum is its complement.
+    public static uint Sum(byte* data, int length, uint sum)
+    {
+        int i = 0;
+        for (; i + 1 < length; i += 2)
+            sum += (uint)((data[i] << 8) | data[i + 1]);
+        if ((length & 1) != 0)
+            sum += (uint)(data[length - 1] << 8);
+        return sum;
+    }
+
+    public static ushort Fold(uint sum)
+    {
+        while ((sum >> 16) != 0)
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        return (ushort)~sum;
+    }
+
+    public static ushort Checksum(byte* data, int length) => Fold(Sum(data, length, 0));
+
+    public static bool SameMac(byte* a, byte* b)
+    {
+        for int i in 0..6 {
+            if (a[i] != b[i])
+                return false;
+        }
+        return true;
+    }
+
+    public static void CopyMac(byte* to, byte* from)
+    {
+        for int i in 0..6 { to[i] = from[i]; }
+    }
+
+    /// The host on the local network a packet for `ip` goes to: itself, or the gateway.
+    public static uint NextHop(uint ip)
+    {
+        if (ip == 0xFFFFFFFF || (ip & Netmask) == (Address & Netmask) || Gateway == 0)
+            return ip;
+        return Gateway;
+    }
+
+    public static bool IsLocal(uint ip) => ip == Address || (ip >> 24) == 127;
+
+    // ---------------------------------------------------------------- frames
+
+    /// Start of the payload area of the transmit buffer (after the Ethernet and IPv4 headers). Lock held.
+    public static byte* Payload() => _tx + EthHeader + IpHeader;
+    public static byte* Frame() => _tx;
+
+    /// Sends the frame in the transmit buffer: `length` bytes after the Ethernet header. Lock held.
+    public static long SendFrame(byte* destination, ushort type, int length)
+    {
+        CopyMac(_tx, destination);
+        CopyMac(_tx + 6, Mac);
+        Put16(_tx + 12, type);
+        int total = EthHeader + length;
+        if (total < 60)   // Ethernet minimum (padding is ignored by the receiver)
+        {
+            Memory.Set(_tx + total, 0, (nuint)(60 - total));
+            total = 60;
+        }
+        return NetDevice.Send(Device, _tx, (ulong)total);
+    }
+
+    static void ReceiveLoop(ulong unused)
+    {
+        loop {
+            long n = NetDevice.Receive(Device, _rx, NetDevice.MaxFrame);
+            if (n < EthHeader)
+                continue;
+            lock (Lock) {
+                Handle(_rx, (int)n);
+            }
+        }
+    }
+
+    /// One received frame (Lock held). Loopback packets come through here too (Ip.Send).
+    public static void Handle(byte* frame, int length)
+    {
+        byte* dst = frame;
+        if (!SameMac(dst, Mac) && !SameMac(dst, Broadcast)) {
+            Dropped++;
+            return;
+        }
+        ushort type = Get16(frame + 12);
+        if (type == EtherArp)
+            Arp.Receive(frame + EthHeader, length - EthHeader);
+        else if (type == EtherIp)
+            Ip.Receive(frame, length);
+        else
+            Dropped++;
+    }
+
+    // ---------------------------------------------------------------- text
+
+    /// Parses "a.b.c.d"; false if it is not one.
+    public static bool ParseIp(byte* s, out uint ip)
+    {
+        ip = 0;
+        for int part in 0..4 {
+            uint v = 0;
+            int digits = 0;
+            while (*s >= '0' && *s <= '9' && digits < 4) {
+                v = v * 10 + (uint)(*s - '0');
+                s++;
+                digits++;
+            }
+            if (digits == 0 || v > 255)
+                return false;
+            ip = (ip << 8) | v;
+            if (part < 3) {
+                if (*s != '.')
+                    return false;
+                s++;
+            }
+        }
+        return *s == 0 || *s == ' ';
+    }
+
+    public static void WriteIp(uint ip)
+    {
+        Terminal.WriteDec((ulong)(ip >> 24));
+        Terminal.WriteChar((byte)'.');
+        Terminal.WriteDec((ulong)((ip >> 16) & 255));
+        Terminal.WriteChar((byte)'.');
+        Terminal.WriteDec((ulong)((ip >> 8) & 255));
+        Terminal.WriteChar((byte)'.');
+        Terminal.WriteDec((ulong)(ip & 255));
+    }
+
+    public static void WriteMac(byte* mac)
+    {
+        for int i in 0..6 {
+            if (i > 0)
+                Terminal.WriteChar((byte)':');
+            byte b = mac[i];
+            Terminal.WriteChar((byte)(b >> 4 < 10 ? '0' + (b >> 4) : 'a' + (b >> 4) - 10));
+            Terminal.WriteChar((byte)((b & 15) < 10 ? '0' + (b & 15) : 'a' + (b & 15) - 10));
+        }
+    }
+}

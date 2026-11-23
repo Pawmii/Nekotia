@@ -13,7 +13,7 @@ namespace Nekotia.OS;
 public static unsafe class Commands
 {
     /// Space-separated, used by Tab completion.
-    public const string Names = "help clear info ps lspci disks mount umount mkfs sync ls cd pwd cat mkdir rm mv write df run progs kill spawn mem vm pages alloc uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
+    public const string Names = "help clear info ps lspci ifconfig ping arp dhcp disks mount umount mkfs sync ls cd pwd cat mkdir rm mv write df run progs kill spawn mem vm pages alloc uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
 
     public static void Run(byte* cmd, byte* args)
     {
@@ -22,6 +22,10 @@ public static unsafe class Commands
         else if (Is(cmd, "info")) Info();
         else if (Is(cmd, "ps")) Ps();
         else if (Is(cmd, "lspci")) Lspci(args);
+        else if (Is(cmd, "ifconfig")) Network.Ifconfig();
+        else if (Is(cmd, "ping")) Network.Ping(args);
+        else if (Is(cmd, "arp")) Network.ArpTable();
+        else if (Is(cmd, "dhcp")) Network.RunDhcp();
         else if (Is(cmd, "disks")) Files.Disks();
         else if (Is(cmd, "mount")) Files.Mount(args);
         else if (Is(cmd, "umount")) Files.Unmount(args);
@@ -150,6 +154,11 @@ public static unsafe class Commands
         Line("kill PID", "end a user process (Ctrl+C ends the one in the foreground)");
         Line("ps", "threads and processes: state, priority, CPU time, context switches");
         Line("spawn KIND", "start a demo kernel thread: spinner primes burn counter");
+        Section("Network:");
+        Line("ifconfig", "address, MAC, gateway, DNS and packet counters of eth0");
+        Line("ping IP [N]", "ICMP echo, e.g. ping 10.0.2.2 (the QEMU gateway)");
+        Line("arp", "ARP cache: who has which MAC");
+        Line("dhcp", "ask for an address again");
         Section("System:");
         Line("info", "system information");
         Line("lspci [-v]", "PCI devices (-v: BARs, IRQ, capabilities)");

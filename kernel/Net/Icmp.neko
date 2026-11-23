@@ -1,0 +1,75 @@
+// ICMP: answers echo requests (ping) and lets the kernel ping others.
+using Nekotia;
+using Nekotia.Hal;
+using Nekotia.Mem;
+using Nekotia.Processes;
+using Nekotia.Threading;
+
+namespace Nekotia.OS.Net;
+
+public static unsafe class Icmp
+{
+    public const ushort Identifier = 0x4E4B;   // "NK"
+
+    // The latest echo reply to us (Lock held to write).
+    static int _replySeq = -1;
+    static uint _replyFrom;
+    static byte _replyTtl;
+    static int _replyBytes;
+    public static ulong EchoesAnswered;
+
+    public static void Receive(uint source, byte* p, int length, byte ttl)
+    {
+        if (length < 8 || Stack.Checksum(p, length) != 0)
+            return;
+        if (p[0] == 8 && p[1] == 0) {   // echo request → echo reply with the same data
+            byte* q = Stack.Payload();
+            Memory.Copy(q, p, (nuint)length);
+            q[0] = 0;
+            Stack.Put16(q + 2, 0);
+            Stack.Put16(q + 2, Stack.Checksum(q, length));
+            Ip.Send(Ip.ProtoIcmp, source, length);
+            EchoesAnswered++;
+        } else if (p[0] == 0 && Stack.Get16(p + 4) == Identifier) {
+            _replyFrom = source;
+            _replyTtl = ttl;
+            _replyBytes = length;
+            _replySeq = Stack.Get16(p + 6);
+        }
+    }
+
+    /// Sends echo request `sequence` with `size` data bytes (Lock taken here).
+    public static long SendEcho(uint destination, ushort sequence, int size)
+    {
+        lock (Stack.Lock) {
+            byte* q = Stack.Payload();
+            q[0] = 8;
+            q[1] = 0;
+            Stack.Put16(q + 2, 0);
+            Stack.Put16(q + 4, Identifier);
+            Stack.Put16(q + 6, sequence);
+            for int i in 0..size { q[8 + i] = (byte)(i + 0x20); }
+            Stack.Put16(q + 2, Stack.Checksum(q, 8 + size));
+            return Ip.Send(Ip.ProtoIcmp, destination, 8 + size);
+        }
+    }
+
+    /// Waits for the reply to `sequence`; false after `timeoutMs`.
+    public static bool WaitReply(ushort sequence, ulong timeoutMs, out byte ttl, out int bytes)
+    {
+        ulong until = Time.UptimeMs() + timeoutMs;
+        loop {
+            if (_replySeq == sequence) {
+                ttl = _replyTtl;
+                bytes = _replyBytes;
+                return true;
+            }
+            if (Time.UptimeMs() >= until)
+                break;
+            Thread.Sleep(1);
+        }
+        ttl = 0;
+        bytes = 0;
+        return false;
+    }
+}

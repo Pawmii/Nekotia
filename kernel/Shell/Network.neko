@@ -1,0 +1,146 @@
+// Network commands of the kernel shell: ifconfig, ping, arp, dhcp.
+using Nekotia;
+using Nekotia.Hal;
+using Nekotia.Net;
+using Nekotia.OS.Net;
+using Nekotia.Processes;
+using Nekotia.Threading;
+
+namespace Nekotia.OS;
+
+public static unsafe class Network
+{
+    static bool Ready()
+    {
+        if (Stack.Up)
+            return true;
+        Terminal.WriteLine("no network interface (QEMU: -netdev user,id=n0 -device virtio-net-pci,netdev=n0 — `make run` adds it)");
+        return false;
+    }
+
+    public static void Ifconfig()
+    {
+        if (!Ready())
+            return;
+        NetInfo info = default;
+        NetDevice.GetInfo(Stack.Device, out info);
+        Terminal.SetColor(AnsiColor.BrightCyan);
+        Terminal.Write(info.Name);
+        Terminal.ResetColor();
+        Terminal.Write("  MAC ");
+        Stack.WriteMac(Stack.Mac);
+        Terminal.WriteLine($"  MTU {info.Mtu}");
+        if (Stack.Configured) {
+            Terminal.Write("      inet ");
+            Stack.WriteIp(Stack.Address);
+            Terminal.Write("  netmask ");
+            Stack.WriteIp(Stack.Netmask);
+            Terminal.Write("  gateway ");
+            Stack.WriteIp(Stack.Gateway);
+            Terminal.Write("  dns ");
+            Stack.WriteIp(Stack.Dns);
+            Terminal.WriteLine();
+            Terminal.Write("      DHCP server ");
+            Stack.WriteIp(Nekotia.OS.Net.Dhcp.Server);
+            Terminal.WriteLine($", lease {Nekotia.OS.Net.Dhcp.LeaseSeconds} s");
+        } else {
+            Terminal.WriteLine("      no address (try `dhcp`)");
+        }
+        Terminal.WriteLine($"      RX {info.RxPackets} packets {info.RxBytes:size}, dropped {info.RxDropped}   TX {info.TxPackets} packets {info.TxBytes:size}");
+        Terminal.WriteLine($"      IPv4 in {Ip.Received} out {Ip.Sent} bad {Ip.Bad}; pings answered {Icmp.EchoesAnswered}; UDP without a listener {Udp.NoListener}");
+    }
+
+    public static void RunDhcp()
+    {
+        if (!Ready())
+            return;
+        Terminal.Write("dhcp: asking… ");
+        if (!Nekotia.OS.Net.Dhcp.Configure()) {
+            Terminal.WriteLine(AnsiColor.BrightRed, "no answer");
+            return;
+        }
+        Terminal.Write("got ");
+        Stack.WriteIp(Stack.Address);
+        Terminal.Write(" via ");
+        Stack.WriteIp(Stack.Gateway);
+        Terminal.WriteLine();
+    }
+
+    public static void ArpTable()
+    {
+        if (!Ready())
+            return;
+        uint n = 0;
+        lock (Stack.Lock) {
+            for int i in 0..Arp.Size {
+                ArpEntry* e = &Arp.Table[i];
+                if (!e->Valid)
+                    continue;
+                Terminal.Write("  ");
+                Stack.WriteIp(e->Ip);
+                Terminal.Write("  ");
+                Stack.WriteMac(e->Mac);
+                Terminal.WriteLine($"  {(Time.UptimeMs() - e->SeenMs) / 1000} s ago");
+                n++;
+            }
+        }
+        if (n == 0)
+            Terminal.WriteLine("ARP cache is empty");
+    }
+
+    public static void Ping(byte* args)
+    {
+        if (!Ready())
+            return;
+        uint ip = 0;
+        if (!Stack.ParseIp(args, out ip)) {
+            Terminal.WriteLine("usage: ping A.B.C.D [COUNT]   (e.g. ping 10.0.2.2 — the QEMU gateway)");
+            return;
+        }
+        byte* rest = args;
+        while (*rest != 0 && *rest != ' ')
+            rest++;
+        while (*rest == ' ')
+            rest++;
+        int count = 4;
+        if (*rest >= '1' && *rest <= '9') {
+            count = 0;
+            while (*rest >= '0' && *rest <= '9')
+                count = count * 10 + (*rest++ - '0');
+        }
+        byte* mac = stackalloc byte[6];
+        if (!Stack.IsLocal(ip) && !Arp.Resolve(ip, mac)) {
+            Terminal.Write(AnsiColor.BrightRed, "ping: ");
+            Stack.WriteIp(Stack.NextHop(ip));
+            Terminal.WriteLine(AnsiColor.BrightRed, " does not answer ARP");
+            return;
+        }
+        uint received = 0;
+        ulong mhz = SysInfo.CpuMhz();
+        if (mhz == 0)
+            mhz = 1000;
+        for int seq in 1..=count {
+            ulong start = Cpu.ReadTimestamp();
+            Icmp.SendEcho(ip, (ushort)seq, 56);
+            byte ttl = 0;
+            int bytes = 0;
+            if (Icmp.WaitReply((ushort)seq, 1000, out ttl, out bytes)) {
+                ulong us = (Cpu.ReadTimestamp() - start) / mhz;
+                Terminal.Write($"{bytes} bytes from ");
+                Stack.WriteIp(ip);
+                Terminal.WriteLine($": icmp_seq={seq} ttl={ttl} time={us / 1000}.{(us % 1000) / 100} ms");
+                received++;
+            } else {
+                Terminal.SetColor(AnsiColor.Yellow);
+                Terminal.WriteLine($"icmp_seq={seq}: no reply");
+                Terminal.ResetColor();
+            }
+            if (seq < count) {
+                ulong ms = (Cpu.ReadTimestamp() - start) / mhz / 1000;
+                if (ms < 1000)
+                    Thread.Sleep(1000 - ms);
+            }
+        }
+        Terminal.WriteLine($"{count} sent, {received} received, {(count - received) * 100 / count}% loss");
+    }
+}

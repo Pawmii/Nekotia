@@ -1,6 +1,7 @@
 using Nekotia;
 using Nekotia.Hal;
 using Nekotia.IO;
+using Nekotia.OS.Net;
 using Nekotia.OS.Drivers;
 using Nekotia.Processes;
 
@@ -19,6 +20,7 @@ public static unsafe class Kernel
         Info = info;
         Syscalls.Init();
         Banner();
+        StartNetwork();   // before the self tests: they ping the gateway
         if (Str.StartsWith(info->CommandLine, "test")) {
             // `make test`: verbose self tests, then leave QEMU with the result.
             int failed = SelfTest.Run(true);
@@ -112,6 +114,25 @@ public static unsafe class Kernel
         Vfs.GetMount(0, out m);
         Terminal.SetColor(AnsiColor.Gray);
         Terminal.WriteLine($"disk: /dev/vda (FAT32) mounted on /mnt, {m.FreeBytes:size} free of {m.TotalBytes:size}");
+        Terminal.ResetColor();
+    }
+
+    /// The C# network stack on eth0, configured by DHCP (`make run` gives QEMU's user network: 10.0.2.x).
+    static void StartNetwork()
+    {
+        Stack.Init();
+        if (!Stack.Up)
+            return;
+        Terminal.SetColor(AnsiColor.Gray);
+        if (Dhcp.Configure()) {
+            Terminal.Write("net: eth0 ");
+            Stack.WriteIp(Stack.Address);
+            Terminal.Write(" via ");
+            Stack.WriteIp(Stack.Gateway);
+            Terminal.WriteLine(" (DHCP)");
+        } else {
+            Terminal.WriteLine("net: eth0 is up, but no DHCP server answered (`dhcp` tries again)");
+        }
         Terminal.ResetColor();
     }
 
