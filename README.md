@@ -126,7 +126,7 @@ lower
 Программа — каталог `user/NAME` с `nekotia.json` (`"target": "user"`) и C#-кодом со `static int Main(int argc, byte** argv)`;
 API — `sdk/Nekotia.User` (`Console`, `Process`, `File`, `Path`, `Memory`, `Time`). `make` сам найдёт новый каталог,
 соберёт ELF и положит его в `/bin` initrd (`build/initrd.tar`, туда же попадает всё из `initrd/`). Программы: `sh`
-(shell в ring 3: `cd`, `pwd`, `> FILE`, `>> FILE`, `< FILE`, конвейеры `a | b`, запуск по пути), `ls`, `cat`, `cp`, `mkdir`, `rm`, `mv`, `grep`, `wc`, `head`, `ps`,
+(shell в ring 3: `cd`, `pwd`, `> FILE`, `>> FILE`, `< FILE`, конвейеры `a | b`, запуск по пути), `ls`, `cat`, `cp`, `mkdir`, `rm`, `mv`, `grep`, `wc`, `head`, `httpd`, `fetch`, `nc`, `host`, `ps`,
 `echo`, `kill`, `primes` (простые числа в N потоках — видно ускорение на нескольких CPU), `hello`, `guess` (читает
 клавиатуру), `usertest` (проверки ABI для `make test`).
 **Ctrl+C** завершает программу на переднем плане; `init=sh` в `cmdline` (`boot/limine.conf`) загружает сразу в `sh`.
@@ -146,6 +146,11 @@ hello
 
 Файлы живут в памяти (ramfs): `/bin`, `/etc`, `/home` приходят из initrd (файлы initrd читаются прямо из модуля,
 пока их не изменят), `/dev` — устройства `console`, `null`, `zero` и диски, `/tmp` — пустой каталог для своих файлов.
+
+**Сеть.** `make run` подключает user-сеть QEMU: DHCP выдаёт `10.0.2.15`, шлюз `10.0.2.2` (это хост), DNS идёт через хост,
+есть выход в интернет. Стек TCP/IP написан на C# (`kernel/Net`). В shell ядра — `ifconfig`, `ping 10.0.2.2`,
+`netstat`; в `sh` — `host example.com`, `fetch example.com | head -n 5`, `nc HOST PORT`, и `httpd &`: после этого
+`http://localhost:8080/` в браузере хоста показывает файлы Nekotia (порт 8080 хоста проброшен на 80).
 
 **Диск.** `make run` подключает `build/disk.img` (64 МиБ) как virtio-диск `/dev/vda`. Один раз отформатируйте его
 из shell ядра — `mkfs vda`, `mount vda /mnt`; дальше ядро само монтирует его в `/mnt` при загрузке. Всё, что

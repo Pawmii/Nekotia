@@ -106,6 +106,7 @@ public static unsafe class Program
         Threads();
         Files();
         Pipes();
+        Sockets();
 
         if (_verbose || _failed > 0)
             Console.WriteLine($"usertest: {_passed} passed, {_failed} failed");
@@ -356,6 +357,71 @@ public static unsafe class Program
         File.Close((int)saved);
         File.Close(w);
         Check(child > 0 && Process.Wait((uint)child) == Process.ExitBrokenPipe, "writing to a pipe without readers ends the writer (141)");
+    }
+
+    // ---------------------------------------------------------------- sockets
+
+    static int _listener;
+
+    static void EchoServer(ulong unused)
+    {
+        long fd = Net.Accept(_listener, null);
+        if (fd < 0)
+            return;
+        byte* buf = stackalloc byte[512];
+        while (true)
+        {
+            long n = File.ReadBytes((int)fd, buf, 512);
+            if (n <= 0)
+                break;
+            for (long i = 0; i < n; i++)
+                if (buf[i] >= 'a' && buf[i] <= 'z') buf[i] -= 32;
+            Net.WriteAll((int)fd, buf, n);
+        }
+        File.Close((int)fd);
+    }
+
+    static void Sockets()
+    {
+        uint* config = stackalloc uint[4];
+        if (Net.Config(config) < 0 || config[0] == 0)
+            return;   // no network
+        uint ip = 0;
+        Check(Net.Resolve("localhost", out ip) == 0 && ip == 0x7F000001 && Net.Resolve("10.1.2.3", out ip) == 0 && ip == 0x0A010203,
+              "resolve: localhost and dotted addresses");
+
+        long a = Net.UdpOpen(0);
+        long b = Net.UdpOpen(6000);
+        Check(a >= 3 && b > a, "udp_open gives socket fds");
+        byte* buf = stackalloc byte[64];
+        uint* from = stackalloc uint[2];
+        Check(Net.SendTo((int)a, 0x7F000001, 6000, Str.Bytes("ring3 udp"), 9) == 9
+              && Net.ReceiveFrom((int)b, buf, 64, from, 1000) == 9 && buf[0] == 'r' && from[0] == 0x7F000001,
+              "UDP between two sockets of a program");
+        Check(Net.ReceiveFrom((int)b, buf, 64, from, 30) == 0, "recvfrom times out");
+        File.Close((int)a);
+        File.Close((int)b);
+
+        long listener = Net.Listen(6001);
+        _listener = (int)listener;
+        ulong t = Thread.Start(&EchoServer);
+        long c = Net.Connect(0x7F000001, 6001);
+        Check(listener >= 0 && c >= 0, "listen + connect from ring 3");
+        Check(Net.WriteAll((int)c, "hello, tcp") && Net.Shutdown((int)c) == 0, "write to a TCP socket, then shut down sending");
+        long got = 0;
+        while (true)
+        {
+            long n = File.ReadBytes((int)c, buf + got, (ulong)(64 - got));
+            if (n <= 0)
+                break;
+            got += n;
+        }
+        buf[got] = 0;
+        Thread.Join(t);
+        Check(got == 10 && Str.Equals(buf, "HELLO, TCP"), "the answer arrives through read(), then end of stream");
+        File.Close((int)c);
+        File.Close((int)listener);
+        Check(Net.Connect(0x7F000001, 6002) == Process.ErrNotFound, "connect to a closed port fails");
     }
 
     static void ExitFromThread(ulong arg)

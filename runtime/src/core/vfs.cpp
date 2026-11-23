@@ -796,6 +796,47 @@ void close(File* f) {
 
 uint32_t flags(File* f) { return f ? f->flags : 0; }
 
+namespace {
+
+SocketIo g_socket_read = nullptr, g_socket_write = nullptr;
+SocketClose g_socket_close = nullptr;
+
+int64_t socket_read(void* context, uint64_t, void* buffer, uint64_t length) {
+    return g_socket_read ? g_socket_read(context, static_cast<uint8_t*>(buffer), length) : kErrNotSupported;
+}
+int64_t socket_write(void* context, uint64_t, const void* buffer, uint64_t length) {
+    return g_socket_write ? g_socket_write(context, static_cast<uint8_t*>(const_cast<void*>(buffer)), length) : kErrNotSupported;
+}
+void socket_close(void* context, uint32_t) {
+    if (g_socket_close) g_socket_close(context);
+}
+
+const DeviceOps kSocketOps = {socket_read, socket_write, nullptr, socket_close, nullptr};
+
+}  // namespace
+
+void set_socket_callbacks(SocketIo read, SocketIo write, SocketClose close) {
+    g_socket_read = read;
+    g_socket_write = write;
+    g_socket_close = close;
+}
+
+File* open_socket(void* context) {
+    Locked guard;
+    Node* n = new_node("socket", 6, Type::Device);
+    if (!n) return nullptr;
+    n->ops = &kSocketOps;
+    n->context = context;
+    File* f = new_file(n, kRead | kWrite);
+    release(n);  // the open file keeps it (or, on failure, it goes now)
+    return f;
+}
+
+void* socket_context(File* f) {
+    if (!f || f->node->type != Type::Device || f->node->ops != &kSocketOps) return nullptr;
+    return f->node->context;
+}
+
 int64_t pipe(File*& read_end, File*& write_end) {
     read_end = write_end = nullptr;
     auto* p = static_cast<Pipe*>(heap::alloc_zeroed(sizeof(Pipe)));

@@ -140,7 +140,11 @@
 - [x] Каналы: `pipe` (буфер 64 КиБ, блокирующие чтение/запись, прерываемые `kill`, EOF, broken pipe → 141),
       конвейеры `a | b | c` в `sh`; утилиты `grep`, `wc`, `head`
 - [ ] `/proc`; FAT12/16, ext2 (чтение); кэш блоков и отложенная запись
-- [ ] virtio-net, (*) минимальный TCP/IP стек (ARP, IPv4, ICMP, UDP, DHCP, TCP)
+- [x] virtio-net (общий virtio-транспорт с virtio-blk) и стек TCP/IP **на C#** (`kernel/Net`): ARP, IPv4, ICMP, UDP,
+      DHCP, DNS, TCP (рукопожатие, окна, повторная передача, FIN/RST, TIME_WAIT); сокеты — файловые дескрипторы,
+      системные вызовы 40–48 на C# (`@syscall`); `ifconfig`, `ping`, `arp`, `netstat`; программы `httpd`, `fetch`,
+      `nc`, `host`; `make run` пробрасывает localhost:8080 → :80
+- [ ] TCP: контроль перегрузки (slow start), SACK, масштабирование окна; IPv6; ICMP «порт недоступен»
 - [ ] (*) USB (xHCI), HID
 
 ## Фаза 7 — Инструменты разработчика

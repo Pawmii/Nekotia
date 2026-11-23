@@ -1,0 +1,754 @@
+// TCP (RFC 793/9293, the parts a small host needs): connect, listen/accept, reliable ordered byte
+// streams both ways, graceful close with FIN in both directions, RST, retransmission with
+// exponential back-off, window flow control (with zero-window probes), MSS option, TIME_WAIT.
+// Not done: congestion control (slow start), SACK, window scaling, timestamps, urgent data,
+// keeping out-of-order segments (they are dropped and re-ACKed; the peer retransmits).
+//
+// Everything runs under Stack.Lock: segments from the net-rx thread, Tick() from net-timer every
+// 100 ms, and the calls below from whoever uses a connection. Callers that must wait (accept,
+// connect, a full send buffer, an empty receive buffer) register on the connection's event and
+// sleep with the lock released; every state change wakes them (Notify) and they look again.
+using Nekotia;
+using Nekotia.Hal;
+using Nekotia.Mem;
+using Nekotia.Processes;
+using Nekotia.Threading;
+
+namespace Nekotia.OS.Net;
+
+public enum TcpState : byte
+{
+    Closed = 0, Listen, SynSent, SynReceived, Established,
+    FinWait1, FinWait2, CloseWait, Closing, LastAck, TimeWait,
+}
+
+public unsafe struct TcpConnection
+{
+    public bool Used;
+    public TcpState State;
+    public bool Open;          // the owner has not called Close yet
+    public bool FinQueued;     // Close was called: send FIN once the buffer is out
+    public bool FinSent;
+    public bool Reset;         // ended by RST or by giving up retransmitting
+    public bool Refused;
+    public uint Owner;         // pid, 0 = kernel
+    public int Parent;         // listening connection that created it (until accepted), else -1
+    public bool Accepted;
+
+    public uint LocalIp, RemoteIp;
+    public ushort LocalPort, RemotePort;
+
+    public uint SendUnacked;   // SND.UNA
+    public uint SendNext;      // SND.NXT
+    public uint SendWindow;    // what the peer accepts beyond SendUnacked
+    public uint ReceiveNext;   // RCV.NXT
+    public ushort PeerMss;
+    public uint AdvertisedEdge; // ReceiveNext + the window we last advertised
+
+    public byte* SendBuffer;   // bytes from SendUnacked on: sent but unacknowledged, then unsent
+    public int SendCount;
+    public byte* ReceiveBuffer;
+    public int ReceiveHead, ReceiveCount;
+
+    public ulong RetransmitAt; // 0 = timer off
+    public ulong Rto;
+    public int Retries;
+    public ulong TimeWaitUntil;
+
+    public int Waiters;
+    public Semaphore Event;
+}
+
+public static unsafe class Tcp
+{
+    public const int Connections = 32;
+    public const int BufferSize = 16384;
+    public const int Mss = 1460;
+    const byte Fin = 1, Syn = 2, Rst = 4, Psh = 8, Ack = 16;
+    const ulong InitialRto = 300, MaxRto = 4000;
+    const int MaxRetries = 8;
+
+    public static TcpConnection* Table;
+    static ushort _ephemeral = 50000;
+    public static ulong Retransmits, ResetsSent;
+
+    public static void Init()
+    {
+        Table = Heap.NewArray<TcpConnection>(Connections);
+        Thread.Start("net-timer", &TimerLoop, 0, ThreadPriority.High);
+    }
+
+    static bool Before(uint a, uint b) => (int)(a - b) < 0;
+    static bool BeforeOrSame(uint a, uint b) => (int)(a - b) <= 0;
+
+    static void Notify(TcpConnection* c)
+    {
+        while (c->Waiters > 0) {
+            c->Waiters--;
+            c->Event.Signal();
+        }
+    }
+
+    /// Releases Stack.Lock, sleeps until the connection changes, takes the lock again. False when killed.
+    static bool Wait(TcpConnection* c)
+    {
+        c->Waiters++;
+        Stack.Lock.Unlock();
+        bool ok = c->Event.WaitInterruptible();
+        Stack.Lock.Lock();
+        return ok;
+    }
+
+    static int Allocate(uint owner)
+    {
+        for int i in 0..Connections {
+            TcpConnection* c = &Table[i];
+            if (c->Used)
+                continue;
+            byte* send = c->SendBuffer;
+            byte* receive = c->ReceiveBuffer;
+            if (send == null)
+                send = (byte*)Heap.Alloc(BufferSize);
+            if (receive == null)
+                receive = (byte*)Heap.Alloc(BufferSize);
+            if (send == null || receive == null)
+                return (int)Process.ErrNoMemory;
+            // Every field but the semaphore (a thread just woken from it may still be on its way out).
+            c->State = TcpState.Closed;
+            c->FinQueued = false;
+            c->FinSent = false;
+            c->Reset = false;
+            c->Refused = false;
+            c->Accepted = false;
+            c->LocalIp = 0;
+            c->RemoteIp = 0;
+            c->LocalPort = 0;
+            c->RemotePort = 0;
+            c->SendUnacked = 0;
+            c->SendNext = 0;
+            c->SendWindow = 0;
+            c->ReceiveNext = 0;
+            c->AdvertisedEdge = 0;
+            c->SendCount = 0;
+            c->ReceiveHead = 0;
+            c->ReceiveCount = 0;
+            c->RetransmitAt = 0;
+            c->Retries = 0;
+            c->TimeWaitUntil = 0;
+            c->Waiters = 0;
+            c->SendBuffer = send;
+            c->ReceiveBuffer = receive;
+            c->Used = true;
+            c->Open = true;
+            c->Owner = owner;
+            c->Parent = -1;
+            c->PeerMss = 536;
+            c->Rto = InitialRto;
+            return i;
+        }
+        return (int)Process.ErrTooManyFiles;
+    }
+
+    static void Free(TcpConnection* c)
+    {
+        c->Used = false;
+        c->State = TcpState.Closed;
+        Notify(c);
+    }
+
+    static TcpConnection* Get(int h) => h >= 0 && h < Connections && Table[h].Used ? &Table[h] : null;
+
+    static bool PortInUse(ushort port)
+    {
+        for int i in 0..Connections {
+            if (Table[i].Used && Table[i].LocalPort == port)
+                return true;
+        }
+        return false;
+    }
+
+    static uint InitialSequence() => (uint)(Cpu.ReadTimestamp() >> 4);
+
+    // ---------------------------------------------------------------- output
+
+    static ushort Window(TcpConnection* c)
+    {
+        int free = BufferSize - c->ReceiveCount;
+        return (ushort)(free > 65535 ? 65535 : free);
+    }
+
+    /// One segment with `length` bytes from the send buffer at `offset` (from SendUnacked). Lock held.
+    static void Segment(TcpConnection* c, uint sequence, byte flags, int offset, int length)
+    {
+        byte* t = Stack.Payload();
+        int header = (flags & Syn) != 0 ? 24 : 20;
+        Stack.Put16(t, c->LocalPort);
+        Stack.Put16(t + 2, c->RemotePort);
+        Stack.Put32(t + 4, sequence);
+        Stack.Put32(t + 8, (flags & Ack) != 0 ? c->ReceiveNext : 0);
+        t[12] = (byte)((header / 4) << 4);
+        t[13] = flags;
+        ushort window = Window(c);
+        if ((flags & Ack) != 0)
+            c->AdvertisedEdge = c->ReceiveNext + window;
+        Stack.Put16(t + 14, window);
+        Stack.Put32(t + 16, 0);   // checksum, urgent pointer
+        if (header == 24) {       // MSS option
+            t[20] = 2;
+            t[21] = 4;
+            Stack.Put16(t + 22, Mss);
+        }
+        for int i in 0..length { t[header + i] = c->SendBuffer[offset + i]; }
+        int size = header + length;
+        Stack.Put16(t + 16, Stack.Fold(Stack.Sum(t, size, Udp.Pseudo(c->LocalIp, c->RemoteIp, Ip.ProtoTcp, size))));
+        Ip.Send(Ip.ProtoTcp, c->RemoteIp, size);
+    }
+
+    static void SendAck(TcpConnection* c) => Segment(c, c->SendNext, Ack, 0, 0);
+
+    static void StartTimer(TcpConnection* c)
+    {
+        if (c->RetransmitAt == 0)
+            c->RetransmitAt = Time.UptimeMs() + c->Rto;
+    }
+
+    /// Sends whatever the window allows, then the FIN when everything is out. Lock held.
+    static void Output(TcpConnection* c)
+    {
+        if (c->State != TcpState.Established && c->State != TcpState.CloseWait
+            && c->State != TcpState.FinWait1 && c->State != TcpState.LastAck && c->State != TcpState.Closing)
+            return;
+        int mss = c->PeerMss < Mss ? c->PeerMss : Mss;
+        loop {
+            int inFlight = (int)(c->SendNext - c->SendUnacked) - (c->FinSent ? 1 : 0);
+            int unsent = c->SendCount - inFlight;
+            int room = (int)c->SendWindow - inFlight;
+            if (unsent <= 0 || room <= 0 || c->FinSent)
+                break;
+            int n = unsent < mss ? unsent : mss;
+            if (n > room)
+                n = room;
+            Segment(c, c->SendNext, (byte)(Ack | Psh), inFlight, n);
+            c->SendNext += (uint)n;
+            StartTimer(c);
+        }
+        int pending = c->SendCount - (int)(c->SendNext - c->SendUnacked);
+        if (c->FinQueued && !c->FinSent && pending <= 0) {
+            Segment(c, c->SendNext, (byte)(Fin | Ack), 0, 0);
+            c->SendNext++;
+            c->FinSent = true;
+            if (c->State == TcpState.Established)
+                c->State = TcpState.FinWait1;
+            else if (c->State == TcpState.CloseWait)
+                c->State = TcpState.LastAck;
+            StartTimer(c);
+        }
+    }
+
+    /// RST in answer to a segment that belongs to nothing (Lock held).
+    static void Refuse(uint source, uint destination, byte* t, int length, int dataLength)
+    {
+        if ((t[13] & Rst) != 0)
+            return;
+        byte* r = Stack.Payload();
+        uint seq = (t[13] & Ack) != 0 ? Stack.Get32(t + 8) : 0;
+        uint ack = Stack.Get32(t + 4) + (uint)dataLength + ((t[13] & Syn) != 0 ? 1u : 0u) + ((t[13] & Fin) != 0 ? 1u : 0u);
+        Stack.Put16(r, Stack.Get16(t + 2));
+        Stack.Put16(r + 2, Stack.Get16(t));
+        Stack.Put32(r + 4, seq);
+        Stack.Put32(r + 8, ack);
+        r[12] = 5 << 4;
+        r[13] = (t[13] & Ack) != 0 ? Rst : (byte)(Rst | Ack);
+        Stack.Put32(r + 14, 0);
+        Stack.Put16(r + 18, 0);
+        Stack.Put16(r + 16, Stack.Fold(Stack.Sum(r, 20, Udp.Pseudo(destination, source, Ip.ProtoTcp, 20))));
+        Ip.Send(Ip.ProtoTcp, source, 20);
+        ResetsSent++;
+    }
+
+    // ---------------------------------------------------------------- input
+
+    public static void Receive(uint source, uint destination, byte* t, int length)
+    {
+        if (Table == null || length < 20 || Stack.Fold(Stack.Sum(t, length, Udp.Pseudo(source, destination, Ip.ProtoTcp, length))) != 0)
+            return;
+        int header = (t[12] >> 4) * 4;
+        if (header < 20 || header > length)
+            return;
+        ushort sport = Stack.Get16(t);
+        ushort dport = Stack.Get16(t + 2);
+        uint seq = Stack.Get32(t + 4);
+        uint ack = Stack.Get32(t + 8);
+        byte flags = t[13];
+        uint window = Stack.Get16(t + 14);
+        byte* data = t + header;
+        int dataLength = length - header;
+
+        TcpConnection* c = null;
+        int listener = -1;
+        for int i in 0..Connections {
+            TcpConnection* x = &Table[i];
+            if (!x->Used || x->LocalPort != dport)
+                continue;
+            if (x->State == TcpState.Listen)
+                listener = i;
+            else if (x->State != TcpState.Closed && x->RemotePort == sport && x->RemoteIp == source)
+                c = x;
+        }
+        if (c == null) {
+            if (listener >= 0 && (flags & Syn) != 0 && (flags & (Ack | Rst)) == 0)
+                Incoming(listener, source, destination, sport, dport, seq, window, t, header);
+            else
+                Refuse(source, destination, t, length, dataLength);
+            return;
+        }
+
+        if ((flags & Rst) != 0) {   // reset: the connection is gone
+            if (c->State == TcpState.SynSent)
+                c->Refused = true;
+            c->Reset = true;
+            c->State = TcpState.Closed;
+            c->RetransmitAt = 0;
+            Notify(c);
+            if (c->Parent >= 0 && !c->Accepted)
+                Free(c);   // never handed out: nobody else will free it
+            return;
+        }
+
+        if (c->State == TcpState.SynSent) {
+            if ((flags & (Syn | Ack)) == (Syn | Ack) && ack == c->SendNext) {
+                c->ReceiveNext = seq + 1;
+                c->SendUnacked = ack;
+                c->SendWindow = window;
+                ReadMss(c, t, header);
+                c->State = TcpState.Established;
+                c->RetransmitAt = 0;
+                c->Retries = 0;
+                c->Rto = InitialRto;
+                SendAck(c);
+                Notify(c);
+            }
+            return;
+        }
+
+        // ACK: what the peer has received.
+        if ((flags & Ack) != 0) {
+            if (Before(c->SendUnacked, ack) && BeforeOrSame(ack, c->SendNext)) {
+                int acked = (int)(ack - c->SendUnacked);
+                if (c->State == TcpState.SynReceived) {   // our SYN counts as one
+                    acked--;
+                    c->State = TcpState.Established;
+                    TcpConnection* parent = c->Parent >= 0 ? &Table[c->Parent] : null;
+                    if (parent != null)
+                        Notify(parent);   // accept() can take it
+                }
+                bool finAcked = c->FinSent && ack == c->SendNext;
+                int dataAcked = acked - (finAcked ? 1 : 0);
+                if (dataAcked > c->SendCount)
+                    dataAcked = c->SendCount;
+                if (dataAcked > 0) {
+                    Memory.Move(c->SendBuffer, c->SendBuffer + dataAcked, (nuint)(c->SendCount - dataAcked));
+                    c->SendCount -= dataAcked;
+                }
+                c->SendUnacked = ack;
+                c->Retries = 0;
+                c->Rto = InitialRto;
+                c->RetransmitAt = c->SendUnacked == c->SendNext ? 0UL : Time.UptimeMs() + c->Rto;
+                if (finAcked) {
+                    if (c->State == TcpState.FinWait1)
+                        c->State = TcpState.FinWait2;
+                    else if (c->State == TcpState.Closing)
+                        EnterTimeWait(c);
+                    else if (c->State == TcpState.LastAck) {
+                        c->State = TcpState.Closed;
+                        if (!c->Open)
+                            Free(c);
+                    }
+                }
+                Notify(c);
+            }
+            if (c->State != TcpState.SynReceived)
+                c->SendWindow = window;
+        }
+        if (c->State == TcpState.SynReceived || c->State == TcpState.Closed)
+            return;
+        if (c->State == TcpState.TimeWait) {   // the peer did not get our last ACK: repeat it
+            if ((flags & Fin) != 0)
+                SendAck(c);
+            return;
+        }
+
+        // Data, in order only.
+        bool ackNow = false;
+        if (dataLength > 0) {
+            bool accepting = c->State == TcpState.Established || c->State == TcpState.FinWait1 || c->State == TcpState.FinWait2;
+            if (accepting && seq == c->ReceiveNext) {
+                int room = BufferSize - c->ReceiveCount;
+                int n = dataLength < room ? dataLength : room;
+                for int i in 0..n {
+                    c->ReceiveBuffer[(c->ReceiveHead + c->ReceiveCount + i) % BufferSize] = data[i];
+                }
+                c->ReceiveCount += n;
+                c->ReceiveNext += (uint)n;
+                if (n < dataLength)
+                    flags = (byte)(flags & ~Fin);   // the FIN is after bytes we could not take
+                Notify(c);
+            }
+            ackNow = true;   // in order: acknowledge; out of order or duplicate: repeat our ACK
+        }
+        if ((flags & Fin) != 0 && seq + (uint)dataLength == c->ReceiveNext) {
+            c->ReceiveNext++;
+            if (c->State == TcpState.Established)
+                c->State = TcpState.CloseWait;
+            else if (c->State == TcpState.FinWait1)
+                c->State = TcpState.Closing;   // simultaneous close (our FIN not acked yet)
+            else if (c->State == TcpState.FinWait2)
+                EnterTimeWait(c);
+            ackNow = true;
+            Notify(c);
+        }
+        if (ackNow)
+            SendAck(c);
+        Output(c);   // the window may have opened
+    }
+
+    static void ReadMss(TcpConnection* c, byte* t, int header)
+    {
+        for (int i = 20; i + 1 < header;) {
+            byte kind = t[i];
+            if (kind == 0)
+                break;
+            if (kind == 1) {
+                i++;
+                continue;
+            }
+            byte len = t[i + 1];
+            if (len < 2 || i + len > header)
+                break;
+            if (kind == 2 && len == 4)
+                c->PeerMss = Stack.Get16(t + i + 2);
+            i += len;
+        }
+    }
+
+    static void Incoming(int listener, uint source, uint destination, ushort sport, ushort dport, uint seq, uint window,
+                         byte* t, int header)
+    {
+        int pending = 0;
+        for int i in 0..Connections {
+            if (Table[i].Used && Table[i].Parent == listener && !Table[i].Accepted)
+                pending++;
+        }
+        if (pending >= 8)
+            return;   // backlog full: the peer retries its SYN
+        int h = Allocate(Table[listener].Owner);
+        if (h < 0)
+            return;
+        TcpConnection* c = &Table[h];
+        c->Parent = listener;
+        c->State = TcpState.SynReceived;
+        c->LocalIp = destination;
+        c->LocalPort = dport;
+        c->RemoteIp = source;
+        c->RemotePort = sport;
+        c->ReceiveNext = seq + 1;
+        c->SendWindow = window;
+        ReadMss(c, t, header);
+        uint iss = InitialSequence();
+        c->SendUnacked = iss;
+        c->SendNext = iss + 1;
+        Segment(c, iss, (byte)(Syn | Ack), 0, 0);
+        StartTimer(c);
+    }
+
+    static void EnterTimeWait(TcpConnection* c)
+    {
+        c->State = TcpState.TimeWait;
+        c->RetransmitAt = 0;
+        c->TimeWaitUntil = Time.UptimeMs() + 2000;   // 2 × MSL, shortened: we are not a router-crossing server farm
+    }
+
+    // ---------------------------------------------------------------- timer
+
+    static void TimerLoop(ulong unused)
+    {
+        loop {
+            Thread.Sleep(100);
+            Sockets.ClosePending();
+            lock (Stack.Lock) {
+                Tick();
+            }
+        }
+    }
+
+    static void Tick()
+    {
+        ulong now = Time.UptimeMs();
+        for int i in 0..Connections {
+            TcpConnection* c = &Table[i];
+            if (!c->Used)
+                continue;
+            if (c->State == TcpState.TimeWait && now >= c->TimeWaitUntil) {
+                c->State = TcpState.Closed;
+                if (!c->Open)
+                    Free(c);
+                else
+                    Notify(c);
+                continue;
+            }
+            if (c->State == TcpState.Closed && !c->Open) {
+                Free(c);
+                continue;
+            }
+            // Zero window: probe with one byte so we learn when it opens.
+            int inFlight = (int)(c->SendNext - c->SendUnacked);
+            if (c->State == TcpState.Established && c->SendWindow == 0 && inFlight == 0 && c->SendCount > 0) {
+                c->SendWindow = 1;
+                Output(c);
+                c->SendWindow = 0;
+                continue;
+            }
+            if (c->RetransmitAt == 0 || now < c->RetransmitAt)
+                continue;
+            if (++c->Retries > MaxRetries) {   // the peer is gone
+                c->Reset = true;
+                if (c->State == TcpState.SynSent)
+                    c->Refused = true;
+                c->State = TcpState.Closed;
+                c->RetransmitAt = 0;
+                Notify(c);
+                if (!c->Open || (c->Parent >= 0 && !c->Accepted))
+                    Free(c);
+                continue;
+            }
+            Retransmits++;
+            if (c->State == TcpState.SynSent)
+                Segment(c, c->SendUnacked, Syn, 0, 0);
+            else if (c->State == TcpState.SynReceived)
+                Segment(c, c->SendUnacked, (byte)(Syn | Ack), 0, 0);
+            else {
+                int unackedData = inFlight - (c->FinSent ? 1 : 0);
+                int mss = c->PeerMss < Mss ? c->PeerMss : Mss;
+                if (unackedData > 0)
+                    Segment(c, c->SendUnacked, (byte)(Ack | Psh), 0, unackedData < mss ? unackedData : mss);
+                else if (c->FinSent)
+                    Segment(c, c->SendNext - 1, (byte)(Fin | Ack), 0, 0);
+            }
+            c->Rto = c->Rto * 2 > MaxRto ? MaxRto : c->Rto * 2;
+            c->RetransmitAt = now + c->Rto;
+        }
+    }
+
+    // ---------------------------------------------------------------- the API (sleeps: call without the lock)
+
+    /// A listening connection on `port`; its handle or a negative error.
+    public static int Listen(ushort port, uint owner)
+    {
+        if (!Stack.Up)
+            return (int)Process.ErrNoSyscall;
+        lock (Stack.Lock) {
+            for int i in 0..Connections {
+                if (Table[i].Used && Table[i].State == TcpState.Listen && Table[i].LocalPort == port)
+                    return (int)Process.ErrExists;
+            }
+            int h = Allocate(owner);
+            if (h < 0)
+                return h;
+            Table[h].State = TcpState.Listen;
+            Table[h].LocalPort = port;
+            return h;
+        }
+    }
+
+    /// Waits for the next established connection on `listener`; its handle or a negative error.
+    public static int Accept(int listener)
+    {
+        Stack.Lock.Lock();
+        defer Stack.Lock.Unlock();
+        TcpConnection* l = Get(listener);
+        if (l == null || l->State != TcpState.Listen)
+            return (int)Process.ErrBadFd;
+        loop {
+            for int i in 0..Connections {
+                TcpConnection* c = &Table[i];
+                if (c->Used && c->Parent == listener && !c->Accepted && c->State != TcpState.SynReceived) {
+                    c->Accepted = true;
+                    c->Owner = l->Owner;
+                    return i;
+                }
+            }
+            if (!Wait(l))
+                return (int)Process.ErrInterrupted;
+            if (!l->Used || l->State != TcpState.Listen)
+                return (int)Process.ErrBadFd;
+        }
+    }
+
+    /// Connects to ip:port and waits for the handshake; the handle, or ErrNotFound (refused, no answer).
+    public static int Connect(uint ip, ushort port, uint owner)
+    {
+        if (!Stack.Up)
+            return (int)Process.ErrNoSyscall;
+        byte* mac = stackalloc byte[6];
+        if (!Stack.IsLocal(ip) && !Arp.Resolve(ip, mac))
+            return (int)Process.ErrNotFound;
+        Stack.Lock.Lock();
+        defer Stack.Lock.Unlock();
+        int h = Allocate(owner);
+        if (h < 0)
+            return h;
+        TcpConnection* c = &Table[h];
+        ushort local = 0;
+        for int tries in 0..15000 {
+            ushort p = _ephemeral++;
+            if (_ephemeral < 50000)
+                _ephemeral = 50000;
+            if (!PortInUse(p)) {
+                local = p;
+                break;
+            }
+        }
+        c->LocalPort = local;
+        c->LocalIp = Stack.IsLocal(ip) && (ip >> 24) == 127 ? ip : Stack.Address;
+        c->RemoteIp = ip;
+        c->RemotePort = port;
+        uint iss = InitialSequence();
+        c->SendUnacked = iss;
+        c->SendNext = iss + 1;
+        c->State = TcpState.SynSent;
+        Segment(c, iss, Syn, 0, 0);
+        StartTimer(c);
+        while (c->State == TcpState.SynSent) {
+            if (!Wait(c)) {
+                c->Open = false;
+                c->State = TcpState.Closed;
+                return (int)Process.ErrInterrupted;
+            }
+        }
+        if (c->State != TcpState.Established) {
+            c->Open = false;
+            Free(c);
+            return (int)Process.ErrNotFound;
+        }
+        return h;
+    }
+
+    /// Queues `length` bytes (waiting for room); bytes taken, or ErrBrokenPipe once the connection is gone.
+    public static long Send(int h, byte* data, int length)
+    {
+        Stack.Lock.Lock();
+        defer Stack.Lock.Unlock();
+        TcpConnection* c = Get(h);
+        if (c == null)
+            return Process.ErrBadFd;
+        int done = 0;
+        while (done < length) {
+            if (c->Reset || c->FinQueued || (c->State != TcpState.Established && c->State != TcpState.CloseWait))
+                return done > 0 ? done : Process.ErrBrokenPipe;
+            int room = BufferSize - c->SendCount;
+            if (room == 0) {
+                if (!Wait(c))
+                    return done > 0 ? done : Process.ErrInterrupted;
+                continue;
+            }
+            int n = length - done < room ? length - done : room;
+            Memory.Copy(c->SendBuffer + c->SendCount, data + done, (nuint)n);
+            c->SendCount += n;
+            done += n;
+            Output(c);
+        }
+        return done;
+    }
+
+    /// Up to `capacity` received bytes (waits for some); 0 when the peer has closed its side.
+    public static long Receive(int h, byte* buffer, int capacity)
+    {
+        Stack.Lock.Lock();
+        defer Stack.Lock.Unlock();
+        TcpConnection* c = Get(h);
+        if (c == null)
+            return Process.ErrBadFd;
+        loop {
+            if (c->ReceiveCount > 0) {
+                int n = c->ReceiveCount < capacity ? c->ReceiveCount : capacity;
+                for int i in 0..n { buffer[i] = c->ReceiveBuffer[(c->ReceiveHead + i) % BufferSize]; }
+                c->ReceiveHead = (c->ReceiveHead + n) % BufferSize;
+                c->ReceiveCount -= n;
+                // Window update once the right edge moved by a full segment: a sender that saw a small
+                // window waits for a big one (silly window avoidance), so it must be told.
+                uint edge = c->ReceiveNext + Window(c);
+                bool receiving = c->State == TcpState.Established || c->State == TcpState.FinWait1 || c->State == TcpState.FinWait2;
+                if (receiving && (int)(edge - c->AdvertisedEdge) >= Mss)
+                    SendAck(c);
+                return n;
+            }
+            if (c->Reset)
+                return Process.ErrBrokenPipe;
+            bool more = c->State == TcpState.Established || c->State == TcpState.FinWait1 || c->State == TcpState.FinWait2
+                        || c->State == TcpState.SynReceived;
+            if (!more)
+                return 0;   // the peer sent FIN: end of stream
+            if (!Wait(c))
+                return Process.ErrInterrupted;
+        }
+    }
+
+    /// Half close: FIN after the queued data, but the handle stays usable for receiving.
+    public static void Shutdown(int h)
+    {
+        lock (Stack.Lock) {
+            TcpConnection* c = Get(h);
+            if (c == null || (c->State != TcpState.Established && c->State != TcpState.CloseWait))
+                return;
+            c->FinQueued = true;
+            Output(c);
+        }
+    }
+
+    /// Closes our side (FIN after the queued data) and lets go of the handle; a listener stops listening.
+    public static void Close(int h)
+    {
+        lock (Stack.Lock) {
+            TcpConnection* c = Get(h);
+            if (c == null || !c->Open)
+                return;
+            c->Open = false;
+            if (c->State == TcpState.Listen) {
+                for int i in 0..Connections {   // connections nobody accepted are reset
+                    TcpConnection* x = &Table[i];
+                    if (x->Used && x->Parent == h && !x->Accepted) {
+                        if (x->State != TcpState.Closed)
+                            Segment(x, x->SendNext, (byte)(Rst | Ack), 0, 0);
+                        Free(x);
+                    }
+                }
+                Free(c);
+                return;
+            }
+            if (c->State == TcpState.Established || c->State == TcpState.CloseWait || c->State == TcpState.SynReceived) {
+                c->FinQueued = true;
+                if (c->State == TcpState.SynReceived)
+                    c->State = TcpState.Established;
+                Output(c);
+            } else if (c->State == TcpState.Closed || c->State == TcpState.SynSent) {
+                Free(c);
+            }
+            // FIN_WAIT/CLOSING/LAST_ACK/TIME_WAIT finish on their own; Tick or the last ACK frees the slot
+        }
+    }
+
+    /// Ends every connection of process `pid` (it exited): reset, freed at once.
+    public static void CloseOwnedBy(uint pid)
+    {
+        lock (Stack.Lock) {
+            for int i in 0..Connections {
+                TcpConnection* c = &Table[i];
+                if (!c->Used || c->Owner != pid || pid == 0)
+                    continue;
+                if (c->State != TcpState.Closed && c->State != TcpState.Listen && c->State != TcpState.TimeWait)
+                    Segment(c, c->SendNext, (byte)(Rst | Ack), 0, 0);
+                Free(c);
+            }
+        }
+    }
+}

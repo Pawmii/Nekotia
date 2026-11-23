@@ -181,10 +181,15 @@ bool check_read(const void* address, uint64_t length);
 bool check_write(const void* address, uint64_t length);
 // Copies a NUL-terminated user string into `out` (at most `capacity` bytes incl. NUL). Length or Error.
 int64_t copy_string(const void* user, char* out, uint64_t capacity);
+inline int64_t copy_string(const void* user, uint8_t* out, uint64_t capacity) { return copy_string(user, reinterpret_cast<char*>(out), capacity); }
 // The only way the kernel touches user memory (SMAP is on where the CPU has it): range-checked,
 // and a page fault inside the copy returns false instead of stopping the kernel.
 bool copy_from_user(void* dst, const void* user_src, uint64_t length);
 bool copy_to_user(void* user_dst, const void* src, uint64_t length);
+
+// File descriptors of the calling process, for system calls written in C#.
+int64_t install_file(vfs::File* f);  // the new fd (closes f when the table is full)
+void* socket_of(int64_t fd);         // vfs::socket_context of that fd, nullptr if it is not a socket
 
 // Register state saved by the syscall entry (syscall.S): the same order as crash::CpuState
 // without vector / error code.

@@ -1,5 +1,6 @@
 Things to try (kernel shell; `help` lists everything):
-  ls /  ·  cat /home/neko/hello.txt  ·  lspci  ·  disks  ·  mount  ·  ps
+  ls /  ·  cat /home/neko/hello.txt  ·  lspci  ·  disks  ·  ifconfig  ·  ping 10.0.2.2  ·  ps
   cd /mnt  ·  write note.txt hi  ·  cat note.txt     ← /mnt is the disk: it survives reboots
-  sh   → a shell in ring 3:  ls /bin  ·  echo hello > /mnt/a.txt  ·  cat /mnt/a.txt
-         primes 3000000 4  ·  cp /bin/hello /mnt  ·  /mnt/hello  ·  Ctrl+C stops, Ctrl+D leaves
+  sh   → a shell in ring 3:  ls /bin | grep s | wc  ·  echo hello > /mnt/a.txt  ·  primes 3000000 4
+         httpd &   then open http://localhost:8080/ on the host  ·  host example.com
+         fetch example.com | head -n 5  ·  cp /bin/hello /mnt  ·  Ctrl+C stops, Ctrl+D leaves

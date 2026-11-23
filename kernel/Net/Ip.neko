@@ -89,5 +89,7 @@ public static unsafe class Ip
             Icmp.Receive(source, payload, size, h[8]);
         else if (h[9] == ProtoUdp)
             Udp.Receive(source, destination, payload, size);
+        else if (h[9] == ProtoTcp)
+            Tcp.Receive(source, destination, payload, size);
     }
 }

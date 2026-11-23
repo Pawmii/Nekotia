@@ -114,6 +114,15 @@ public static unsafe class Vfs
     [Native("::neko::vfs::close")]
     public static extern void Close(OpenFile* file);
 
+    /// <summary>Registers the network stack's socket functions (reads, writes and the last close of a socket file).</summary>
+    [Native("::neko::vfs::set_socket_callbacks")]
+    public static extern void SetSocketCallbacks(delegate*<void*, byte*, ulong, long> read, delegate*<void*, byte*, ulong, long> write,
+                                                 delegate*<void*, void> close);
+
+    /// <summary>A new open socket file for <paramref name="context"/>; null when out of memory.</summary>
+    [Native("::neko::vfs::open_socket")]
+    public static extern OpenFile* OpenSocket(void* context);
+
     /// <summary>A pipe: what is written to <paramref name="writeEnd"/> comes out of <paramref name="readEnd"/>.</summary>
     [Native("::neko::vfs::pipe")]
     public static extern long Pipe(out OpenFile* readEnd, out OpenFile* writeEnd);

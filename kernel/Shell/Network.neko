@@ -66,6 +66,83 @@ public static unsafe class Network
         Terminal.WriteLine();
     }
 
+    static string StateName(TcpState s)
+    {
+        switch (s)
+        {
+            case TcpState.Listen: return "LISTEN";
+            case TcpState.SynSent: return "SYN_SENT";
+            case TcpState.SynReceived: return "SYN_RECEIVED";
+            case TcpState.Established: return "ESTABLISHED";
+            case TcpState.FinWait1: return "FIN_WAIT_1";
+            case TcpState.FinWait2: return "FIN_WAIT_2";
+            case TcpState.CloseWait: return "CLOSE_WAIT";
+            case TcpState.Closing: return "CLOSING";
+            case TcpState.LastAck: return "LAST_ACK";
+            case TcpState.TimeWait: return "TIME_WAIT";
+            default: return "CLOSED";
+        }
+    }
+
+    static void Endpoint(uint ip, ushort port, bool any)
+    {
+        int used = 0;
+        if (any) {
+            Terminal.Write("*");
+            used = 1;
+        } else {
+            Stack.WriteIp(ip);
+            used = 7;
+            for (uint v = ip; v != 0; v >>= 8) {
+                uint b = v & 255;
+                used += b >= 100 ? 2 : b >= 10 ? 1 : 0;
+            }
+        }
+        Terminal.Write($":{port}");
+        used += port >= 10000 ? 6 : port >= 1000 ? 5 : port >= 100 ? 4 : port >= 10 ? 3 : 2;
+        for int i in used..24 { Terminal.WriteChar((byte)' '); }
+    }
+
+    public static void Netstat()
+    {
+        if (!Ready())
+            return;
+        Terminal.WriteLine(AnsiColor.BrightCyan, "PROTO  LOCAL                   REMOTE                  STATE         OWNER  QUEUED IN/OUT");
+        lock (Stack.Lock) {
+            for int i in 0..Tcp.Connections {
+                TcpConnection* c = &Tcp.Table[i];
+                if (!c->Used)
+                    continue;
+                Terminal.Write("tcp    ");
+                Endpoint(c->LocalIp, c->LocalPort, c->State == TcpState.Listen);
+                Endpoint(c->RemoteIp, c->RemotePort, c->State == TcpState.Listen);
+                string name = StateName(c->State);
+                Terminal.Write(name);
+                for int p in (int)Str.Length(name)..14 { Terminal.WriteChar((byte)' '); }
+                if (c->Owner == 0)
+                    Terminal.Write("kernel ");
+                else
+                    Terminal.Write($"pid {c->Owner}  ");
+                Terminal.WriteLine($"{c->ReceiveCount}/{c->SendCount}");
+            }
+            for int i in 0..Udp.Sockets {
+                UdpSocket* s = &Udp.Table[i];
+                if (!s->Used)
+                    continue;
+                Terminal.Write("udp    ");
+                Endpoint(0, s->Port, true);
+                Terminal.Write("*                       ");
+                Terminal.Write("              ");
+                if (s->Owner == 0)
+                    Terminal.Write("kernel ");
+                else
+                    Terminal.Write($"pid {s->Owner}  ");
+                Terminal.WriteLine($"{s->Count} datagram(s)");
+            }
+        }
+        Terminal.WriteLine($"TCP: {Tcp.Retransmits} retransmits, {Tcp.ResetsSent} resets sent");
+    }
+
     public static void ArpTable()
     {
         if (!Ready())

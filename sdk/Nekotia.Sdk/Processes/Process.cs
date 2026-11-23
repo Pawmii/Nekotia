@@ -136,4 +136,20 @@ public static unsafe class UserMemory
 
     [Native("::neko::proc::copy_from_user")]
     public static extern bool CopyFrom(void* destination, void* userSource, ulong length);
+
+    /// <summary>Copies a NUL-terminated user string (at most <paramref name="capacity"/> bytes with the NUL); its length or an error.</summary>
+    [Native("::neko::proc::copy_string")]
+    public static extern long CopyString(void* user, byte* destination, ulong capacity);
+}
+
+/// <summary>File descriptors of the calling program, for [Syscall] handlers.</summary>
+public static unsafe class UserFiles
+{
+    /// <summary>Gives the open file a descriptor in the calling process; the fd or an error (the file is closed then).</summary>
+    [Native("::neko::proc::install_file")]
+    public static extern long Install(Nekotia.IO.OpenFile* file);
+
+    /// <summary>The socket context behind descriptor <paramref name="fd"/>, null if it is not a socket.</summary>
+    [Native("::neko::proc::socket_of")]
+    public static extern void* SocketOf(long fd);
 }

@@ -1,0 +1,162 @@
+// DNS: name → IPv4 address with one A query to the DHCP-given server (QEMU: 10.0.2.3, which asks
+// the host's resolver). Dotted addresses and "localhost" are answered without asking; answers are
+// cached for a minute.
+using Nekotia;
+using Nekotia.Hal;
+using Nekotia.Mem;
+using Nekotia.Processes;
+
+namespace Nekotia.OS.Net;
+
+public unsafe struct DnsEntry
+{
+    public fixed byte Name[64];
+    public uint Ip;
+    public ulong Until;
+}
+
+public static unsafe class Dns
+{
+    const int CacheSize = 8;
+    static DnsEntry* _cache;
+    static int _next;
+
+    /// 0 with the address in `ip`, or ErrNotFound (no such name, no answer) / ErrBadArgument (bad name).
+    public static long Resolve(byte* name, out uint ip)
+    {
+        ip = 0;
+        if (Stack.ParseIp(name, out ip))
+            return 0;
+        if (Str.Equals(name, "localhost")) {
+            ip = 0x7F000001;
+            return 0;
+        }
+        int length = (int)Str.Length(name);
+        if (length == 0 || length > 63 + 190)
+            return Process.ErrBadArgument;
+        if (!Stack.Up || Stack.Dns == 0)
+            return Process.ErrNotFound;
+        if (_cache == null)
+            _cache = Heap.NewArray<DnsEntry>(CacheSize);
+        ulong now = Time.UptimeMs();
+        for int i in 0..CacheSize {
+            if (_cache[i].Until > now && Str.Equals(_cache[i].Name, name)) {
+                ip = _cache[i].Ip;
+                return 0;
+            }
+        }
+
+        int socket = Udp.Bind(0, 0);
+        if (socket < 0)
+            return socket;
+        defer Udp.Close(socket);
+        byte* q = stackalloc byte[512];
+        ushort id = (ushort)Cpu.ReadTimestamp();
+        int size = Query(q, id, name, length);
+        if (size < 0)
+            return Process.ErrBadArgument;
+        for int attempt in 0..3 {
+            Udp.SendTo(socket, Stack.Dns, 53, q, size);
+            ulong until = Time.UptimeMs() + 1500;
+            while (Time.UptimeMs() < until) {
+                uint from = 0;
+                ushort port = 0;
+                long n = Udp.ReceiveFrom(socket, q, 512, out from, out port, 100);
+                if (n < 0)
+                    return n;
+                if (n < 12 || Stack.Get16(q) != id || port != 53)
+                    continue;
+                long r = Answer(q, (int)n, out ip);
+                if (r == 0)
+                    Remember(name, ip);
+                return r;
+            }
+            size = Query(q, id, name, length);   // the buffer held the (wrong) answer
+        }
+        return Process.ErrNotFound;
+    }
+
+    static int Query(byte* q, ushort id, byte* name, int length)
+    {
+        Memory.Set(q, 0, 512);
+        Stack.Put16(q, id);
+        Stack.Put16(q + 2, 0x0100);   // recursion desired
+        Stack.Put16(q + 4, 1);        // one question
+        int at = 12;
+        byte* label = name;
+        while (*label != 0) {
+            byte* end = label;
+            while (*end != 0 && *end != '.')
+                end++;
+            int n = (int)(end - label);
+            if (n == 0 || n > 63)
+                return -1;
+            q[at++] = (byte)n;
+            for int i in 0..n { q[at++] = label[i]; }
+            label = *end == '.' ? end + 1 : end;
+        }
+        q[at++] = 0;
+        Stack.Put16(q + at, 1);       // type A
+        Stack.Put16(q + at + 2, 1);   // class IN
+        return at + 4;
+    }
+
+    /// Skips a (possibly compressed) name; the offset after it, or -1.
+    static int SkipName(byte* p, int size, int at)
+    {
+        while (at < size) {
+            byte n = p[at];
+            if (n == 0)
+                return at + 1;
+            if ((n & 0xC0) == 0xC0)
+                return at + 2;
+            at += 1 + n;
+        }
+        return -1;
+    }
+
+    static long Answer(byte* p, int size, out uint ip)
+    {
+        ip = 0;
+        uint flags = Stack.Get16(p + 2);
+        if ((flags & 0x8000) == 0 || (flags & 15) != 0)
+            return Process.ErrNotFound;   // not a response, or an error (3 = no such name)
+        int questions = Stack.Get16(p + 4);
+        int answers = Stack.Get16(p + 6);
+        int at = 12;
+        for int i in 0..questions {
+            at = SkipName(p, size, at);
+            if (at < 0)
+                return Process.ErrNotFound;
+            at += 4;
+        }
+        for int i in 0..answers {
+            at = SkipName(p, size, at);
+            if (at < 0 || at + 10 > size)
+                return Process.ErrNotFound;
+            uint type = Stack.Get16(p + at);
+            int length = Stack.Get16(p + at + 8);
+            at += 10;
+            if (at + length > size)
+                return Process.ErrNotFound;
+            if (type == 1 && length == 4) {   // A (a CNAME chain puts it after the aliases)
+                ip = Stack.Get32(p + at);
+                return 0;
+            }
+            at += length;
+        }
+        return Process.ErrNotFound;
+    }
+
+    static void Remember(byte* name, uint ip)
+    {
+        DnsEntry* e = &_cache[_next];
+        _next = (_next + 1) % CacheSize;
+        int i = 0;
+        for (; name[i] != 0 && i < 63; i++)
+            e->Name[i] = name[i];
+        e->Name[i] = 0;
+        e->Ip = ip;
+        e->Until = Time.UptimeMs() + 60000;
+    }
+}

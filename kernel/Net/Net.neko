@@ -59,6 +59,8 @@ public static unsafe class Stack
         Arp.Init();
         Udp.Init();
         Up = true;
+        Tcp.Init();
+        Sockets.Init();
         Thread.Start("net-rx", &ReceiveLoop, 0, ThreadPriority.High);
     }
 

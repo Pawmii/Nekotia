@@ -846,6 +846,27 @@ int64_t sys_pipe(uint64_t out) {
 }
 
 int64_t mkdir_op(const char* p) { return vfs::mkdir(p); }
+
+}  // namespace
+
+int64_t install_file(vfs::File* f) {
+    if (!f) return kErrNoMemory;
+    if (!current()) {
+        vfs::close(f);
+        return kErrNoSyscall;
+    }
+    return install(f);
+}
+
+void* socket_of(int64_t fd) {
+    if (fd < 0 || !current()) return nullptr;
+    vfs::File* f = take(uint64_t(fd));
+    void* context = vfs::socket_context(f);
+    vfs::close(f);
+    return context;
+}
+
+namespace {
 int64_t remove_op(const char* p) { return vfs::remove(p); }
 int64_t chdir_op(const char* p) { return vfs::chdir(p); }
 

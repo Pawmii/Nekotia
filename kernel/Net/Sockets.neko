@@ -1,0 +1,217 @@
+// Sockets for user programs: TCP and UDP endpoints as file descriptors, plus the network system
+// calls (40–48), written in C# with @syscall. A socket fd works with read/write/close/dup2 like any
+// file: reads and writes come here through the VFS socket callbacks.
+//
+// The last close of a socket may happen while its process is being torn down, where nothing may
+// sleep — so the close callback only marks the socket, and net-timer closes it (FIN) within 100 ms.
+using Nekotia;
+using Nekotia.Hal;
+using Nekotia.IO;
+using Nekotia.Processes;
+using Nekotia.Threading;
+
+namespace Nekotia.OS.Net;
+
+public static unsafe class Sockets
+{
+    const int KindTcp = 1, KindUdp = 2;
+
+    static SpinLock _closing;
+    static ulong _closeTcp;   // bit per handle waiting to be closed
+    static ulong _closeUdp;
+
+    public static void Init() => Vfs.SetSocketCallbacks(&SocketRead, &SocketWrite, &SocketClose);
+
+    static void* Context(int kind, int handle) => (void*)(ulong)((kind << 16) | (handle + 1));
+    static int KindOf(void* context) => (int)((ulong)context >> 16);
+    static int HandleOf(void* context) => (int)((ulong)context & 0xFFFF) - 1;
+
+    static long SocketRead(void* context, byte* buffer, ulong length)
+    {
+        int n = length > 0x40000000 ? 0x40000000 : (int)length;
+        if (KindOf(context) == KindTcp)
+            return Tcp.Receive(HandleOf(context), buffer, n);
+        uint from = 0;
+        ushort port = 0;
+        return Udp.ReceiveFrom(HandleOf(context), buffer, n, out from, out port, 0);
+    }
+
+    static long SocketWrite(void* context, byte* buffer, ulong length)
+    {
+        if (KindOf(context) != KindTcp)
+            return Process.ErrNotSupported;   // UDP: sendto (syscall 44) says where
+        return Tcp.Send(HandleOf(context), buffer, length > 0x40000000 ? 0x40000000 : (int)length);
+    }
+
+    static void SocketClose(void* context)
+    {
+        int h = HandleOf(context);
+        _closing.Lock();
+        if (KindOf(context) == KindTcp)
+            _closeTcp |= 1UL << h;
+        else
+            _closeUdp |= 1UL << h;
+        _closing.Unlock();
+    }
+
+    /// Called by net-timer (without the stack lock).
+    public static void ClosePending()
+    {
+        _closing.Lock();
+        ulong tcp = _closeTcp;
+        ulong udp = _closeUdp;
+        _closeTcp = 0;
+        _closeUdp = 0;
+        _closing.Unlock();
+        for int i in 0..64 {
+            if ((tcp & (1UL << i)) != 0)
+                Tcp.Close(i);
+            if ((udp & (1UL << i)) != 0)
+                Udp.Close(i);
+        }
+    }
+
+    /// A new fd for socket `handle` of the calling program.
+    static long Install(int kind, int handle)
+    {
+        OpenFile* f = Vfs.OpenSocket(Context(kind, handle));
+        if (f == null) {
+            if (kind == KindTcp)
+                Tcp.Close(handle);
+            else
+                Udp.Close(handle);
+            return Process.ErrNoMemory;
+        }
+        return UserFiles.Install(f);   // on failure it closes f, which queues the socket's close
+    }
+
+    static int Handle(long fd, int kind)
+    {
+        void* context = UserFiles.SocketOf(fd);
+        if (context == null || KindOf(context) != kind)
+            return -1;
+        return HandleOf(context);
+    }
+
+    // ---------------------------------------------------------------- system calls
+
+    /// tcp_connect(ip, port) → fd
+    @syscall(40)
+    static long TcpConnect(ulong ip, ulong port)
+    {
+        int h = Tcp.Connect((uint)ip, (ushort)port, Process.CurrentPid());
+        return h < 0 ? h : Install(KindTcp, h);
+    }
+
+    /// tcp_listen(port) → fd
+    @syscall(41)
+    static long TcpListen(ulong port)
+    {
+        int h = Tcp.Listen((ushort)port, Process.CurrentPid());
+        return h < 0 ? h : Install(KindTcp, h);
+    }
+
+    /// tcp_accept(fd, uint32_t peer[2] or null) → fd of the new connection; peer = {ip, port}
+    @syscall(42)
+    static long TcpAccept(long fd, uint* peer)
+    {
+        int listener = Handle(fd, KindTcp);
+        if (listener < 0)
+            return Process.ErrBadFd;
+        int h = Tcp.Accept(listener);
+        if (h < 0)
+            return h;
+        if (peer != null) {
+            uint* p = stackalloc uint[2];
+            p[0] = Tcp.Table[h].RemoteIp;
+            p[1] = Tcp.Table[h].RemotePort;
+            UserMemory.CopyTo(peer, p, 8);
+        }
+        return Install(KindTcp, h);
+    }
+
+    /// udp_open(port, 0 = any) → fd
+    @syscall(43)
+    static long UdpOpen(ulong port)
+    {
+        int h = Udp.Bind((ushort)port, Process.CurrentPid());
+        return h < 0 ? h : Install(KindUdp, h);
+    }
+
+    /// udp_sendto(fd, ip, port, buffer, length) → bytes
+    @syscall(44)
+    static long UdpSendTo(long fd, ulong ip, ulong port, byte* buffer, ulong length)
+    {
+        int h = Handle(fd, KindUdp);
+        if (h < 0)
+            return Process.ErrBadFd;
+        if (length > Udp.MaxData)
+            return Process.ErrBadArgument;
+        byte* data = stackalloc byte[Udp.MaxData];
+        if (!UserMemory.CopyFrom(data, buffer, length))
+            return Process.ErrBadAddress;
+        return Udp.SendTo(h, (uint)ip, (ushort)port, data, (int)length);
+    }
+
+    /// udp_recvfrom(fd, buffer, length, uint32_t from[2] or null, timeout_ms; 0 = wait) → bytes, 0 on timeout
+    @syscall(45)
+    static long UdpReceiveFrom(long fd, byte* buffer, ulong length, uint* from, ulong timeoutMs)
+    {
+        int h = Handle(fd, KindUdp);
+        if (h < 0)
+            return Process.ErrBadFd;
+        byte* data = stackalloc byte[Udp.MaxData];
+        uint ip = 0;
+        ushort port = 0;
+        long n = Udp.ReceiveFrom(h, data, length < Udp.MaxData ? (int)length : Udp.MaxData, out ip, out port, timeoutMs);
+        if (n <= 0)
+            return n;
+        if (!UserMemory.CopyTo(buffer, data, (ulong)n))
+            return Process.ErrBadAddress;
+        if (from != null) {
+            uint* p = stackalloc uint[2];
+            p[0] = ip;
+            p[1] = port;
+            UserMemory.CopyTo(from, p, 8);
+        }
+        return n;
+    }
+
+    /// resolve(name, uint32_t* ip) → 0 (DNS, dotted address or "localhost")
+    @syscall(46)
+    static long Resolve(byte* name, uint* ip)
+    {
+        byte* local = stackalloc byte[256];
+        long n = UserMemory.CopyString(name, local, 256);
+        if (n < 0)
+            return n;
+        uint address = 0;
+        long r = Dns.Resolve(local, out address);
+        if (r < 0)
+            return r;
+        return UserMemory.CopyTo(ip, &address, 4) ? 0 : Process.ErrBadAddress;
+    }
+
+    /// net_config(uint32_t out[4]) → 0: address, netmask, gateway, DNS (all 0 without a network)
+    @syscall(47)
+    static long NetConfig(uint* output)
+    {
+        uint* c = stackalloc uint[4];
+        c[0] = Stack.Address;
+        c[1] = Stack.Netmask;
+        c[2] = Stack.Gateway;
+        c[3] = Stack.Dns;
+        return UserMemory.CopyTo(output, c, 16) ? 0 : Process.ErrBadAddress;
+    }
+
+    /// tcp_shutdown(fd) → 0: no more sending (FIN), reading goes on until the peer closes
+    @syscall(48)
+    static long TcpShutdown(long fd)
+    {
+        int h = Handle(fd, KindTcp);
+        if (h < 0)
+            return Process.ErrBadFd;
+        Tcp.Shutdown(h);
+        return 0;
+    }
+}

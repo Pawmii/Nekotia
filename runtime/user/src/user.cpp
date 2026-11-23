@@ -149,6 +149,26 @@ int64_t dup2(int32_t fd, int32_t target) {
     return sys::call(kDup2, uint64_t(fd), uint64_t(target));
 }
 int64_t truncate(int32_t fd, uint64_t size) { return sys::call(kTruncate, uint64_t(fd), size); }
+// ---------------------------------------------------------------- network
+
+int64_t tcp_connect(uint32_t ip, uint16_t port) { return sys::call(40, ip, port); }
+int64_t tcp_listen(uint16_t port) { return sys::call(41, port); }
+int64_t tcp_accept(int32_t fd, uint32_t* peer) { return sys::call(42, uint64_t(fd), ptr(peer)); }
+int64_t udp_open(uint16_t port) { return sys::call(43, port); }
+int64_t udp_sendto(int32_t fd, uint32_t ip, uint16_t port, const void* data, uint64_t length) {
+    return sys::call(44, uint64_t(fd), ip, port, ptr(data), length);
+}
+int64_t udp_recvfrom(int32_t fd, void* buffer, uint64_t length, uint32_t* from, uint64_t timeout_ms) {
+    return sys::call(45, uint64_t(fd), ptr(buffer), length, ptr(from), timeout_ms);
+}
+int64_t resolve(const uint8_t* name, uint32_t& ip) { return sys::call(46, ptr(name), ptr(&ip)); }
+int64_t resolve(const char* name, uint32_t& ip) { return sys::call(46, ptr(name), ptr(&ip)); }
+int64_t net_config(uint32_t* out4) { return sys::call(47, ptr(out4)); }
+int64_t tcp_shutdown(int32_t fd) {
+    if (fd == 1) flush();
+    return sys::call(48, uint64_t(fd));
+}
+
 int64_t pipe(int32_t& read_fd, int32_t& write_fd) {
     int32_t fds[2] = {-1, -1};
     int64_t r = sys::call(kPipe, ptr(fds));

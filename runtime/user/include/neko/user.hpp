@@ -109,6 +109,18 @@ int64_t dup2(int32_t fd, int32_t target);
 int64_t truncate(int32_t fd, uint64_t size);
 int64_t pipe(int32_t& read_fd, int32_t& write_fd);  // read_fd gets what write_fd writes
 
+// ---- network (system calls 40–48, implemented in C# in kernel/Net/Sockets.neko). Sockets are fds.
+int64_t tcp_connect(uint32_t ip, uint16_t port);              // → fd
+int64_t tcp_listen(uint16_t port);                            // → fd
+int64_t tcp_accept(int32_t fd, uint32_t* peer);               // → fd; peer = {ip, port} (may be null)
+int64_t tcp_shutdown(int32_t fd);                             // stop sending (FIN), keep reading
+int64_t udp_open(uint16_t port);                              // → fd (port 0: any)
+int64_t udp_sendto(int32_t fd, uint32_t ip, uint16_t port, const void* data, uint64_t length);
+int64_t udp_recvfrom(int32_t fd, void* buffer, uint64_t length, uint32_t* from, uint64_t timeout_ms);
+int64_t resolve(const uint8_t* name, uint32_t& ip);           // DNS, "a.b.c.d" or "localhost"
+int64_t resolve(const char* name, uint32_t& ip);
+int64_t net_config(uint32_t* out4);                           // address, netmask, gateway, DNS
+
 // ---- console (fd 1 = stdout, 2 = stderr, 0 = keyboard — unless redirected)
 int64_t write(int32_t fd, const void* data, uint64_t length);
 void write(const char* s);

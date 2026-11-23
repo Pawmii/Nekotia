@@ -85,6 +85,15 @@ File* dup(File* f);  // one more reference to the same open file (shared offset)
 // empty and return 0 once every write end is closed; writes block while it is full and fail with
 // kErrBrokenPipe once every read end is closed. Both waits end early when the caller is killed.
 int64_t pipe(File*& read_end, File*& write_end);
+
+// Sockets: open files whose reads, writes and last close go to the network stack (C#, kernel/Net).
+// The stack registers its three functions once; `context` identifies the socket. The close function
+// must not block (it may run while a process is being torn down).
+using SocketIo = int64_t (*)(void* context, uint8_t* buffer, uint64_t length);
+using SocketClose = void (*)(void* context);
+void set_socket_callbacks(SocketIo read, SocketIo write, SocketClose close);
+File* open_socket(void* context);   // read + write; nullptr when out of memory
+void* socket_context(File* f);      // the context of a socket file, nullptr for anything else
 void close(File* f);
 uint32_t flags(File* f);
 
