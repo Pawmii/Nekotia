@@ -6,6 +6,11 @@ namespace NekocTests;
 
 public class Reference { }   // error NEKO0100
 
+public struct Pair
+{
+    public int A;
+}
+
 public static unsafe class Program
 {
     public static int Main()
@@ -16,6 +21,11 @@ public static unsafe class Program
         System.Func<int> f = () => 1;                 // error NEKO0201 NEKO0300
         Console.WriteLine(System.Math.Abs(x).ToString());   // error NEKO0200
         int z = x switch { 1 => 1, _ => 0 };
+        Pair pair = default;
+        try {                                         // error NEKO0303
+            pair.A = 1;
+        } catch (System.Exception) {
+        }
         return z;
     }
 }

@@ -305,6 +305,20 @@ void sleep_ms(uint64_t ms) {
     schedule_locked();
 }
 
+}  // namespace neko::sched
+
+namespace neko::exc {
+namespace {
+State g_boot_state;  // before the scheduler adopts the boot flow
+}
+State* state() {
+    sched::Thread* t = smp::this_cpu()->current;
+    return t ? &t->exc : &g_boot_state;
+}
+}  // namespace neko::exc
+
+namespace neko::sched {
+
 void exit() {
     cpu::disable_interrupts();
     g_lock.acquire();

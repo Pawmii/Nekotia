@@ -51,7 +51,11 @@ extern "C" void neko_isr_dispatch(crash::CpuState* f) {
         return;
     }
     if (f->vector < 32) crash::cpu_exception(f);
+    // A C# `throw` inside an interrupt handler must not jump out of it (it stops the system instead).
+    exc::State* s = exc::state();
+    ++s->irq_depth;
     irq_dispatch(static_cast<uint8_t>(f->vector));
+    --s->irq_depth;
     if (f->cs & 3) proc::check_killed();  // killed while it ran in ring 3 (timer tick or a kick IPI)
 }
 

@@ -85,4 +85,8 @@ void neko_sched_switch_to(neko::sched::Thread* next) {
     arch::set_kernel_stack(c->index, next->stack_top);
     uint64_t want = next->process ? next->process->pml4_phys : vmm::root_phys();
     if (cpu::read_cr3() != want) __asm__ volatile("mov %0, %%cr3" : : "r"(want) : "memory");
+    if (next->process) {  // the program's thread-local block (IA32_FS_BASE)
+        uint64_t fs = next->fs_base;
+        __asm__ volatile("wrmsr" : : "c"(0xC0000100u), "a"(uint32_t(fs)), "d"(uint32_t(fs >> 32)));
+    }
 }

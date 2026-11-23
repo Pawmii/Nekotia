@@ -51,6 +51,8 @@ struct Thread {
     sync::Semaphore* volatile waiting_sem;  // semaphore of an interruptible wait in progress
     Thread* next;         // run queue / wait queue link
     Thread* all_next;     // list of every thread
+    exc::State exc;       // C# try/catch frames and scope guards of this thread
+    uint64_t fs_base;     // user programs: their thread-local block (set_tls)
 };
 
 using Entry = void (*)(uint64_t arg);

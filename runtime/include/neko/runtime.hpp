@@ -8,6 +8,7 @@
 #include <neko/boot.hpp>
 #include <neko/console.hpp>
 #include <neko/crash.hpp>
+#include <neko/exception.hpp>
 #include <neko/fat.hpp>
 #include <neko/fmt.hpp>
 #include <neko/cpu.hpp>

@@ -38,6 +38,16 @@ public unsafe struct Name16
     public int Length;
 }
 
+public class NekoError : Exception
+{
+    public NekoError(string message) : base(message) { }
+}
+
+public class DiskError : NekoError
+{
+    public DiskError(string message) : base(message) { }
+}
+
 public static unsafe class SelfTest
 {
     static int _passed;
@@ -58,6 +68,7 @@ public static unsafe class SelfTest
 
         Language();
         Patterns();
+        Exceptions();
         Interpolation();
         Sugar();
         HeapBasics();
@@ -139,6 +150,127 @@ public static unsafe class SelfTest
             }
         }
         return sum;
+    }
+
+    // ---------------------------------------------------------------- exceptions
+
+    static ulong _trace;
+    static void Mark(int digit) => _trace = _trace * 10 + (ulong)digit;
+
+    static void Thrower(int kind)
+    {
+        defer Mark(1);
+        if (kind == 1)
+            throw new InvalidOperationException("bad state");
+        if (kind == 2)
+            throw new DiskError("disk on fire");
+        if (kind == 3)
+            throw new NekoError("plain neko");
+    }
+
+    static void Deeper(int kind)
+    {
+        defer Mark(2);
+        Thrower(kind);
+        Mark(9);   // never after a throw
+    }
+
+    static int Catches(int kind)
+    {
+        try {
+            Deeper(kind);
+            return 0;
+        } catch (DiskError e) {
+            return Str.Equals(e.Message, "disk on fire") ? 2 : -2;
+        } catch (NekoError) {
+            return 3;
+        } catch (InvalidOperationException e) when (Str.Equals(e.Message, "bad state")) {
+            return 1;
+        }
+    }
+
+    static int Rethrows()
+    {
+        try {
+            try {
+                Thrower(2);
+            } catch (NekoError) {
+                Mark(5);
+                throw;
+            } finally {
+                Mark(6);
+            }
+        } catch (DiskError e) {
+            return Str.Equals(e.Message, "disk on fire") ? 7 : -7;
+        }
+        return 0;
+    }
+
+    static int FinallyOnReturn()
+    {
+        try {
+            Mark(3);
+            return 4;
+        } finally {
+            Mark(8);
+        }
+    }
+
+    static Mutex _excLock;
+
+    static void Exceptions()
+    {
+        nuint heap = Heap.UsedBytes();
+        _trace = 0;
+        Check(Catches(0) == 0 && _trace == 192, "try: no exception; every defer ran once in order");
+        _trace = 0;
+        Check(Catches(1) == 1 && _trace == 12, "catch with a when-filter; the defers of both callees ran while unwinding");
+        _trace = 0;
+        Check(Catches(2) == 2, "catch by the exact type, with e.Message");
+        Check(Catches(3) == 3, "catch by a base class (DiskError → NekoError handler order)");
+        _trace = 0;
+        Check(Rethrows() == 7 && _trace == 156, "throw; from a catch: the inner finally runs, the outer catch gets it");
+        _trace = 0;
+        Check(FinallyOnReturn() == 4 && _trace == 38, "finally runs on return");
+
+        try {
+            lock (_excLock) {
+                Thrower(1);
+            }
+        } catch (Exception) {
+        }
+        Check(!_excLock.IsLocked(), "a lock is released when an exception leaves it");
+
+        int kept = 0;
+        long sum = 0;
+        for int i in 0..10 {
+            try {
+                kept = i;
+                if (i == 3)
+                    continue;
+                if (i == 8)
+                    break;
+                if (i % 2 == 0)
+                    Thrower(1);
+                sum += i;
+            } catch (InvalidOperationException) {
+                sum += 100;
+            }
+        }
+        Check(kept == 8 && sum == 1 + 5 + 7 + 100 * 4, "locals written in try keep their values; break/continue leave try");
+
+        bool caught = false;
+        try {
+            try {
+                Thrower(3);
+            } catch (DiskError) {
+                caught = false;   // not this one
+            }
+        } catch (NekoError e) {
+            caught = Str.Equals(e.Message, "plain neko");
+        }
+        Check(caught, "an unmatched catch passes the exception outward");
+        Check(Heap.UsedBytes() == heap, "exceptions allocate nothing");
     }
 
     static void Interpolation()

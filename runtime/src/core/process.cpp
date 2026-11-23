@@ -960,6 +960,17 @@ extern "C" void neko_syscall_dispatch(neko::proc::SyscallFrame* f) {
         case Syscall::Rename: r = sys_rename(f->rdi, f->rsi); break;
         case Syscall::Truncate: r = sys_truncate(f->rdi, f->rsi); break;
         case Syscall::Pipe: r = sys_pipe(f->rdi); break;
+        case Syscall::SetTls:
+            if (f->rdi >= kUserEnd) {
+                r = kErrBadAddress;
+                break;
+            }
+            sched::current()->fs_base = f->rdi;
+#if !NEKO_HOSTED
+            __asm__ volatile("wrmsr" : : "c"(0xC0000100u), "a"(uint32_t(f->rdi)), "d"(uint32_t(f->rdi >> 32)));
+#endif
+            r = 0;
+            break;
         default:
             if (f->rax < kMaxSyscalls && g_syscalls[f->rax]) r = g_syscalls[f->rax](f->rdi, f->rsi, f->rdx, f->r10, f->r8, f->r9);
             break;

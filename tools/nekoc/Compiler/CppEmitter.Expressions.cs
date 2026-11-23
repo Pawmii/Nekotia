@@ -154,6 +154,8 @@ sealed partial class CppEmitter
             return Expr(ma.Expression);
         }
 
+        if (symbol is not null && ExceptionMember(ma, symbol) is { } exceptionMember)
+            return exceptionMember;
         switch (symbol)
         {
             case IFieldSymbol f:
@@ -289,6 +291,8 @@ sealed partial class CppEmitter
             return Unsupported(a.Syntax, "this argument");
         if (expr is DeclarationExpressionSyntax)
             return Unsupported(expr, "out variable declarations", "declare the variable before the call");
+        if (param is not null && param.RefKind != RefKind.None && IsVolatile(expr))
+            return $"const_cast<{Map(TypeOf(expr), expr)}&>({Expr(expr)})";
         if (param is null || param.RefKind != RefKind.None)
             return Expr(expr);
 
@@ -405,6 +409,8 @@ sealed partial class CppEmitter
             case SyntaxKind.PreDecrementExpression:
                 RejectProperty(pu.Operand, "++/-- on a property");
                 return pu.OperatorToken.Text + Expr(pu.Operand);
+            case SyntaxKind.AddressOfExpression when IsVolatile(pu.Operand):   // a local kept in memory for try/catch
+                return $"const_cast<{Map(TypeOf(pu.Operand), pu)}*>(&{Expr(pu.Operand)})";
             case SyntaxKind.AddressOfExpression:
             case SyntaxKind.PointerIndirectionExpression:
                 return $"({pu.OperatorToken.Text}{Expr(pu.Operand)})";

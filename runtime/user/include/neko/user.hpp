@@ -5,6 +5,7 @@
 // side of this API is sdk/Nekotia.User.
 #pragma once
 
+#include <neko/exception.hpp>
 #include <neko/fmt.hpp>
 #include <neko/math.hpp>
 #include <neko/types.hpp>

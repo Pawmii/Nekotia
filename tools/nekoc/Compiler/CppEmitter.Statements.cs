@@ -107,8 +107,8 @@ sealed partial class CppEmitter
                 w.Line(Throw(th) + ";");
                 break;
 
-            case TryStatementSyntax:
-                Unsupported(s, "try/catch/finally", "not yet: an uncaught `throw` shows the stop screen; use `defer` (in .neko files) for cleanup");
+            case TryStatementSyntax ts:
+                Try(w, ts);
                 break;
 
             case ForEachStatementSyntax:
@@ -159,9 +159,11 @@ sealed partial class CppEmitter
         foreach (var v in decl.Variables)
         {
             var name = Symbols.Escape(v.Identifier.Text);
+            // A local a try writes must survive the jump back to its catch (setjmp keeps memory only).
+            var qualified = _model.GetDeclaredSymbol(v) is ILocalSymbol l && _volatileLocals.Contains(l) ? type + " volatile" : type;
             w.Line(v.Initializer is null
-                ? $"{prefix}{type} {name}{{}};"
-                : $"{prefix}{type} {name} = {ExprAs(v.Initializer.Value)};");
+                ? $"{prefix}{qualified} {name}{{}};"
+                : $"{prefix}{qualified} {name} = {ExprAs(v.Initializer.Value)};");
         }
     }
 
@@ -221,27 +223,6 @@ sealed partial class CppEmitter
     }
 
     // ---------------------------------------------------------------- throw
-
-    /// <summary>
-    /// <c>throw new InvalidOperationException("msg")</c> → the stop screen with the exception type, message,
-    /// C# file:line and method. There is no try/catch yet, so every throw is unhandled.
-    /// </summary>
-    string Throw(ThrowStatementSyntax th)
-    {
-        if (th.Expression is null)
-            return Unsupported(th, "rethrow (`throw;`)", "there is no catch yet");
-        if (th.Expression is not BaseObjectCreationExpressionSyntax creation || _model.GetOperation(creation) is not IObjectCreationOperation op)
-            return Unsupported(th.Expression, "throwing an existing exception object", "write `throw new SomeException(\"message\")`");
-
-        string message = "nullptr";
-        foreach (var arg in op.Arguments)
-            if (arg.Parameter is { Name: "message", Type.SpecialType: SpecialType.System_String } && arg.ArgumentKind == ArgumentKind.Explicit)
-                message = Argument(arg, pin: false);
-
-        var line = th.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
-        return $"::neko::crash::unhandled_exception({CString(op.Type!.ToDisplayString())}, {message}, " +
-               $"{CString(RelativePath(th.SyntaxTree.FilePath))}, {line}, {CString(EnclosingMember(th))})";
-    }
 
     // ---------------------------------------------------------------- defer (sugar)
 

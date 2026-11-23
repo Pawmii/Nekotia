@@ -7,6 +7,7 @@
 //   usertest texit | tfault          a second thread calls exit(9) / dereferences null
 //   usertest cwd                     prints its working directory (for the inheritance check)
 //   usertest flood                   writes to stdout forever (broken-pipe check)
+//   usertest uncaught                throws without a try (exit code 134)
 //   usertest churn                   maps fresh memory in a loop, for many copies at once (allocator stress)
 //   usertest piperead                waits on a pipe nobody writes to (kill check)
 using Nekotia;
@@ -62,6 +63,8 @@ public static unsafe class Program
                 Thread.Start(Str.Equals(mode, "texit") ? &ExitFromThread : &FaultInThread);
                 while (true) { Process.Sleep(100000); }
             }
+            if (Str.Equals(mode, "uncaught"))
+                throw new System.InvalidOperationException("nobody catches this");
             if (Str.Equals(mode, "churn"))
             {
                 for (int round = 0; round < 40; round++)
@@ -107,6 +110,7 @@ public static unsafe class Program
         Files();
         Pipes();
         Sockets();
+        Exceptions();
 
         if (_verbose || _failed > 0)
             Console.WriteLine($"usertest: {_passed} passed, {_failed} failed");
@@ -357,6 +361,44 @@ public static unsafe class Program
         File.Close((int)saved);
         File.Close(w);
         Check(child > 0 && Process.Wait((uint)child) == Process.ExitBrokenPipe, "writing to a pipe without readers ends the writer (141)");
+    }
+
+    // ---------------------------------------------------------------- exceptions
+
+    static int Fails(int v)
+    {
+        if (v > 2)
+            throw new System.ArgumentOutOfRangeException("v", "too big");
+        return v;
+    }
+
+    static long _threadResult;
+
+    static void ThrowingThread(ulong arg)
+    {
+        long r = 0;
+        try {
+            Fails(5);
+        } catch (System.ArgumentException e) {   // a base class of ArgumentOutOfRangeException
+            r = Str.Equals(e.Message, "too big") ? 1 : -1;
+        }
+        _threadResult = r;   // Join orders it before the read
+    }
+
+    static void Exceptions()
+    {
+        int got = 0;
+        try {
+            got = Fails(1);
+            got = Fails(3);
+        } catch (System.ArgumentOutOfRangeException) {
+            got += 100;
+        }
+        Check(got == 101, "try/catch in a program (main thread)");
+        ulong t = Thread.Start(&ThrowingThread);
+        Thread.Join(t);
+        Check(_threadResult == 1, "try/catch in a second thread (its own TLS)");
+        Check(Process.Wait((uint)Process.Start("usertest", "uncaught")) == 134, "an uncaught exception ends the program with 134");
     }
 
     // ---------------------------------------------------------------- sockets

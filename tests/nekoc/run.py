@@ -20,7 +20,7 @@ SDK = ["sdk/Nekotia.Sdk/Attributes.cs", "sdk/Nekotia.Sdk/Intrinsics.cs", "sdk/Ne
        "sdk/Nekotia.Sdk/Maths.cs", "sdk/Nekotia.Sdk/Text.cs", "sdk/Nekotia.User"]
 CXX = ["clang++", "-std=c++20", "-fsyntax-only", "--target=x86_64-unknown-none-elf", "-ffreestanding",
        "-fno-exceptions", "-fno-rtti", "-Wall", "-Wno-unused-parameter", "-Wno-unused-variable",
-       "-Wno-unused-but-set-variable", "-Wno-parentheses-equality", "-Werror",
+       "-Wno-unused-but-set-variable", "-Wno-parentheses-equality", "-Wno-deprecated-volatile", "-Werror",
        "-Iruntime/user/include", "-Iruntime/include", "-DNEKO_HOSTED=0"]
 DIAG = re.compile(r"^(?P<file>.*)\((?P<line>\d+),\d+\): error (?P<code>NEKO\d+): (?P<msg>.*)$")
 

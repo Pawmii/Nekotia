@@ -52,8 +52,28 @@ public static unsafe class Program
         return letters;
     }
 
+    static int Guarded(int v)
+    {
+        int seen = 0;
+        byte* p = null;
+        try {
+            seen = v;
+            p = Str.Bytes("set");
+            if (v > 3)
+                throw new System.InvalidOperationException("big");
+        } catch (System.InvalidOperationException e) when (e.Message != null) {
+            return seen + (p != null ? 100 : 0);
+        } catch (System.Exception) {
+            throw;
+        } finally {
+            seen = -1;
+        }
+        return seen;
+    }
+
     public static int Main()
     {
+        Guarded(5);
         Pair p = new Pair { A = 2, B = 3 };
         byte* buffer = stackalloc byte[64];
         var t = new Text(buffer, 64);

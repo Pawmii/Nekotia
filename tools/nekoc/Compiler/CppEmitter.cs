@@ -771,9 +771,13 @@ sealed partial class CppEmitter
     {
         UseModel(decl);
         _inFunction = true;
+        PrepareExceptions(decl, (SyntaxNode?)body ?? arrow);
         w.Line();
         LineDirective(w, decl);
         w.OpenBrace(head);
+        // C++ may call it through a function pointer while holding locks: a throw must not jump over that.
+        if (_model.GetDeclaredSymbol(decl) is IMethodSymbol self && IsCallback(self))
+            w.Line("::neko::exc::Frame _neko_barrier(true);");
         if (body is not null)
         {
             foreach (var s in body.Statements)

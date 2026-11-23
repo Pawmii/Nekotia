@@ -38,12 +38,12 @@ HEAP_SIZE  ?= 4194304  # initial kernel heap; it grows on demand
 CS_SOURCES  := $(shell find sdk kernel -type f \( -name '*.cs' -o -name '*.neko' \) -not -path '*/bin/*' -not -path '*/obj/*')
 NEKOC_SRCS  := $(shell find tools/nekoc -type f \( -name '*.cs' -o -name '*.csproj' \) -not -path '*/bin/*' -not -path '*/obj/*')
 RT_HEADERS  := $(wildcard runtime/include/neko/*.hpp)
-CORE_SRCS   := $(wildcard runtime/src/core/*.cpp) $(wildcard runtime/src/fs/*.cpp)
+CORE_SRCS   := $(wildcard runtime/src/core/*.cpp) $(wildcard runtime/src/fs/*.cpp) $(wildcard runtime/src/common/*.cpp)
 KERNEL_SRCS := $(CORE_SRCS) $(wildcard runtime/src/freestanding/*.cpp) $(wildcard runtime/src/arch/x86_64/*.cpp) \
                $(wildcard runtime/src/drivers/*.cpp)
-KERNEL_ASM  := $(wildcard runtime/src/arch/x86_64/*.S) $(wildcard runtime/src/core/*.S)
+KERNEL_ASM  := $(wildcard runtime/src/arch/x86_64/*.S) $(wildcard runtime/src/core/*.S) $(wildcard runtime/src/common/*.S)
 HOST_SRCS   := $(CORE_SRCS) $(wildcard runtime/src/host/*.cpp)
-CORE_ASM    := $(wildcard runtime/src/core/*.S)
+CORE_ASM    := $(wildcard runtime/src/core/*.S) $(wildcard runtime/src/common/*.S)
 FONT        := runtime/assets/fonts/ter-v16n.psf
 GEN_CPP     := $(GEN)/nekotia.gen.cpp
 
@@ -52,7 +52,7 @@ GEN_CPP     := $(GEN)/nekotia.gen.cpp
 OPT        ?= -O2
 
 COMMON_FLAGS := -std=c++20 $(OPT) -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable \
-                -Wno-unused-but-set-variable -Wno-parentheses-equality -fwrapv \
+                -Wno-unused-but-set-variable -Wno-parentheses-equality -Wno-deprecated-volatile -fwrapv \
                 -Iruntime/include -I$(GEN) -MMD -MP
 
 KERNEL_FLAGS := $(COMMON_FLAGS) --target=x86_64-unknown-none-elf -ffreestanding -fno-exceptions -fno-rtti \
@@ -128,9 +128,10 @@ $(BUILD)/kernel/gen.o: $(GEN_CPP)
 
 USER_PROGRAMS := $(sort $(patsubst user/%/nekotia.json,%,$(wildcard user/*/nekotia.json)))
 USER_SDK      := $(shell find sdk/Nekotia.User -name '*.cs') $(wildcard sdk/Nekotia.Sdk/*.cs)
-USER_RT_SRCS  := runtime/user/src/user.cpp runtime/src/core/math.cpp runtime/src/freestanding/libc.cpp runtime/user/src/crt0.S
+USER_RT_SRCS  := runtime/user/src/user.cpp runtime/src/core/math.cpp runtime/src/freestanding/libc.cpp runtime/user/src/crt0.S \
+                 runtime/src/common/exceptions.cpp runtime/src/common/jump.S
 USER_FLAGS := -std=c++20 $(OPT) -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable \
-              -Wno-unused-but-set-variable -Wno-parentheses-equality -fwrapv -MMD -MP \
+              -Wno-unused-but-set-variable -Wno-parentheses-equality -Wno-deprecated-volatile -fwrapv -MMD -MP \
               -Iruntime/user/include -Iruntime/include --target=x86_64-unknown-none-elf -ffreestanding \
               -fno-exceptions -fno-rtti -fno-stack-protector -fno-stack-check -fno-pic -fno-pie \
               -fno-threadsafe-statics -fno-asynchronous-unwind-tables -fno-unwind-tables -mno-mmx -mno-avx \

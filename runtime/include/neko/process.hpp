@@ -47,6 +47,7 @@ enum class Syscall : uint32_t {
     ThreadExit = 13,   // thread_exit()                      never returns; the last thread ends the process
     ThreadId = 14,     // thread_id()                        → id of the calling thread
     // 15 is unused (was program_info: programs are files in /bin now)
+    SetTls = 31,       // set_tls(address)                   → 0; FS base of the calling thread (%fs:0 = its TLS block)
     Open = 16,         // open(path, flags)                  → fd (flags: neko/vfs.hpp kRead…)
     Close = 17,        // close(fd)                          → 0
     Seek = 18,         // seek(fd, offset, whence)           → new offset
