@@ -6,6 +6,7 @@
 // Every header carries a magic value so double frees, frees of foreign
 // pointers and most overruns of the previous block are caught.
 #include <neko/runtime.hpp>
+#include <neko/sched.hpp>
 
 namespace neko::heap {
 namespace {
@@ -26,6 +27,7 @@ constexpr size_t kMinSplit = sizeof(Block) + kAlignment;
 
 Block* g_head = nullptr;
 Grower g_grower = nullptr;
+sync::SpinLock g_lock;  // recursive: the grower calls add_region while alloc holds it
 size_t g_total = 0;  // payload bytes in all blocks
 size_t g_used = 0;   // payload bytes in used blocks
 size_t g_blocks = 0;
@@ -61,6 +63,7 @@ Block* validate(void* p, const char* who) {
 }  // namespace
 
 void add_region(void* base, size_t size) {
+    sync::ScopedLock guard(g_lock);
     uintptr_t start = mem::align_up(reinterpret_cast<uintptr_t>(base), kAlignment);
     uintptr_t end = mem::align_down(reinterpret_cast<uintptr_t>(base) + size, kAlignment);
     if (end <= start || end - start < kMinSplit) return;
@@ -122,6 +125,7 @@ void* first_fit(size_t size) {
 }  // namespace
 
 void* alloc(size_t size) {
+    sync::ScopedLock guard(g_lock);
     if (size == 0) size = 1;
     size = mem::align_up(size, kAlignment);
     if (void* p = first_fit(size)) return p;
@@ -131,12 +135,14 @@ void* alloc(size_t size) {
 }
 
 void* alloc_zeroed(size_t size) {
+    sync::ScopedLock guard(g_lock);
     void* p = alloc(size);
     if (p) mem::set(p, 0, header_of(p)->size);
     return p;
 }
 
 void free(void* p) {
+    sync::ScopedLock guard(g_lock);
     if (!p) return;
     Block* b = validate(p, "heap: free of an invalid pointer (or a corrupted header)");
     b->magic = kMagicFree;
@@ -145,6 +151,7 @@ void free(void* p) {
 }
 
 void* realloc(void* p, size_t new_size) {
+    sync::ScopedLock guard(g_lock);
     if (!p) return alloc(new_size);
     if (new_size == 0) {
         free(p);
@@ -176,6 +183,7 @@ size_t total_bytes() { return g_total; }
 size_t block_count() { return g_blocks; }
 
 bool check() {
+    sync::ScopedLock guard(g_lock);
     size_t blocks = 0, total = 0, used = 0;
     for (Block* b = g_head; b; b = b->next) {
         if (b->magic != kMagicUsed && b->magic != kMagicFree) return false;

@@ -97,7 +97,7 @@ memory:     254 MiB usable of 255 MiB
 
 ### Командная строка ядра
 
-Кликните в окно QEMU и печатайте. Команды: `help`, `info`, `mem`, `vm`, `pages`, `alloc MB`, `uptime`, `echo`, `sleep MS`, `irq`, `layout`,
+Кликните в окно QEMU и печатайте. Команды: `help`, `info`, `ps`, `spawn spinner|primes|burn|counter`, `mem`, `vm`, `pages`, `alloc MB`, `uptime`, `echo`, `sleep MS`, `irq`, `layout`,
 `colors`, `neko` (котик на весь экран), `selftest`, `clear`, `panic`, `crash KIND` (проверка экрана смерти),
 `reboot`, `shutdown`. Клавиши: **Alt+Shift** — EN/RU, **↑/↓** — история, **Tab** — дополнение команды,
 **Ctrl+L** — очистить, **Ctrl+U** — стереть строку, **Ctrl+C** — отменить.
@@ -114,6 +114,7 @@ memory:     254 MiB usable of 255 MiB
 | `make iso` | загрузочный гибридный BIOS/UEFI ISO |
 | `make run` / `make run-uefi` | запуск в QEMU (`QEMU_FLAGS=...` чтобы поменять) |
 | `make debug` | отладочная `-O0`-сборка в `build/debug`, QEMU на паузе с gdb-сервером `:1234` |
+| `make test` | загрузить тестовый образ в QEMU (BIOS + UEFI), прогнать самотесты, код возврата = результат |
 | `make run-host` | ядро как Linux-процесс с ASan/UBSan — быстрый прогон самотестов (не замена QEMU) |
 | `make tools` | собрать nekoc |
 | `make vscode-ext` | собрать `.vsix` расширения |
@@ -147,8 +148,8 @@ code --install-extension build/vscode-nekotia-0.1.0.vsix
   `scripts/gen-symbols.py`), **регистры** с `cr0–cr4`, **состояние системы** (uptime, куча, страницы, CPU).
 
 Текст дублируется в serial. **R** — перезагрузка. Проверить все варианты:
-`crash null|div|throw|custom|assert|pf|gp|ud|bp|double-free|stack|nx|wp` (`stack` — переполнение стека в guard-страницу,
-`nx` — выполнение кода из кучи, `wp` — запись в код ядра).
+`crash null|div|throw|custom|assert|pf|gp|ud|bp|double-free|stack|nx|wp|deadlock|relock` (`stack` — переполнение стека
+в guard-страницу, `nx` — выполнение кода из кучи, `wp` — запись в код ядра, `deadlock` — два потока ждут mutex друг друга).
 `addr2line -e build/nekotia.elf <адрес>` тоже указывает **на строку в C#-файле** — nekoc пишет `#line` перед каждым оператором.
 - **F5 в VS Code** (нужно расширение C/C++ `ms-vscode.cpptools`): собирает `-O0`-ядро, запускает QEMU с gdb-сервером
   и подключается. Breakpoint'ы ставятся кликом прямо в `.cs` и `.neko`, видны стек вызовов и переменные.
@@ -184,5 +185,7 @@ nekotia.json            проект nekoc: исходники и каталог
 - **Фаза 2** (основное): своя GDT/TSS с IST, ACPI MADT, LAPIC-таймер 1 кГц, IOAPIC, IRQ из C#, консоль во фреймбуфере,
   PS/2 клавиатура с EN/RU, командная строка, экран смерти.
 - **Фаза 3** (основное): свои таблицы страниц с NX/W^X, buddy-аллокатор, растущая куча, стек ядра с guard-страницей.
+- **Фаза 4** (без SMP): потоки, вытесняющий планировщик с приоритетами, Mutex/Semaphore/SpinLock, обнаружение deadlock,
+  FPU/SSE (`float`/`double` в C#), `make test`.
 
-Дальше — потоки и планировщик (фаза 4), userspace (фаза 5). См. [ROADMAP.md](ROADMAP.md).
+Дальше — SMP (фаза 4), userspace (фаза 5). См. [ROADMAP.md](ROADMAP.md).

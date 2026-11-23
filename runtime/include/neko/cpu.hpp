@@ -65,6 +65,28 @@ inline uint64_t read_cr3() {
 
 inline void io_wait() { outb(0x80, 0); }
 
+// Interrupt flag save/restore for short critical sections.
+#if NEKO_HOSTED
+inline uint64_t save_and_disable_interrupts() { return 0; }
+inline void restore_interrupts(uint64_t) {}
+inline void pause() {}
+#else
+inline uint64_t save_and_disable_interrupts() {
+    uint64_t flags;
+    __asm__ volatile("pushfq; popq %0; cli" : "=r"(flags) : : "memory");
+    return flags;
+}
+inline void restore_interrupts(uint64_t flags) {
+    if (flags & (1u << 9)) __asm__ volatile("sti" ::: "memory");
+}
+inline void pause() { __asm__ volatile("pause"); }
+#endif
+
+struct InterruptGuard {
+    uint64_t flags = save_and_disable_interrupts();
+    ~InterruptGuard() { restore_interrupts(flags); }
+};
+
 inline uint64_t read_tsc() {
     uint32_t lo, hi;
     __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));

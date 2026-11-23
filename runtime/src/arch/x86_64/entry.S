@@ -3,6 +3,7 @@
      CR0.EM = 0 (no emulation), CR0.MP = 1, CR4.OSFXSR = 1, CR4.OSXMMEXCPT = 1, fninit. */
 .section .text
 .global neko_entry
+.type neko_entry, @function
 neko_entry:
     movq %cr0, %rax
     andq $~(1 << 2), %rax
@@ -16,5 +17,6 @@ neko_entry:
     xorl %ebp, %ebp
     call kmain
     ud2
+.size neko_entry, . - neko_entry
 
 .section .note.GNU-stack, "", @progbits

@@ -1,0 +1,115 @@
+// Demo threads for `spawn` and `crash deadlock`.
+using Nekotia;
+using Nekotia.Hal;
+using Nekotia.Mem;
+using Nekotia.Threading;
+
+namespace Nekotia.OS;
+
+public static unsafe class Demos
+{
+    /// A rotating paw-print in the top-right corner, drawn straight onto the framebuffer
+    /// (floating point in a thread: the FPU state is saved on every switch).
+    public static void Spinner(ulong frames)
+    {
+        Framebuffer* fb = &Kernel.Info->Screen;
+        if (fb->Address == null)
+            return;
+        int cx = (int)fb->Width - 40;
+        int cy = 40;
+        for ulong frame in 0ul..frames {
+            Graphics.FillRect(fb, new Rect { Origin = new Point(cx - 32, cy - 32), Width = 64, Height = 64 }, 0x15131E);
+            double angle = frame * 0.15;
+            for int dot in 0..6 {
+                double a = angle + dot * (Maths.Pi / 3);
+                int x = cx + (int)(Maths.Cos(a) * 22);
+                int y = cy + (int)(Maths.Sin(a) * 22);
+                uint color = dot == 0 ? Colors.Pink : Colors.Peach;
+                Graphics.FillRect(fb, new Rect { Origin = new Point(x - 4, y - 4), Width = 8, Height = 8 }, color);
+            }
+            Thread.Sleep(50);
+        }
+        Graphics.FillRect(fb, new Rect { Origin = new Point(cx - 32, cy - 32), Width = 64, Height = 64 }, 0x15131E);
+    }
+
+    /// Counts primes below `limit` with a sieve on the heap — a long CPU-bound job.
+    public static void Primes(ulong limit)
+    {
+        ulong start = Time.UptimeMs();
+        byte* composite = (byte*)Heap.AllocZeroed((nuint)limit);
+        if (composite == null) {
+            Terminal.WriteLine("[primes] out of memory");
+            return;
+        }
+        defer Heap.Free(composite);
+        ulong count = 0;
+        for ulong i in 2ul..limit {
+            if (composite[i] != 0)
+                continue;
+            count++;
+            for (ulong j = i * i; j < limit; j += i)
+                composite[j] = 1;
+        }
+        Terminal.WriteLine($"\n[primes] {count} primes below {limit} in {Time.UptimeMs() - start} ms (thread #{Thread.CurrentId()})");
+    }
+
+    /// Spins for `ms` milliseconds without ever yielding: only preemption lets others run.
+    public static void Burn(ulong ms)
+    {
+        ulong until = Time.UptimeMs() + ms;
+        ulong spins = 0;
+        while (Time.UptimeMs() < until)
+            spins++;
+        Terminal.WriteLine($"\n[burn] {spins} spins in {ms} ms — the shell stayed responsive thanks to preemption");
+    }
+
+    public static void Counter(ulong ticks)
+    {
+        for ulong i in 1ul..=ticks {
+            Thread.Sleep(1000);
+            Terminal.WriteLine($"\n[counter] tick {i}/{ticks}");
+        }
+    }
+
+    // ---------------------------------------------------------------- deadlock demo
+
+    static Mutex _left;
+    static Mutex _right;
+
+    public static void StartDeadlock()
+    {
+        _left.SetName("left");
+        _right.SetName("right");
+        Thread.Start("philosopher-a", &LeftThenRight);
+        Thread.Start("philosopher-b", &RightThenLeft);
+    }
+
+    static void LeftThenRight(ulong unused)
+    {
+        lock (_left) {
+            Thread.Sleep(50);
+            lock (_right) {
+                Terminal.WriteLine("a: got both");
+            }
+        }
+    }
+
+    static void RightThenLeft(ulong unused)
+    {
+        lock (_right) {
+            Thread.Sleep(50);
+            lock (_left) {
+                Terminal.WriteLine("b: got both");
+            }
+        }
+    }
+
+    static Mutex _single;
+
+    public static void Relock()
+    {
+        _single.SetName("single");
+        _single.Lock();
+        _single.Lock();   // not recursive → DEADLOCK
+    }
+}

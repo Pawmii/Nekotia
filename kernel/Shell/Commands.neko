@@ -4,19 +4,22 @@ using Nekotia;
 using Nekotia.Hal;
 using Nekotia.Mem;
 using Nekotia.OS.Drivers;
+using Nekotia.Threading;
 
 namespace Nekotia.OS;
 
 public static unsafe class Commands
 {
     /// Space-separated, used by Tab completion.
-    public const string Names = "help clear info mem vm pages alloc uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
+    public const string Names = "help clear info ps spawn mem vm pages alloc uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
 
     public static void Run(byte* cmd, byte* args)
     {
         if (Is(cmd, "help")) Help();
         else if (Is(cmd, "clear")) Terminal.Clear();
         else if (Is(cmd, "info")) Info();
+        else if (Is(cmd, "ps")) Ps();
+        else if (Is(cmd, "spawn")) Spawn(args);
         else if (Is(cmd, "mem")) Mem();
         else if (Is(cmd, "vm")) Vm();
         else if (Is(cmd, "pages")) PageStats();
@@ -54,6 +57,8 @@ public static unsafe class Commands
     {
         Terminal.WriteLine("Commands:");
         Line("info", "system information");
+        Line("ps", "threads: state, priority, CPU time, context switches");
+        Line("spawn KIND", "start a demo thread: spinner primes burn counter");
         Line("mem", "memory, heap and page allocator statistics");
         Line("vm", "virtual memory layout and page tables");
         Line("pages", "buddy allocator: free blocks per order");
@@ -68,7 +73,7 @@ public static unsafe class Commands
         Line("selftest", "run the kernel self tests");
         Line("clear", "clear the screen (also Ctrl+L)");
         Line("panic", "stop screen: KERNEL_PANIC");
-        Line("crash KIND", "stop screen: null div throw custom assert pf gp ud bp double-free stack nx wp");
+        Line("crash KIND", "stop screen: null div throw custom assert pf gp ud bp double-free stack nx wp deadlock relock");
         Line("reboot", "restart the machine");
         Line("shutdown", "power off (QEMU)");
         Terminal.WriteLine("Keys: ↑/↓ history, Tab completion, Ctrl+U erase line, Ctrl+C cancel.");
@@ -106,6 +111,67 @@ public static unsafe class Commands
             Terminal.WriteLine(AnsiColor.Green, "ok");
         else
             Terminal.WriteLine(AnsiColor.BrightRed, "CORRUPTED");
+    }
+
+    // ---------------------------------------------------------------- threads
+
+    static void Ps()
+    {
+        ulong up = Time.UptimeMs();
+        if (up == 0) up = 1;
+        Terminal.WriteLine(AnsiColor.BrightCyan, "  ID  NAME                 STATE     PRI     CPU ms   CPU%  SWITCHES  STACK  WAITS FOR");
+        ThreadInfo info = default;
+        for (uint i = 0; Thread.GetInfo(i, out info); i++) {
+            Terminal.Write($"  {info.Id}");
+            Pad(Digits(info.Id), 4);
+            Terminal.Write(info.Name);
+            Pad((int)Str.Length(info.Name), 21);
+            Terminal.Write(StateName(info.State));
+            Pad((int)Str.Length(StateName(info.State)), 10);
+            Terminal.Write(info.Priority == ThreadPriority.High ? "high   " : info.Priority == ThreadPriority.Normal ? "normal " : "low    ");
+            Pad(Digits(info.CpuMs), 9);
+            Terminal.Write($"{info.CpuMs}");
+            double share = info.CpuMs * 100.0 / up;
+            Pad(share >= 10 ? 4 : 3, 7);
+            Terminal.Write($"{share:F1}");
+            Pad(Digits(info.Switches), 10);
+            Terminal.Write($"{info.Switches}");
+            Pad(Digits(info.StackKib) + 4, 7);
+            Terminal.Write($"{info.StackKib} KiB  ");
+            Terminal.WriteLine(info.BlockedOn);
+        }
+        Terminal.WriteLine($"{Thread.Count()} threads, {Thread.ContextSwitches()} context switches, idle {Thread.IdleMs() * 100.0 / up:F1}% of {up} ms");
+    }
+
+    static string StateName(ThreadState state)
+    {
+        switch (state)
+        {
+            case ThreadState.Ready: return "ready";
+            case ThreadState.Running: return "running";
+            case ThreadState.Sleeping: return "sleeping";
+            case ThreadState.Blocked: return "blocked";
+            default: return "dead";
+        }
+    }
+
+    static void Pad(int used, int width)
+    {
+        for int i in used..width { Terminal.WriteChar((byte)' '); }
+    }
+
+    static void Spawn(byte* kind)
+    {
+        uint id = 0;
+        if (Is(kind, "spinner")) id = Thread.Start("spinner", &Demos.Spinner, 200);
+        else if (Is(kind, "primes")) id = Thread.Start("primes", &Demos.Primes, 3000000, ThreadPriority.Low);
+        else if (Is(kind, "burn")) id = Thread.Start("burn", &Demos.Burn, 5000, ThreadPriority.Low);
+        else if (Is(kind, "counter")) id = Thread.Start("counter", &Demos.Counter, 5);
+        else {
+            Terminal.WriteLine("usage: spawn spinner|primes|burn|counter");
+            return;
+        }
+        Terminal.WriteLine($"started thread #{id} — try `ps`");
     }
 
     static void Vm()
@@ -282,12 +348,17 @@ public static unsafe class Commands
         } else if (Is(kind, "wp")) {
             delegate*<void> help = &Help;
             *(byte*)help = 0x90;                                // kernel code is read-only
+        } else if (Is(kind, "deadlock")) {
+            Demos.StartDeadlock();
+            Thread.Sleep(1000);                                 // the second lock() detects the cycle
+        } else if (Is(kind, "relock")) {
+            Demos.Relock();
         } else if (Is(kind, "double-free")) {
             void* block = Heap.Alloc(64);
             Heap.Free(block);
             Heap.Free(block);                                   // HEAP_CORRUPTION
         } else {
-            Terminal.WriteLine("usage: crash null|div|throw|custom|assert|pf|gp|ud|bp|double-free|stack|nx|wp");
+            Terminal.WriteLine("usage: crash null|div|throw|custom|assert|pf|gp|ud|bp|double-free|stack|nx|wp|deadlock|relock");
         }
     }
 

@@ -4,6 +4,8 @@
 //   * the IOAPIC routes legacy ISA IRQs (keyboard, …) to vectors 0x30 + irq
 #include "arch.hpp"
 
+#include <neko/sched.hpp>
+
 namespace neko::arch {
 namespace {
 
@@ -131,12 +133,18 @@ void irq_dispatch(uint8_t vector) {
     if (vector == kVectorSpurious) return;  // no EOI for spurious interrupts
     if (vector == kVectorTimer) {
         g_ticks = g_ticks + 1;
-    } else if (vector >= kVectorIrqBase && vector < kVectorIrqBase + 16) {
-        uint8_t line = vector - kVectorIrqBase;
-        g_irq_counts[line] = g_irq_counts[line] + 1;
-        if (g_handlers[line]) g_handlers[line]();
+        lapic_write(kLapicEoi, 0);
+        sched::tick();
+    } else {
+        if (vector >= kVectorIrqBase && vector < kVectorIrqBase + 16) {
+            uint8_t line = vector - kVectorIrqBase;
+            g_irq_counts[line] = g_irq_counts[line] + 1;
+            if (g_handlers[line]) g_handlers[line]();
+        }
+        lapic_write(kLapicEoi, 0);
     }
-    lapic_write(kLapicEoi, 0);
+    // After the EOI, so the next timer interrupt can reach whichever thread runs next.
+    sched::preempt_if_needed();
 }
 
 }  // namespace neko::arch
@@ -178,8 +186,7 @@ uint32_t timer_hz() { return arch::kTimerHz; }
 
 void sleep_ms(uint64_t ms) {
     if (!arch::g_apic_ready) return;  // no timer: nothing would ever wake us up
-    uint64_t until = arch::g_ticks + ms;
-    while (arch::g_ticks < until) cpu::halt();
+    sched::sleep_ms(ms);              // other threads run meanwhile
 }
 
 }  // namespace neko::time

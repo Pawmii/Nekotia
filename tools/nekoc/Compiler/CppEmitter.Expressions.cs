@@ -242,8 +242,15 @@ sealed partial class CppEmitter
             return InterpolatedWrite(m, interpolated, inv);
 
         var args = Arguments(call.Arguments, m);
+        string Receiver() => inv.Expression switch
+        {
+            MemberAccessExpressionSyntax { Expression: ThisExpressionSyntax } => "this->",
+            MemberAccessExpressionSyntax ma when ma.IsKind(SyntaxKind.PointerMemberAccessExpression) => Expr(ma.Expression) + "->",
+            MemberAccessExpressionSyntax ma => Expr(ma.Expression) + ".",
+            _ => "this->",
+        };
         if (Symbols.NativeName(m) is { } native)
-            return $"{native}({args})";
+            return m.IsStatic ? $"{native}({args})" : $"{Receiver()}{native}({args})";  // native member function
         if (!Symbols.IsInSource(m))
             return NotAvailable(inv, m);
 
@@ -251,14 +258,7 @@ sealed partial class CppEmitter
         if (m.IsStatic)
             return $"{Qualified(m.ContainingType)}::{name}({args})";
 
-        string receiver = inv.Expression switch
-        {
-            MemberAccessExpressionSyntax { Expression: ThisExpressionSyntax } => "this->",
-            MemberAccessExpressionSyntax ma when ma.IsKind(SyntaxKind.PointerMemberAccessExpression) => Expr(ma.Expression) + "->",
-            MemberAccessExpressionSyntax ma => Expr(ma.Expression) + ".",
-            _ => "this->",
-        };
-        return $"{receiver}{name}({args})";
+        return $"{Receiver()}{name}({args})";
     }
 
     string TemplateArguments(IMethodSymbol m, SyntaxNode at) => m.IsGenericMethod

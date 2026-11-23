@@ -35,6 +35,21 @@ public sealed class CodeMask
         return -1;
     }
 
+    public int MatchingBrace(string text, int open)
+    {
+        int depth = 0;
+        for (int i = open; i < text.Length; i++)
+        {
+            if (!_code[i])
+                continue;
+            if (text[i] == '{')
+                depth++;
+            else if (text[i] == '}' && --depth == 0)
+                return i;
+        }
+        return -1;
+    }
+
     public static CodeMask Compute(string s)
     {
         var mask = new CodeMask(s.Length);

@@ -11,6 +11,7 @@
 #include <time.h>
 
 #include <neko/runtime.hpp>
+#include <neko/sched.hpp>
 
 namespace {
 
@@ -131,6 +132,30 @@ bool grow_heap(size_t min_bytes) {
 }
 }  // namespace
 
+// ---- scheduler hooks: no timer interrupt, so idling simulates one
+namespace {
+void* g_host_stacks[256];  // keeps the allocations reachable for LeakSanitizer
+size_t g_host_stack_count = 0;
+}  // namespace
+
+uint64_t neko_sched_new_stack(size_t size) {
+    auto* p = static_cast<uint8_t*>(aligned_alloc(4096, size));
+    if (!p) return 0;
+    if (g_host_stack_count < 256) g_host_stacks[g_host_stack_count++] = p;
+    return reinterpret_cast<uint64_t>(p + size);
+}
+
+void neko_sched_idle() {
+    if (!neko::sched::has_sleepers()) {
+        printf("\n[neko-host] every thread is waiting for input that cannot come (no keyboard in host mode)\n");
+        finish(0);
+    }
+    timespec ts = {0, 1000000};
+    nanosleep(&ts, nullptr);
+    neko::sched::tick();
+    neko::sched::preempt_if_needed();
+}
+
 namespace neko::sysinfo {
 const char* cpu_brand() { return "host CPU (Linux process)"; }
 uint32_t cpu_count() { return 1; }
@@ -162,6 +187,7 @@ int main(int argc, char** argv) {
     g_info.CommandLine = reinterpret_cast<const uint8_t*>(argc > 1 ? argv[1] : "");
     g_info.Hosted = true;
 
+    neko::sched::init(0, 0);
     neko::console::init(g_info.Screen);
     neko::term::write("[neko-host] running the kernel as a Linux process\n");
     neko_kernel_init();

@@ -7,6 +7,8 @@
 
 #include "arch.hpp"
 
+#include <neko/sched.hpp>
+
 #ifndef NEKO_HEAP_SIZE
 #define NEKO_HEAP_SIZE (4u * 1024 * 1024)  // initial heap; it grows on demand
 #endif
@@ -155,7 +157,10 @@ namespace {
     __builtin_unreachable();
 }
 
+uint64_t g_kernel_stack_top = 0;
+
 [[noreturn]] void kmain_main() {
+    neko::sched::init(g_kernel_stack_top, kKernelStackSize);
     init_framebuffer();
     init_strings();
     g_info.Hosted = false;
@@ -207,5 +212,6 @@ extern "C" NEKO_NORETURN void kmain() {
 
     uint64_t stack = neko::vmm::create_stack(kKernelStackSize);
     if (!stack) neko::panic("cannot allocate the kernel stack");
+    g_kernel_stack_top = stack;
     switch_stack(stack, kmain_main);
 }

@@ -10,6 +10,7 @@
 #include <neko/memory.hpp>
 #include <neko/serial.hpp>
 #include <neko/platform.hpp>
+#include <neko/sched.hpp>
 
 namespace neko {
 

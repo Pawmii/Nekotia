@@ -36,7 +36,7 @@
 
 ### Типы
 
-`bool byte sbyte short ushort int uint long ulong nint nuint char(char16_t) string(const char*)`, указатели,
+`bool byte sbyte short ushort int uint long ulong nint nuint float double char(char16_t) string(const char*)`, указатели,
 свои `struct`/`enum`, `[Native]`-структуры SDK (`BootInfo`, `Framebuffer`).
 
 Целочисленная семантика как в C#: nekoc вставляет касты там, где C++ продвигал бы типы иначе
@@ -53,7 +53,6 @@
 | `throw;`, `throw ex;`, throw-выражения | NEKO0300 | `throw new SomeException("...")` |
 | `"a" + b` | NEKO0300 | несколько `Write*` подряд или `$"..."` в `Write/WriteLine` |
 | `$"..."` вне `Write/WriteLine`, указатели в `$"..."` | NEKO0300 / CS0306 | отдельный `Write(ptr)` |
-| `float`, `double` | NEKO0201 | целые/фиксированная точка; FPU — фаза 4 |
 | лямбды, делегаты, LINQ, `async` | NEKO0300/0100 | статические методы + function pointers |
 | любой API .NET (`System.Console`…) | NEKO0200 / CS0234 | SDK Nekotia (`Nekotia.Hal`, `Nekotia.Mem`) |
 | статические конструкторы | NEKO0101 | инициализаторы полей или явный `Init()` |
@@ -87,6 +86,16 @@ defer {
 ```
 Выполняется при выходе из текущего блока, в обратном порядке (как в Zig/Go-по-блокам). Внутри нельзя `return`
 и `break`/`continue` наружу (NEKO0301). → `if (Sugar.Defer) stmt;` → C++ scope guard на лямбде.
+
+### `lock`
+
+```neko
+static Mutex _queueLock;
+lock (_queueLock) {
+    ...            // разблокируется при любом выходе из блока (return, break)
+}
+```
+→ `{ _queueLock.Lock(); defer _queueLock.Unlock(); { ... } }`. Подходит для `Mutex` и `SpinLock`.
 
 ### `unless`, `loop`
 
@@ -147,6 +156,9 @@ C#-обёртка в `sdk/Nekotia.Sdk/`.
 | `Nekotia.Mem.Pages` | `Alloc`/`Free` (4 KiB), `AllocContiguous`/`FreeContiguous` (buddy, выровнены), `FreeBlocks(order)`, `VirtToPhys` |
 | `Nekotia.Mem.VirtualMemory` | `Map`, `Unmap`, `Protect`, `Translate`, `MapFresh`, `PageFlags` (Write/Execute/User/Uncached/WriteCombining) |
 | `Nekotia.Mem.Memory` | `Set`, `Copy`, `Move`, `Compare`, `Zero` |
+| `Nekotia.Threading.Thread` | `Start(name, &Entry, arg, priority)`, `Yield`, `Sleep`, `Exit`, `CurrentId`, `GetInfo` |
+| `Nekotia.Threading.Mutex` / `Semaphore` / `SpinLock` | `Lock/Unlock/TryLock/SetName`; `Wait/Signal/TryWait` (Signal — и из IRQ) |
+| `Nekotia.Maths` | `Sqrt`, `Sin`, `Cos`, `Tan`, `Atan2`, `Exp`, `Log`, `Pow`, `Floor`, `Ceiling`, `Round`, `Abs`, `Pi` |
 | `Nekotia.Debug` | `Panic`, `Assert` — с файлом/строкой/методом вызывающего, экран смерти |
 | `Nekotia.Str` | `Length`, `Equals` для C-строк |
 | `Nekotia.Asm`, `Nekotia.Intrinsics` | `Emit`, `EmitAtt`, `Unreachable`, `Breakpoint`, `CompilerBarrier` |
@@ -161,7 +173,7 @@ C#-обёртка в `sdk/Nekotia.Sdk/`.
 | NEKO0100 | неподдерживаемый вид типа (class, interface, record, вложенный, generic) |
 | NEKO0101 | неподдерживаемый член (статический конструктор, индексатор, params…) |
 | NEKO0200 | вызов API .NET |
-| NEKO0201 | неподдерживаемый тип (массивы, float, managed) |
+| NEKO0201 | неподдерживаемый тип (массивы, decimal, managed) |
 | NEKO0300 | неподдерживаемое выражение или оператор |
 | NEKO0301 | неправильный `defer` |
 | NEKO0302 | `asm` не константная строка |

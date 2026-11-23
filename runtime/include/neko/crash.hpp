@@ -17,6 +17,7 @@ enum class StopCode : uint32_t {
     KernelPanic = 0xE2,
     HeapCorruption = 0xE3,
     OutOfMemory = 0xE4,
+    Deadlock = 0xE5,            // mutex locked twice by its owner, or a cycle of threads waiting for each other
 };
 
 // Register state captured by the interrupt stubs.

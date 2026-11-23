@@ -14,6 +14,7 @@ namespace Nekotia.Compiler.Sugar;
 ///   defer stmt;            run stmt at scope exit (Zig/Go)      → if (Sugar.Defer) stmt;
 ///   unless (cond) stmt     inverse if                           → if (!(cond)) stmt
 ///   loop { ... }           infinite loop                        → while (true) { ... }
+///   lock (m) { ... }       Mutex/SpinLock held for the block    → m.Lock(); defer m.Unlock();
 ///   for [T] i in a..b {    half-open range loop (..= inclusive) → for (T i = a; i < b; i++) {
 ///   @entry @packed @inline @noreturn @native("x") @align(n) @irq(n) → [KernelEntry] ...
 /// </summary>
@@ -27,6 +28,7 @@ public static partial class Desugarer
         var text = source.Replace("\r\n", "\n");
         text = RewriteAsmBlocks(text);
         text = RewriteAsmInline(text);
+        text = RewriteLock(text);
         text = RewriteSimple(text, LoopRegex(), "while (true) {", requireStatementStart: true);
         text = RewriteSimple(text, DeferRegex(), $"if ({DeferMarker})", requireStatementStart: true);
         text = RewriteUnless(text);
@@ -104,6 +106,49 @@ public static partial class Desugarer
         }
         sb.Append(text, last, text.Length - last);
         return sb.ToString();
+    }
+
+    // ---------------------------------------------------------------- lock
+
+    /// <summary>
+    /// <c>lock (m) { body }</c> → <c>{ (m).Lock(); if (Sugar.Defer) (m).Unlock(); { body } }</c>:
+    /// unlocked on every way out of the block. Works with any value that has Lock()/Unlock() (Mutex, SpinLock).
+    /// </summary>
+    static string RewriteLock(string text)
+    {
+        while (true)
+        {
+            var mask = CodeMask.Compute(text);
+            Match? found = null;
+            foreach (Match m in LockRegex().Matches(text))
+            {
+                if (mask.IsCode(m.Index) && IsStatementStart(text, mask, m.Index))
+                {
+                    found = m;
+                    break;
+                }
+            }
+            if (found is null)
+                return text;
+
+            int open = found.Index + found.Length - 1;
+            int close = mask.MatchingParen(text, open);
+            if (close < 0)
+                return text;
+            int brace = close + 1;
+            while (brace < text.Length && char.IsWhiteSpace(text[brace]))
+                brace++;
+            if (brace >= text.Length || text[brace] != '{')
+                return text; // only the block form is sugar; Roslyn reports the rest
+            int end = mask.MatchingBrace(text, brace);
+            if (end < 0)
+                return text;
+
+            var target = text[(open + 1)..close].Trim();
+            var gap = text[(close + 1)..brace];   // keeps the newline of Allman-style braces
+            var head = $"{{ ({target}).Lock(); if ({DeferMarker}) ({target}).Unlock();{gap}{{";
+            text = text[..found.Index] + head + text[(brace + 1)..end] + "} }" + text[(end + 1)..];
+        }
     }
 
     // ---------------------------------------------------------------- keywords
@@ -235,6 +280,9 @@ public static partial class Desugarer
 
     [GeneratedRegex(@"\basm\s+""")]
     private static partial Regex AsmInlineRegex();
+
+    [GeneratedRegex(@"\block\s*\(")]
+    private static partial Regex LockRegex();
 
     [GeneratedRegex(@"\bloop\s*\{")]
     private static partial Regex LoopRegex();

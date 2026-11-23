@@ -12,6 +12,7 @@
 //   press R to reboot
 #include <neko/crash.hpp>
 #include <neko/runtime.hpp>
+#include <neko/sched.hpp>
 
 // ---------------------------------------------------------------- embedded symbol table (scripts/gen-symbols.py)
 
@@ -409,6 +410,24 @@ void system_state() {
     text(sysinfo::cpu_brand());
     nl();
 
+    label("thread");
+    if (sched::running()) {
+        text(sched::current_name());
+        text(" (#");
+        dec(sched::current_id());
+        text(")");
+        color(kMuted);
+        text(" of ");
+        color(kText);
+        dec(sched::thread_count());
+        text(" threads, ");
+        dec(sched::context_switches());
+        text(" context switches");
+    } else {
+        text("boot (scheduler not started)");
+    }
+    nl();
+
     label("heap");
     term::write_size(heap::used_bytes());
     text(" used of ");
@@ -516,6 +535,7 @@ void panic_at(const char* message, const char* file, int32_t line, const char* f
 void fail(StopCode code, const char* message) {
     const char* name = code == StopCode::HeapCorruption ? "HEAP_CORRUPTION"
                        : code == StopCode::OutOfMemory  ? "OUT_OF_MEMORY"
+                       : code == StopCode::Deadlock     ? "DEADLOCK"
                                                         : "KERNEL_PANIC";
     Report r = software(code, name, NEKO_CALLER);
     r.exception = code == StopCode::OutOfMemory ? "System.OutOfMemoryException" : nullptr;

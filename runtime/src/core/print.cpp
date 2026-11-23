@@ -2,6 +2,7 @@
 // plus C string helpers and panic.
 #include <neko/console.hpp>
 #include <neko/runtime.hpp>
+#include <neko/sched.hpp>
 
 namespace neko {
 namespace {
@@ -103,6 +104,8 @@ void put_float(Sink put, double v, int32_t decimals) {
     put_udec(put, frac);
 }
 
+sync::SpinLock g_term_lock;  // one write call = one uninterrupted piece of output
+
 void term_put(uint8_t c) {
     serial::write_char(c);
     console::put_byte(c);
@@ -120,15 +123,17 @@ void write_size(uint64_t bytes) { put_size(write_char, bytes); }
 }  // namespace serial
 
 namespace term {
-void write_char(uint8_t c) { term_put(c); }
-void write(const char* s) { put_str(term_put, s); }
-void write(const uint8_t* s) { put_str(term_put, reinterpret_cast<const char*>(s)); }
-void write_codepoint(uint32_t cp) { put_codepoint(term_put, cp); }
-void write_hex(uint64_t value) { put_hex(term_put, value); }
-void write_dec(int64_t value) { put_dec(term_put, value); }
-void write_udec(uint64_t value) { put_udec(term_put, value); }
-void write_size(uint64_t bytes) { put_size(term_put, bytes); }
-void write_float(double value, int32_t decimals) { put_float(term_put, value, decimals); }
+#define NEKO_TERM_LOCKED sync::ScopedLock guard(g_term_lock)
+void write_char(uint8_t c) { NEKO_TERM_LOCKED; term_put(c); }
+void write(const char* s) { NEKO_TERM_LOCKED; put_str(term_put, s); }
+void write(const uint8_t* s) { NEKO_TERM_LOCKED; put_str(term_put, reinterpret_cast<const char*>(s)); }
+void write_codepoint(uint32_t cp) { NEKO_TERM_LOCKED; put_codepoint(term_put, cp); }
+void write_hex(uint64_t value) { NEKO_TERM_LOCKED; put_hex(term_put, value); }
+void write_dec(int64_t value) { NEKO_TERM_LOCKED; put_dec(term_put, value); }
+void write_udec(uint64_t value) { NEKO_TERM_LOCKED; put_udec(term_put, value); }
+void write_size(uint64_t bytes) { NEKO_TERM_LOCKED; put_size(term_put, bytes); }
+void write_float(double value, int32_t decimals) { NEKO_TERM_LOCKED; put_float(term_put, value, decimals); }
+#undef NEKO_TERM_LOCKED
 }  // namespace term
 
 namespace str {

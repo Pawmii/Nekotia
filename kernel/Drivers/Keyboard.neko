@@ -3,6 +3,7 @@
 // Layouts: English (QWERTY) and Russian (ЙЦУКЕН), switched with Alt+Shift.
 using Nekotia;
 using Nekotia.Hal;
+using Nekotia.Threading;
 
 namespace Nekotia.OS.Drivers;
 
@@ -33,6 +34,7 @@ public static unsafe class Keyboard
     const string RuShifted = "\0\x1b" + "!\"№;%:?*()_+" + "\b\t" + "ЙЦУКЕНГШЩЗХЪ" + "\n\0" + "ФЫВАПРОЛДЖЭЁ" + "\0/"  + "ЯЧСМИТЬБЮ," + "\0*\0 ";
 
     static KeyRing _ring;
+    static Semaphore _available;   // one unit per queued key; ReadKey sleeps on it
     static volatile int _head;   // next slot to read (main code)
     static volatile int _tail;   // next slot to write (interrupt)
     static ulong _dropped;
@@ -70,13 +72,15 @@ public static unsafe class Keyboard
         return true;
     }
 
-    /// Blocks (hlt) until a key is pressed.
+    /// Blocks the calling thread until a key is pressed (other threads keep running).
     public static uint ReadKey()
     {
         uint key = 0;
-        while (!TryReadKey(out key))
-            Cpu.Halt();
-        return key;
+        loop {
+            _available.Wait();
+            if (TryReadKey(out key))
+                return key;
+        }
     }
 
     public static void ToggleLayout() => _russian = !_russian;
@@ -93,6 +97,7 @@ public static unsafe class Keyboard
         _ring.Items[_tail] = key;
         Intrinsics.CompilerBarrier();
         _tail = next;
+        _available.Signal();   // wakes ReadKey (allowed from an interrupt handler)
     }
 
     static void Handle(byte scancode)

@@ -3,6 +3,7 @@ using System;
 using Nekotia;
 using Nekotia.Hal;
 using Nekotia.Mem;
+using Nekotia.Threading;
 
 namespace Nekotia.OS;
 
@@ -61,6 +62,7 @@ public static unsafe class SelfTest
         PageFrames();
         BuddyBlocks();
         Paging();
+        Threads();
         return _failed;
     }
 
@@ -258,6 +260,81 @@ public static unsafe class SelfTest
         Check(VirtualMemory.Translate(virt) == VirtualMemory.Unmapped, "paging: unmap");
         Pages.Free(frame);
         Check(VirtualMemory.IsStackGuard(VirtualMemory.StackBase), "paging: kernel stack has a guard page");
+    }
+
+    // ---------------------------------------------------------------- threads
+
+    static Mutex _counterLock;
+    static Semaphore _done;
+    static ulong _counter;
+    static volatile bool _stop;
+    static volatile int _spins;
+    static int _pingPong;
+    static Semaphore _ping;
+    static Semaphore _pong;
+
+    static void Increment(ulong times)
+    {
+        for ulong i in 0ul..times {
+            lock (_counterLock) {
+                ulong v = _counter;
+                if (i % 64 == 0)
+                    Thread.Yield();      // make lost updates likely if the mutex did not work
+                _counter = v + 1;
+            }
+        }
+        _done.Signal();
+    }
+
+    static void Spinner(ulong unused)
+    {
+        while (!_stop)
+            _spins = _spins + 1;     // never yields
+        _done.Signal();
+    }
+
+    static void Ponger(ulong rounds)
+    {
+        for ulong i in 0ul..rounds {
+            _ping.Wait();
+            _pingPong++;
+            _pong.Signal();
+        }
+    }
+
+    static void Threads()
+    {
+        _counterLock.SetName("selftest.counter");
+        _counter = 0;
+        for int i in 0..3 {
+            Thread.Start("selftest-inc", &Increment, 1000);
+        }
+        for int i in 0..3 { _done.Wait(); }
+        Check(_counter == 3000, "threads: 3 × 1000 increments under a mutex");
+
+        ulong start = Time.UptimeMs();
+        Thread.Sleep(20);
+        ulong slept = Time.UptimeMs() - start;
+        Check(slept >= 20 && slept < 40, "threads: Sleep(20) blocks ~20 ms");
+
+        _pingPong = 0;
+        Thread.Start("selftest-pong", &Ponger, 100);
+        for int i in 0..100 {
+            _ping.Signal();
+            _pong.Wait();
+        }
+        Check(_pingPong == 100, "threads: semaphore ping-pong × 100");
+
+        if (!Kernel.Info->Hosted) {           // no timer interrupt in host mode
+            _stop = false;
+            _spins = 0;
+            Thread.Start("selftest-spin", &Spinner, 0);
+            Thread.Sleep(30);                   // the spinner never yields: only preemption brings us back
+            int seen = _spins;
+            _stop = true;
+            _done.Wait();
+            Check(seen > 0, "threads: preemption (a thread that never yields gets interrupted)");
+        }
     }
 
     static void PageFrames()
