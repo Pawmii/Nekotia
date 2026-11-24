@@ -415,6 +415,8 @@ int64_t wait(uint32_t pid) {
             unlink_locked(p);
             code = p->exit_code;
             to_free = p;
+        } else if (!sched::killed()) {  // a signal cut the wait short: the child stays ours, wait() may be retried
+            p->waited = false;
         } else if (p->state == State::Exited) {  // we are being killed; the child is gone too
             unlink_locked(p);
             to_free = p;
@@ -431,6 +433,19 @@ int64_t wait(uint32_t pid) {
 void check_killed() {
     if (sched::killed()) sched::exit();
 }
+
+}  // namespace neko::proc
+
+namespace neko::sched {
+// Waits that a kill or a signal must cut short re-check this after publishing themselves (no lost wake-up).
+bool interrupt_pending(Thread* t) {
+    if (__atomic_load_n(&t->kill_pending, __ATOMIC_SEQ_CST)) return true;
+    proc::Process* p = t->process;
+    return p && (__atomic_load_n(&p->sig_pending, __ATOMIC_SEQ_CST) & ~t->sig_blocked) != 0;
+}
+}  // namespace neko::sched
+
+namespace neko::proc {
 
 void exit_current(int64_t code) {
     Process* p = current();

@@ -8,6 +8,7 @@ public struct ServerClient
     public bool Used;
     public int Fd;
     public bool Greeted;
+    public bool OwesClipboard;   // its ClipboardData did not fit into its queue: sent again until it does
 }
 
 /// <summary>
@@ -138,6 +139,10 @@ public static unsafe class WindowServer
     /// <summary>Accepts new clients and reads what the ready ones sent (after Poll.Wait on the array FillPoll made).</summary>
     public static void Dispatch(PollFd* fds, int count)
     {
+        for (int i = 0; i < MaxClients; i++) {   // clipboard answers that did not fit last time
+            if (_clients[i].Used && _clients[i].OwesClipboard)
+                SendClipboard(i);
+        }
         for (int i = 0; i < MaxWindows; i++) {   // releases that did not fit last time
             if (_windows[i].Used && _windows[i].OwedRelease != 0)
                 SendRelease(i);
@@ -348,8 +353,11 @@ public static unsafe class WindowServer
         }
         if (fd < 0)
             m.Width = 0;
-        if (client >= 0 && client < MaxClients && _clients[client].Used)
-            Channel.Send(_clients[client].Fd, &m, (ulong)sizeof(Message), fd);
+        if (client >= 0 && client < MaxClients && _clients[client].Used) {
+            // The client waits for this answer: like Release, it must not be lost to a full queue.
+            long r = Channel.Send(_clients[client].Fd, &m, (ulong)sizeof(Message), fd);
+            _clients[client].OwesClipboard = r == Process.ErrBusy;
+        }
         if (fd >= 0)
             File.Close(fd);
     }

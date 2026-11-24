@@ -183,12 +183,25 @@ public static unsafe class Program
         return y * _cols + x;
     }
 
+    /// The selection as [a, b], clamped to the grid (false when there is none).
+    static bool SelectionRange(out int a, out int b)
+    {
+        a = _selStart < _selEnd ? _selStart : _selEnd;
+        b = _selStart < _selEnd ? _selEnd : _selStart;
+        int last = _cols * _rows - 1;
+        if (!_selected || a > last)
+            return false;
+        if (b > last)
+            b = last;
+        if (a < 0)
+            a = 0;
+        return true;
+    }
+
     static bool InSelection(int index)
     {
-        if (!_selected)
-            return false;
-        int a = _selStart < _selEnd ? _selStart : _selEnd, b = _selStart < _selEnd ? _selEnd : _selStart;
-        return index >= a && index <= b;
+        int a = 0, b = 0;
+        return SelectionRange(out a, out b) && index >= a && index <= b;
     }
 
     static void OnPointer(Message* m)
@@ -220,10 +233,11 @@ public static unsafe class Program
     /// The selected cells as UTF-8 lines (trailing spaces dropped) on the clipboard.
     static void Copy()
     {
-        if (!_selected)
+        int a = 0, b = 0;
+        if (!SelectionRange(out a, out b))
             return;
-        int a = _selStart < _selEnd ? _selStart : _selEnd, b = _selStart < _selEnd ? _selEnd : _selStart;
-        byte* text = (byte*)Memory.Alloc((ulong)((b - a + 1) * 4 + _rows + 1));
+        // up to 4 bytes per cell, plus a newline per row the selection crosses
+        byte* text = (byte*)Memory.Alloc((ulong)((b - a + 1) * 4 + (b - a) / _cols + 2));
         int n = 0;
         int rowEnd = -1;
         for (int i = a; i <= b; i++) {
@@ -795,6 +809,8 @@ public static unsafe class Program
         _cells = cells;
         _cols = cols;
         _rows = rows;
+        _selected = false;   // the selection was in the old grid's cells
+        _selecting = false;
         _y -= shift;
         _lineY -= shift;
         if (_lineY < 0)

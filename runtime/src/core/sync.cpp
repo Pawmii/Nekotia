@@ -240,7 +240,7 @@ bool Semaphore::wait_interruptible() {
     // waiting_sem. One of the two always sees the other, so a kill is never missed.
     me->interrupted = false;
     __atomic_store_n(&me->waiting_sem, this, __ATOMIC_SEQ_CST);
-    if (__atomic_load_n(&me->kill_pending, __ATOMIC_SEQ_CST)) {
+    if (sched::interrupt_pending(me)) {
         me->waiting_sem = nullptr;
         guard.release();
         return false;
@@ -268,7 +268,7 @@ int Semaphore::wait_for(uint64_t timeout_ms, bool interruptible) {
     me->interrupted = false;
     if (interruptible) {
         __atomic_store_n(&me->waiting_sem, this, __ATOMIC_SEQ_CST);  // see wait_interruptible
-        if (__atomic_load_n(&me->kill_pending, __ATOMIC_SEQ_CST)) {
+        if (sched::interrupt_pending(me)) {
             me->waiting_sem = nullptr;
             guard.release();
             return -1;

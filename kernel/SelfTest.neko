@@ -920,6 +920,9 @@ public static unsafe class SelfTest
         if (f != null)
             Vfs.Close(f);
         Check(n == 23 && buf[0] == 0xD0, "ext: nested directories, a UTF-8 file");
+        if (Str.Equals(kind, "ext2") && Vfs.Exists("/tmp/ext/loopA"))
+            Check(!Vfs.Exists("/tmp/ext/loopA/hello.txt") && !Vfs.Exists("/tmp/ext/loopB/loopA"),
+                  "ext2: directory entries looping back to the root are not followed");
         Check(Vfs.Unmount(dir) == 0 && Vfs.Remove(dir) == 0, "ext: unmount");
     }
 

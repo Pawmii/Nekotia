@@ -19,4 +19,9 @@ python3 -I -c "import sys; open(sys.argv[1], 'wb').write(bytes(((i * 7) + (i >> 
 rm -f "$out/test-ext2.img" "$out/test-ext4.img"
 truncate -s 16M "$out/test-ext2.img" "$out/test-ext4.img"
 mke2fs -q -F -t ext2 -b 1024 -d "$src" -L nekoext2 "$out/test-ext2.img"
+# A broken volume's worth of trouble: two more names for the root directory (a loop the driver must not follow).
+if command -v debugfs >/dev/null 2>&1; then
+    debugfs -w -R "ln / loopA" "$out/test-ext2.img" >/dev/null 2>&1
+    debugfs -w -R "ln / loopB" "$out/test-ext2.img" >/dev/null 2>&1
+fi
 mke2fs -q -F -t ext4 -b 4096 -d "$src" -L nekoext4 "$out/test-ext4.img"

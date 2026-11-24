@@ -52,11 +52,13 @@ Gpu g_gpu;
 
 // Sends the request (`length` bytes at g.request) and waits for the answer; its type.
 uint32_t command(Gpu& g, uint32_t length, uint32_t answer = sizeof(Header)) {
+    uint32_t head, got;
+    while (virtio::next_used(g.control, head, got)) {
+    }  // left over from a command the stop screen overtook
     g.control.desc[0] = {pmm::virt_to_phys(g.request), length, virtio::kDescNext, 1};
     g.control.desc[1] = {pmm::virt_to_phys(g.response), answer, virtio::kDescWrite, 0};
     mem::set(g.response, 0, answer);
     virtio::publish(g.control, 0);
-    uint32_t head, got;
     for (uint64_t i = 0; i < 100000000; ++i) {
         if (virtio::next_used(g.control, head, got)) return reinterpret_cast<Header*>(g.response)->type;
         cpu::pause();
@@ -100,16 +102,30 @@ bool scanout(Gpu& g, uint32_t resource) {
 
 // ---- display::Driver
 
+// The stop screen calls present/flip with the other CPUs halted — one of them may have held g.lock in the
+// middle of a command. Then the lock is not taken, and whatever command was half done is simply overtaken:
+// the device has finished or will finish it, and a stale entry in the used ring only makes a later wait
+// end early, which nothing after the stop screen depends on.
+struct GpuGuard {
+    bool held;
+    GpuGuard() : held(!crash::in_progress()) {
+        if (held) g_gpu.lock.lock();
+    }
+    ~GpuGuard() {
+        if (held) g_gpu.lock.unlock();
+    }
+};
+
 void present(void*, uint32_t buffer, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     Gpu& g = g_gpu;
-    sync::ScopedLock guard(g.lock);
+    GpuGuard guard;
     transfer(g, buffer + 1, x, y, w, h);
     if (buffer == g.shown) flush(g, buffer + 1, x, y, w, h);
 }
 
 void flip(void*, uint32_t index) {
     Gpu& g = g_gpu;
-    sync::ScopedLock guard(g.lock);
+    GpuGuard guard;
     g.shown = index;
     scanout(g, index + 1);
     flush(g, index + 1, 0, 0, g.width, g.height);

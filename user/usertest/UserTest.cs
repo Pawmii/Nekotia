@@ -500,6 +500,15 @@ public static unsafe class Program
         File.Close(w);
         Signal.Handle(Signal.Pipe, null);
 
+        child = Process.Start("usertest", "sleep");
+        Process.Sleep(20);
+        ulong sender = Thread.Start(&SendLater, Process.Id());
+        long first = Process.Wait((uint)child);
+        Thread.Join(sender);
+        Process.Kill((uint)child);
+        Check(first == Process.ErrInterrupted && Process.Wait((uint)child) == Process.ExitKilled,
+              "signals: a signal cuts wait() short, and the child can still be waited for");
+
         child = Process.Start("usertest", "sigspin");
         for (int i = 0; i < 50; i++) {
             Process.Sleep(2);

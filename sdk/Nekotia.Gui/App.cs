@@ -288,7 +288,16 @@ public static unsafe class App
         m.Type = Protocol.ClipboardGet;
         if (Send(&m) < 0)
             return 0;
+        ulong until = Time.UptimeMs() + 2000;   // a server that never answers must not freeze the program
         while (true) {
+            ulong now = Time.UptimeMs();
+            PollFd p = default;
+            p.Fd = _fd;
+            p.Events = Poll.In;
+            if (now >= until || Poll.Wait(&p, 1, (long)(until - now)) <= 0) {
+                buffer[0] = 0;
+                return 0;
+            }
             Message got = default;
             int fdOut = -1;
             long n = Channel.Receive(_fd, &got, (ulong)sizeof(Message), &fdOut);

@@ -105,6 +105,8 @@ void interrupt(Thread* t);
 bool killed();  // the current thread has kill_pending set
 // A signal arrived: cuts short an interruptible wait or a sleep (they return "interrupted") without killing.
 void poke(Thread* t);
+// A kill, or a signal the thread will take, is waiting: interruptible waits must not block (process.cpp).
+bool interrupt_pending(Thread* t);
 
 // Calls fn(t, ctx) for every thread of `process` (scheduler lock held: fn must not block).
 void for_each_thread(proc::Process* process, void (*fn)(Thread*, void*), void* ctx);

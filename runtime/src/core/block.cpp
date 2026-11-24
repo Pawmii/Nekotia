@@ -99,6 +99,8 @@ uint8_t* g_read_run = nullptr;   // kRun lines: reads of missing lines
 uint8_t* g_write_run = nullptr;  // kRun lines: write-back
 Line** g_sorted = nullptr;       // kMaxLines: dirty lines of one device in order
 Line* g_pool = nullptr;          // kMaxLines descriptors, allocated once (their pages come as needed)
+uint32_t g_failures[kMaxDevices];  // write-backs in a row that failed, per device
+constexpr uint32_t kGiveUp = 3;  // then its dirty lines are dropped: one broken disk must not fill the cache
 
 uint32_t bucket(uint32_t dev, uint64_t n) { return uint32_t((n * 2654435761u) ^ (dev * 40503u)) % kHash; }
 
@@ -158,8 +160,29 @@ uint32_t line_sectors(const Device* d, uint64_t n) {
     return left < sectors_per_line(d) ? uint32_t(left) : sectors_per_line(d);
 }
 
+void discard_dirty(uint32_t dev);
+void drop_lines(uint32_t dev);
+
 // Writes back every dirty line of device `dev` (in order, neighbouring lines in one request). g_cache held.
+// A device that keeps failing loses its dirty lines after kGiveUp attempts (reported in the log).
+int64_t write_back_once(uint32_t dev);
+
 int64_t write_back(uint32_t dev) {
+    int64_t r = write_back_once(dev);
+    if (dev >= kMaxDevices) return r;
+    if (r == 0) {
+        g_failures[dev] = 0;
+        return 0;
+    }
+    if (++g_failures[dev] >= kGiveUp) {
+        discard_dirty(dev);
+        g_failures[dev] = 0;
+        log::error("block: a disk keeps failing writes — its unwritten data in the cache was dropped");
+    }
+    return r;
+}
+
+int64_t write_back_once(uint32_t dev) {
     Device* d = &g_devices[dev];
     uint32_t n = 0;
     for (Line* l = g_head; l; l = l->next)
@@ -208,16 +231,29 @@ Line* take_line() {
         }
         g_capacity = g_lines;  // out of memory: this is as big as the cache gets
     }
-    for (int round = 0; round < 2; ++round) {
+    // All dirty: write back the least recently used line's device; a device that keeps failing is given up
+    // after kGiveUp rounds, so this always ends with a clean line.
+    for (uint32_t round = 0; round <= kGiveUp * kMaxDevices; ++round) {
         for (Line* l = g_tail; l; l = l->prev) {
             if (l->dirty) continue;
             lru_unlink(l);
             unhash(l);
             return l;
         }
-        if (g_tail) write_back(g_tail->dev);  // all dirty: make room
+        if (!g_tail) break;
+        write_back(g_tail->dev);
     }
     return nullptr;
+}
+
+// Marks every dirty line of `dev` clean without writing it (the data is lost) and forgets the lines.
+void discard_dirty(uint32_t dev) {
+    for (Line* l = g_head; l; l = l->next) {
+        if (l->dev != dev || !l->dirty) continue;
+        l->dirty = false;
+        --g_dirty;
+    }
+    drop_lines(dev);
 }
 
 // Forgets every line of `dev` (they stay in the LRU list as unhashed, clean lines of no device: reused first).
@@ -258,6 +294,7 @@ void copy_part(Device* d, Line* line, uint64_t lba, uint32_t n, uint8_t* buffer,
 int64_t cached_read(uint32_t dev, uint64_t lba, uint32_t n, uint8_t* buffer) {
     Device* d = &g_devices[dev];
     sync::MutexGuard guard(g_cache);
+    if (!d->cached || d->info.removed) return kErrIo;  // unplugged while we waited for the cache
     uint64_t last = (lba + n - 1) / sectors_per_line(d);
     for (uint64_t ln = lba / sectors_per_line(d); ln <= last;) {
         if (Line* l = find_line(dev, ln)) {
@@ -289,6 +326,7 @@ int64_t cached_read(uint32_t dev, uint64_t lba, uint32_t n, uint8_t* buffer) {
 int64_t cached_write(uint32_t dev, uint64_t lba, uint32_t n, const uint8_t* buffer) {
     Device* d = &g_devices[dev];
     sync::MutexGuard guard(g_cache);
+    if (!d->cached || d->info.removed) return kErrIo;  // unplugged while we waited: no lines for a dead slot
     uint64_t last = (lba + n - 1) / sectors_per_line(d);
     for (uint64_t ln = lba / sectors_per_line(d); ln <= last; ++ln) {
         Line* l = find_line(dev, ln);

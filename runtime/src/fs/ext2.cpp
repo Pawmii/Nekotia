@@ -39,6 +39,9 @@ struct Volume {
     bool extents;
     uint8_t* descs;            // the whole descriptor table
     uint8_t* scratch;          // one block (inode and directory reading)
+    uint8_t* node;             // one block: an extent tree node below the inode
+    uint32_t nodes;            // VFS nodes this mount made (a crafted volume must not exhaust memory)
+    uint32_t path[40];         // directory inodes from the root to the one being scanned (cycles)
     sync::Mutex lock;
     char name[16];
     char type[8];
@@ -112,11 +115,12 @@ int64_t map_classic(Volume* v, const Entry& e, uint64_t n) {
 // ext4 extent tree: header (magic 0xF30A, entries, depth), then 12-byte entries — leaves map a run of
 // logical blocks to physical ones, index nodes point at the next level.
 int64_t map_extents(Volume* v, const Entry& e, uint64_t n, uint64_t* run) {
-    uint8_t node[4096];
     const uint8_t* h = reinterpret_cast<const uint8_t*>(e.block);
+    uint32_t room = sizeof(e.block);  // bytes of the node h points into: the inode's 60, then a block
     for (int level = 0; level < 8; ++level) {
         if (rd16(h) != 0xF30A) return kErrIo;
-        uint16_t entries = rd16(h + 2), depth = rd16(h + 6);
+        uint16_t entries = rd16(h + 2), max = rd16(h + 4), depth = rd16(h + 6);
+        if (entries > max || 12u + 12u * entries > room) return kErrIo;  // a header that lies about its size
         const uint8_t* best = nullptr;
         for (uint16_t i = 0; i < entries; ++i) {
             const uint8_t* x = h + 12 + 12 * i;
@@ -135,8 +139,9 @@ int64_t map_extents(Volume* v, const Entry& e, uint64_t n, uint64_t* run) {
             return int64_t(start + (n - first));
         }
         uint64_t child = (uint64_t(rd16(best + 8)) << 32) | rd32(best + 4);
-        if (v->block_size > sizeof(node) || disk(v, child, node, v->block_size) < 0) return kErrIo;
-        h = node;
+        if (child >= v->blocks || disk(v, child, v->node, v->block_size) < 0) return kErrIo;
+        h = v->node;
+        room = v->block_size;
     }
     return kErrIo;
 }
@@ -186,19 +191,30 @@ int64_t read_file(Volume* v, const Entry& e, uint64_t offset, uint8_t* out, uint
     return int64_t(done);
 }
 
-// Adds the entries of directory `dir_entry` under `dir`, then descends.
+constexpr uint32_t kMaxDepth = 32;
+constexpr uint32_t kMaxNodes = 200000;
+
+struct Sub {
+    vfs::Node* node;
+    Entry* entry;
+};
+
+// Adds the entries of directory `dir_entry` under `dir`, then descends. A directory whose inode is already on
+// the path from the root (a crafted or broken volume looping back) is listed but not entered, and one mount
+// makes at most kMaxNodes nodes; the pending subdirectories live on the heap (the stack is 32 KiB).
 int64_t scan(Volume* v, vfs::Node* dir, const Entry& dir_entry, uint32_t depth) {
-    if (depth > 32) return 0;
-    struct Sub {
-        vfs::Node* node;
-        Entry* entry;
-    };
-    Sub subs[32];
+    if (depth >= kMaxDepth) return 0;
+    v->path[depth] = dir_entry.ino;
+    auto* subs = static_cast<Sub*>(heap::alloc(sizeof(Sub) * 32));
+    if (!subs) return kErrNoMemory;
     uint32_t nsubs = 0;
     int64_t error = 0;
     for (uint64_t at = 0; at < dir_entry.size && error == 0; at += v->block_size) {
         int64_t got = read_file(v, dir_entry, at, v->scratch, v->block_size);
-        if (got <= 0) return got < 0 ? got : 0;
+        if (got <= 0) {
+            if (got < 0) error = got;
+            break;
+        }
         for (uint32_t off = 0; off + 8 <= uint32_t(got);) {
             const uint8_t* d = v->scratch + off;
             uint32_t ino = rd32(d);
@@ -212,8 +228,15 @@ int64_t scan(Volume* v, vfs::Node* dir, const Entry& dir_entry, uint32_t depth) 
             name[name_length] = 0;
             if ((name_length == 1 && name[0] == '.') || (name_length == 2 && name[0] == '.' && name[1] == '.')) continue;
             if (vfs::has_child(dir, name)) continue;
+            if (++v->nodes > kMaxNodes) {
+                error = kErrLimit;
+                break;
+            }
             auto* e = static_cast<Entry*>(heap::alloc_zeroed(sizeof(Entry)));
-            if (!e) return kErrNoMemory;
+            if (!e) {
+                error = kErrNoMemory;
+                break;
+            }
             uint8_t* keep = v->scratch;  // read_inode does not touch scratch, but descending does
             if (read_inode(v, ino, *e) < 0) {
                 heap::free(e);
@@ -228,19 +251,25 @@ int64_t scan(Volume* v, vfs::Node* dir, const Entry& dir_entry, uint32_t depth) 
             vfs::Node* n = vfs::add_node(dir, name, is_dir ? vfs::Type::Directory : vfs::Type::File, is_dir ? 0 : e->size, e, false);
             if (!n) {
                 heap::free(e);
-                return kErrNoMemory;
+                error = kErrNoMemory;
+                break;
             }
-            if (is_dir) {
+            bool loop = false;
+            for (uint32_t k = 0; k <= depth; ++k) loop |= v->path[k] == ino;
+            if (is_dir && !loop) {
                 if (nsubs == 32) {  // descend now (the scratch block is reread below)
                     for (uint32_t i = 0; i < nsubs && error == 0; ++i) error = scan(v, subs[i].node, *subs[i].entry, depth + 1);
                     nsubs = 0;
-                    if (read_file(v, dir_entry, at, keep, v->block_size) < 0) return kErrIo;
+                    v->path[depth] = dir_entry.ino;
+                    if (error == 0 && read_file(v, dir_entry, at, keep, v->block_size) < 0) error = kErrIo;
+                    if (error) break;
                 }
                 subs[nsubs++] = {n, e};
             }
         }
     }
     for (uint32_t i = 0; i < nsubs && error == 0; ++i) error = scan(v, subs[i].node, *subs[i].entry, depth + 1);
+    heap::free(subs);
     return error;
 }
 
@@ -265,6 +294,7 @@ void op_release(void*, void* data) { heap::free(data); }
 void free_volume(Volume* v) {
     heap::free(v->descs);
     heap::free(v->scratch);
+    heap::free(v->node);
     heap::free(v);
 }
 
@@ -336,8 +366,9 @@ int64_t mount(const char* device, const char* dir) {
     uint64_t table = uint64_t(v->groups) * v->desc_size;
     v->descs = static_cast<uint8_t*>(heap::alloc(table));
     v->scratch = static_cast<uint8_t*>(heap::alloc(v->block_size));
+    v->node = static_cast<uint8_t*>(heap::alloc(v->block_size));
     auto* root = static_cast<Entry*>(heap::alloc_zeroed(sizeof(Entry)));
-    if (!v->descs || !v->scratch || !root) {
+    if (!v->descs || !v->scratch || !v->node || !root) {
         heap::free(root);
         free_volume(v);
         return kErrNoMemory;

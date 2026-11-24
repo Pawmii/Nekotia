@@ -294,7 +294,7 @@ void sleep_ms(uint64_t ms) {
     cpu::InterruptGuard g;
     g_lock.acquire();
     Thread* t = smp::this_cpu()->current;
-    if (__atomic_load_n(&t->kill_pending, __ATOMIC_SEQ_CST)) {  // interrupt() would not find us asleep
+    if (interrupt_pending(t)) {  // interrupt() / poke() would not find us asleep
         g_lock.release();
         return;
     }
