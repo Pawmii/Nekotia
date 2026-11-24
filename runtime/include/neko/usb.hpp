@@ -34,6 +34,9 @@ bool info(uint32_t index, Info& out);
 // Where keyboard scancodes go (the C# keyboard driver). Called from the controller's interrupt handler.
 using ScancodeSink = void (*)(uint8_t scancode);
 void set_keyboard_sink(ScancodeSink sink);
+// The stop screen (interrupts off, other CPUs halted): keyboard reports go to `sink` as set-1 scancodes; call
+// it in a loop. Takes no locks and wakes nobody.
+void emergency_poll(ScancodeSink sink);
 
 // Accumulated mouse state from every USB mouse.
 struct Mouse {

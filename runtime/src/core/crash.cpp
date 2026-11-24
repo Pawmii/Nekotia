@@ -459,13 +459,102 @@ void system_state() {
     nl();
 }
 
-bool g_reboot_key = false;
+// ---------------------------------------------------------------- hold R to reboot
 
-bool reboot_key() {
-    if (cpu::inb(0x64) & 1) {
-        if (cpu::inb(0x60) == 0x13) g_reboot_key = true;
+// R must be held this long; a ring at the bottom of the screen fills while it is, and empties (faster) when
+// it is let go. Interrupts are off, so time is the TSC, and keys are polled: the PS/2 controller and the USB
+// keyboard (usb::emergency_poll), both as set-1 scancodes (R: 0x13 pressed, 0x93 released).
+constexpr uint64_t kHoldMs = 3000;
+bool g_r_down = false;
+bool g_e0 = false;
+uint64_t g_last_tsc = 0;
+float g_hold = 0;          // 0…1
+int g_drawn_step = -1;     // what the ring on screen shows (in 1/120)
+
+void scancode(uint8_t code) {
+    if (code == 0xE0) {
+        g_e0 = true;
+        return;
     }
-    return g_reboot_key;
+    if (!g_e0 && (code & 0x7F) == 0x13) g_r_down = !(code & 0x80);
+    g_e0 = false;
+}
+
+void poll_keys() {
+    for (int i = 0; i < 16; ++i) {
+        uint8_t status = cpu::inb(0x64);
+        if (!(status & 1)) break;
+        uint8_t data = cpu::inb(0x60);
+        if (!(status & 0x20)) scancode(data);  // not from the mouse
+    }
+    usb::emergency_poll(&scancode);
+}
+
+float elapsed_ms() {  // since the last call
+    uint64_t now = cpu::read_tsc();
+    uint64_t mhz = sysinfo::cpu_mhz();
+    float ms = g_last_tsc && mhz ? float(now - g_last_tsc) / float(mhz * 1000) : 0;
+    g_last_tsc = now;
+    return ms > 100 ? 100 : ms;
+}
+
+// The ring: centre bottom, a dim track, the filled arc clockwise from the top, an "R" inside.
+void draw_ring(float fill) {
+    if (!console::ready()) return;
+    Framebuffer fb = console::framebuffer();
+    const float radius = 26, width = 5;
+    const int cx = int(fb.Width / 2), cy = int(fb.Height) - 56, box = int(radius + width) + 2;
+    for (int y = cy - box; y <= cy + box; ++y) {
+        if (y < 0 || y >= int(fb.Height)) continue;
+        auto* row = reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(fb.Address) + uint64_t(y) * fb.Pitch);
+        for (int x = cx - box; x <= cx + box; ++x) {
+            if (x < 0 || x >= int(fb.Width)) continue;
+            float dx = float(x - cx) + 0.5f, dy = float(y - cy) + 0.5f;
+            float d = float(math::sqrt(double(dx * dx + dy * dy)));
+            float cover = 1 - math::abs(double(d - radius)) / (width / 2) ;  // 1 in the middle of the band
+            cover = cover > 0 ? (cover * (width / 2) > 1 ? 1 : cover * (width / 2)) : 0;
+            float angle = float(math::atan2(double(dx), double(-dy)));  // 0 at the top, clockwise
+            if (angle < 0) angle += float(2 * math::kPi);
+            bool filled = angle <= fill * float(2 * math::kPi);
+            uint32_t color = filled ? kAccent : 0x5A3F70;
+            auto mix = [](uint32_t a, uint32_t b, float t) {
+                auto ch = [&](int s) {
+                    float p = float((a >> s) & 255), q = float((b >> s) & 255);
+                    return uint32_t(p + (q - p) * t + 0.5f) << s;
+                };
+                return ch(16) | ch(8) | ch(0);
+            };
+            row[x] = mix(kBg, color, cover);
+        }
+    }
+    // "R" in the middle, the console font twice as large.
+    uint32_t gw, gh, bpr;
+    const uint8_t* g = console::glyph('R', gw, gh, bpr);
+    if (!g) return;
+    int x0 = cx - int(gw), y0 = cy - int(gh);
+    for (uint32_t gy = 0; gy < gh * 2; ++gy) {
+        auto* row = reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(fb.Address) + uint64_t(y0 + int(gy)) * fb.Pitch);
+        for (uint32_t gx = 0; gx < gw * 2; ++gx) {
+            uint32_t bx = gx / 2;
+            bool on = g[(gy / 2) * bpr + (bx >> 3)] & (0x80 >> (bx & 7));
+            row[x0 + int(gx)] = on ? (fill > 0 ? kAccent : kMuted) : kBg;
+        }
+    }
+    display::emergency_present();
+}
+
+// Polls the keys, moves and draws the ring; true once R has been held long enough.
+bool reboot_key() {
+    poll_keys();
+    float ms = elapsed_ms();
+    g_hold += g_r_down ? ms / float(kHoldMs) : -ms * 3 / float(kHoldMs);
+    g_hold = g_hold < 0 ? 0 : g_hold > 1 ? 1 : g_hold;
+    int step = g_hold > 0 ? int(g_hold * 120) + 1 : 0;  // 0 only when really empty
+    if (step != g_drawn_step) {
+        g_drawn_step = step;
+        draw_ring(g_hold);
+    }
+    return g_hold >= 1;
 }
 
 NEKO_NORETURN void show(Report& r) {
@@ -486,21 +575,25 @@ NEKO_NORETURN void show(Report& r) {
 
     nl();
     color(kMuted);
-    text("  Press ");
+    text("  Hold ");
     color(kAccent);
     text("R");
     color(kMuted);
-    text(" to reboot.  Report the STOP code and the call stack; addr2line -e build/nekotia.elf <address> gives the exact line.\n");
+    text(" for 3 seconds to reboot.  Report the STOP code and the call stack; addr2line -e build/nekotia.elf <address> gives the exact line.\n");
     serial::write("\n");
     display::emergency_present();  // GPUs that show nothing until told (virtio-gpu)
 
 #if !NEKO_HOSTED
-    // A sad little tune (HDA or the PC speaker) (`nosound` turns it off), then wait for R. Interrupts are off:
-    // the PS/2 controller is polled for the R key (make code 0x13) — also while the tune plays.
-    audio::play_stop_tune(&reboot_key);  // HDA when there is one, else the PC speaker
+    // A sad little tune (HDA or the PC speaker; `nosound` mutes the speaker), and all along: hold R to reboot.
+    elapsed_ms();
+    reboot_key();  // the empty ring
+    audio::play_stop_tune(&reboot_key);
     for (;;) {
-        if (reboot_key()) power::reboot();
-        cpu::io_wait();
+        if (reboot_key()) {
+            draw_ring(1);
+            power::reboot();
+        }
+        speaker::wait_us(1000);
     }
 #else
     platform::stop_after_panic();

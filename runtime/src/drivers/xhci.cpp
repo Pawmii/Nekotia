@@ -297,8 +297,9 @@ void queue_interrupt(Controller* c, Device* d, uint32_t dci, uint8_t* buffer, ui
 
 // ---- events (interrupt handler, or polling)
 
-void handle_events(Controller* c) {
-    sync::ScopedLock guard(c->lock);
+// `emergency`: the stop screen (interrupts off, the other CPUs halted, maybe holding c->lock or a semaphore's
+// guard) — only HID reports are handled, everything else is consumed and dropped, nothing is signalled.
+void process_events(Controller* c, bool emergency) {
     bool any = false, wake_hub = false;
     for (;;) {
         Trb& e = c->events[c->event_index];
@@ -307,7 +308,16 @@ void handle_events(Controller* c) {
         uint32_t type = (e.control >> 10) & 0x3F;
         uint32_t code = e.status >> 24;
         uint32_t slot = e.control >> 24;
-        if (type == kTrbCommandCompletion) {
+        if (emergency) {
+            uint32_t dci = (e.control >> 16) & 0x1F;
+            Device* d = type == kTrbTransferEvent && slot <= kMaxSlots ? c->slots[slot] : nullptr;
+            if (d && d->hid_dci && dci == d->hid_dci) {
+                if ((code == kSuccess || code == kShortPacket) && d->info.kind == kKindKeyboard &&
+                    d->report_size - (e.status & 0xFFFFFF) >= 8)
+                    keyboard_report(d, d->report);
+                if (code != kStall) queue_interrupt(c, d, d->hid_dci, d->report, d->report_size);
+            }
+        } else if (type == kTrbCommandCompletion) {
             c->command_code = code;
             c->command_slot = slot;
             c->command_done.signal();
@@ -355,6 +365,11 @@ void handle_events(Controller* c) {
         w64(ir, 0x18, (c->events_phys + c->event_index * sizeof(Trb)) | 8);
     }
     if (wake_hub) c->work.signal();
+}
+
+void handle_events(Controller* c) {
+    sync::ScopedLock guard(c->lock);
+    process_events(c, false);
 }
 
 void on_interrupt(void* context) {
@@ -1141,6 +1156,13 @@ bool info(uint32_t index, Info& out) {
 }
 
 void set_keyboard_sink(ScancodeSink sink) { __atomic_store_n(&g_sink, sink, __ATOMIC_RELEASE); }
+
+void emergency_poll(ScancodeSink sink) {
+    Controller* c = g_hc;
+    if (!c) return;
+    g_sink = sink;
+    process_events(c, true);
+}
 
 Mouse mouse() { return g_mouse; }
 
