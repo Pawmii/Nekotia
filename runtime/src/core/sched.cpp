@@ -346,6 +346,36 @@ void block(const char* reason, sync::RawLock* guard) {
     schedule_locked();
 }
 
+namespace {
+Thread* g_timed = nullptr;  // Blocked threads with a deadline (g_lock)
+
+void untime(Thread* t) {
+    if (!t->timed) return;
+    for (Thread** p = &g_timed; *p; p = &(*p)->timed_next) {
+        if (*p == t) {
+            *p = t->timed_next;
+            break;
+        }
+    }
+    t->timed = false;
+    t->timed_next = nullptr;
+}
+}  // namespace
+
+void block_until(const char* reason, sync::RawLock* guard, uint64_t deadline_ms) {
+    g_lock.acquire();
+    if (guard) guard->release();
+    Thread* t = smp::this_cpu()->current;
+    t->state = State::Blocked;
+    t->blocked_on = reason;
+    t->timed_out = false;
+    t->deadline = deadline_ms;
+    t->timed = true;
+    t->timed_next = g_timed;
+    g_timed = t;
+    schedule_locked();
+}
+
 void set_priority(Thread* t, Priority priority) {
     cpu::InterruptGuard g;
     g_lock.acquire();
@@ -372,7 +402,10 @@ void set_priority(Thread* t, Priority priority) {
 void wake(Thread* t) {
     cpu::InterruptGuard g;
     g_lock.acquire();
-    if (t->state == State::Blocked) make_ready(t);
+    if (t->state == State::Blocked) {
+        untime(t);
+        make_ready(t);
+    }
     g_lock.release();
 }
 
@@ -425,6 +458,18 @@ void tick() {
                 make_ready(t);
             } else {
                 p = &t->next;
+            }
+        }
+        for (Thread** p = &g_timed; *p;) {  // timed waits whose deadline passed
+            Thread* t = *p;
+            if (t->deadline <= now) {
+                *p = t->timed_next;
+                t->timed = false;
+                t->timed_next = nullptr;
+                t->timed_out = true;
+                if (t->state == State::Blocked) make_ready(t);
+            } else {
+                p = &t->timed_next;
             }
         }
     }

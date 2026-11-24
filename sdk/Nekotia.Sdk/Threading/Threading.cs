@@ -106,6 +106,8 @@ public struct Semaphore
     /// <summary>Like Wait, but returns false when the calling thread is being killed (waits on behalf of user programs).</summary>
     [Native("wait_interruptible")] public extern bool WaitInterruptible();
     [Native("try_wait")] public extern bool TryWait();
+    /// <summary>Waits at most <paramref name="timeoutMs"/>: 1 got it, 0 timed out, -1 the thread is being killed.</summary>
+    [Native("wait_for")] public extern int WaitFor(ulong timeoutMs, bool interruptible = true);
     [Native("signal")] public extern void Signal();
     [Native("value")] public extern long Value();
 }

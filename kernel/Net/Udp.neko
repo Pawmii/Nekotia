@@ -142,14 +142,11 @@ public static unsafe class Udp
             if (!s->Ready.WaitInterruptible())
                 return Process.ErrInterrupted;
         } else {
-            ulong until = Time.UptimeMs() + timeoutMs;
-            while (!s->Ready.TryWait()) {
-                if (Time.UptimeMs() >= until)
-                    return 0;
-                if (Process.CurrentPid() != 0 && Thread.Killed())
-                    return Process.ErrInterrupted;
-                Thread.Sleep(2);
-            }
+            int got = s->Ready.WaitFor(timeoutMs, Process.CurrentPid() != 0);
+            if (got == 0)
+                return 0;
+            if (got < 0)
+                return Process.ErrInterrupted;
         }
         lock (Stack.Lock) {
             if (!s->Used || s->Count == 0)

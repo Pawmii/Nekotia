@@ -59,6 +59,11 @@ struct Thread {
     Priority base_priority;   // `priority` may be raised above it while it holds a mutex others wait for
     uint32_t mutexes_held;
     uint64_t fs_base;     // user programs: their thread-local block (set_tls)
+    // A Blocked thread with a deadline (block_until): also on the timed list, woken by the timer if nobody else does.
+    uint64_t deadline;
+    Thread* timed_next;
+    bool timed;           // on the timed list
+    bool timed_out;       // the last block_until ended by its deadline
 };
 
 using Entry = void (*)(uint64_t arg);
@@ -85,6 +90,9 @@ const char* current_name();
 // Marks the current thread Blocked and runs something else; `guard` (the primitive's own lock,
 // held by the caller) is released only once the scheduler lock is taken, so no wake-up is lost.
 void block(const char* reason, sync::RawLock* guard);
+// Like block, but the timer makes the thread Ready at uptime `deadline_ms` if nothing woke it before;
+// Thread::timed_out tells which happened.
+void block_until(const char* reason, sync::RawLock* guard, uint64_t deadline_ms);
 void wake(Thread* t);  // Blocked → Ready (callable from interrupt handlers and other CPUs)
 // Effective priority (priority inheritance): a Ready thread moves to the right queue.
 void set_priority(Thread* t, Priority priority);
@@ -171,6 +179,9 @@ struct Semaphore {
     void wait();
     // Like wait(), but gives up (false) when the thread is killed — for waits on behalf of user programs.
     bool wait_interruptible();
+    // Waits at most `timeout_ms`: 1 = got a unit, 0 = timed out, -1 = the thread is being killed
+    // (only when `interruptible`).
+    int wait_for(uint64_t timeout_ms, bool interruptible = true);
     bool try_wait();
     void signal();
     void cancel(sched::Thread* t);  // internal: remove t from the wait queue (sched::interrupt)

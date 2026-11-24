@@ -252,6 +252,52 @@ bool Semaphore::wait_interruptible() {
     return !me->interrupted;
 }
 
+int Semaphore::wait_for(uint64_t timeout_ms, bool interruptible) {
+    cpu::InterruptGuard g;
+    Thread* me = sched::current();
+    guard.acquire();
+    if (count > 0) {
+        --count;
+        guard.release();
+        return 1;
+    }
+    if (timeout_ms == 0 || !sched::running() || !me) {
+        guard.release();
+        return 0;
+    }
+    me->interrupted = false;
+    if (interruptible) {
+        __atomic_store_n(&me->waiting_sem, this, __ATOMIC_SEQ_CST);  // see wait_interruptible
+        if (__atomic_load_n(&me->kill_pending, __ATOMIC_SEQ_CST)) {
+            me->waiting_sem = nullptr;
+            guard.release();
+            return -1;
+        }
+    }
+    enqueue(head, tail, me);
+    sched::block_until("semaphore", &guard, time::uptime_ms() + timeout_ms);
+    // Woken by signal() (it dequeued us and handed us a unit), cancel() (dequeued, interrupted) or the
+    // deadline (still queued — unless a signal() raced in just after, which then counts as a unit).
+    guard.acquire();
+    bool queued = false;
+    for (Thread** p = &head; *p; p = &(*p)->next) {
+        if (*p == me) {
+            *p = me->next;
+            if (tail == me) {
+                tail = nullptr;
+                for (Thread* q = head; q; q = q->next) tail = q;
+            }
+            me->next = nullptr;
+            queued = true;
+            break;
+        }
+    }
+    guard.release();
+    if (interruptible) __atomic_store_n(&me->waiting_sem, nullptr, __ATOMIC_SEQ_CST);
+    if (queued) return 0;
+    return me->interrupted ? -1 : 1;
+}
+
 void Semaphore::cancel(Thread* t) {
     cpu::InterruptGuard g;
     guard.acquire();

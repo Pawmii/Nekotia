@@ -940,8 +940,7 @@ int64_t sys_futex_wait(uint64_t address, uint64_t expected, uint64_t timeout_ms)
     if (timeout_ms == 0) {
         interrupted = !w.wake.wait_interruptible();
     } else {
-        uint64_t until = time::uptime_ms() + timeout_ms;
-        while (!w.wake.try_wait() && !(interrupted = sched::killed()) && time::uptime_ms() < until) sched::sleep_ms(1);
+        interrupted = w.wake.wait_for(timeout_ms) < 0;
     }
     sync::ScopedLock guard(g_futex_lock);
     futex_unlink(&w);  // still queued after a timeout or a kill

@@ -98,12 +98,8 @@ int64_t receive(uint32_t index, void* buffer, uint64_t capacity, uint64_t timeou
     if (!f) return kErrNotFound;
     if (timeout_ms == 0) {
         f->ready.wait();
-    } else {  // no timed semaphore wait yet: poll every millisecond
-        uint64_t until = time::uptime_ms() + timeout_ms;
-        while (!f->ready.try_wait()) {
-            if (time::uptime_ms() >= until) return 0;
-            sched::sleep_ms(1);
-        }
+    } else if (f->ready.wait_for(timeout_ms, false) <= 0) {
+        return 0;
     }
     sync::ScopedLock guard(f->lock);
     if (f->count == 0) return 0;

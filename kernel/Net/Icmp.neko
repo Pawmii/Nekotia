@@ -16,6 +16,7 @@ public static unsafe class Icmp
     static uint _replyFrom;
     static byte _replyTtl;
     static int _replyBytes;
+    static Semaphore _replied;   // a reply arrived (the waiter checks whether it is the one it wants)
     public static ulong EchoesAnswered;
 
     public static void Receive(uint source, byte* p, int length, byte ttl)
@@ -35,6 +36,7 @@ public static unsafe class Icmp
             _replyTtl = ttl;
             _replyBytes = length;
             _replySeq = Stack.Get16(p + 6);
+            _replied.Signal();
         }
     }
 
@@ -64,9 +66,9 @@ public static unsafe class Icmp
                 bytes = _replyBytes;
                 return true;
             }
-            if (Time.UptimeMs() >= until)
+            ulong now = Time.UptimeMs();
+            if (now >= until || _replied.WaitFor(until - now) < 0)
                 break;
-            Thread.Sleep(1);
         }
         ttl = 0;
         bytes = 0;

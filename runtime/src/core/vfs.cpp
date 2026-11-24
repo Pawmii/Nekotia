@@ -943,9 +943,13 @@ int64_t poll_wait(File* const* files, const uint32_t* wanted, uint32_t* ready, u
             }
             continue;
         }
-        // A deadline: semaphores cannot time out, so look every millisecond until a signal or the deadline.
-        while (!w.wake.try_wait() && !sched::killed() && time::uptime_ms() < until) sched::sleep_ms(1);
-        if (time::uptime_ms() >= until && !w.wake.try_wait()) {
+        uint64_t now = time::uptime_ms();
+        int got = now < until ? w.wake.wait_for(until - now) : 0;
+        if (got < 0) {
+            result = kErrInterrupted;
+            break;
+        }
+        if (got == 0) {
             for (uint32_t i = 0; i < count; ++i) {  // one last look
                 ready[i] = poll(files[i], wanted[i]);
                 if (ready[i]) ++result;

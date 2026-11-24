@@ -494,6 +494,13 @@ public static unsafe class SelfTest
     static int _pingPong;
     static Semaphore _ping;
     static Semaphore _pong;
+    static Semaphore _late;
+
+    static void SignalLater(ulong unused)
+    {
+        Thread.Sleep(20);
+        _late.Signal();
+    }
 
     static void Increment(ulong times)
     {
@@ -615,6 +622,20 @@ public static unsafe class SelfTest
             _pong.Wait();
         }
         Check(_pingPong == 100, "threads: semaphore ping-pong × 100");
+
+        if (!Kernel.Info->Hosted) {   // timed waits need the timer
+            Semaphore timed = default;
+            start = Time.UptimeMs();
+            int r = timed.WaitFor(30, false);
+            ulong waited = Time.UptimeMs() - start;
+            Check(r == 0 && waited >= 30 && waited < 60, "threads: a timed semaphore wait gives up after its timeout");
+            Thread.Start("selftest-signal", &SignalLater, 0);
+            start = Time.UptimeMs();
+            r = _late.WaitFor(2000, false);
+            waited = Time.UptimeMs() - start;
+            Check(r == 1 && waited < 500, "threads: a timed wait ends early when signalled");
+            Check(timed.WaitFor(0, false) == 0, "threads: a zero timeout only looks");
+        }
 
         if (!Kernel.Info->Hosted) {           // no timer interrupt in host mode
             _stop = false;
