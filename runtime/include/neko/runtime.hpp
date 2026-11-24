@@ -11,6 +11,8 @@
 #include <neko/input.hpp>
 #include <neko/ipc.hpp>
 #include <neko/crash.hpp>
+#include <neko/speaker.hpp>
+#include <neko/splash.hpp>
 #include <neko/exception.hpp>
 #include <neko/fat.hpp>
 #include <neko/ext2.hpp>

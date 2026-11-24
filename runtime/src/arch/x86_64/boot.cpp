@@ -14,6 +14,8 @@
 #include <neko/process.hpp>
 #include <neko/sched.hpp>
 #include <neko/smp.hpp>
+#include <neko/speaker.hpp>
+#include <neko/splash.hpp>
 #include <neko/vfs.hpp>
 
 #ifndef NEKO_HEAP_SIZE
@@ -220,6 +222,9 @@ uint64_t g_kernel_stack_top = 0;
     g_info.Hosted = false;
 
     bool screen = neko::console::init(g_info.Screen);
+    neko::speaker::configure(g_cmdline);
+    neko::splash::begin(g_cmdline);  // the boot log goes on underneath; it is shown when the splash ends
+    neko::splash::step("Memory and paging", 8);
     neko::term::write("[neko] runtime: x86_64, Limine protocol, ");
     neko::term::write(screen ? "framebuffer console\n" : "serial only (no framebuffer)\n");
 
@@ -231,11 +236,14 @@ uint64_t g_kernel_stack_top = 0;
     neko::term::write(", kernel stack with guard page");
     neko::term::write(vm.global_pages ? ", global kernel pages\n" : "\n");
 
+    neko::splash::step("Interrupts", 12);
     init_interrupts();
+    neko::splash::step("PCI devices", 16);
     neko::pci::init();
     neko::term::write("[neko] PCI: ");
     neko::term::write_udec(neko::pci::count());
     neko::term::write(neko::pci::uses_ecam() ? " device(s), ECAM (MCFG)\n" : " device(s), legacy port I/O\n");
+    neko::splash::step("Initial RAM disk", 20);
     init_modules();
 
     // Dynamic initialisers of generated static fields, then [Irq] handler registration.
@@ -243,7 +251,9 @@ uint64_t g_kernel_stack_top = 0;
     neko_kernel_init();
     neko::cpu::enable_interrupts();
 
+    neko::splash::step("Waking up the other processors", 26);
     if (neko::sysinfo::apic_available()) neko::arch::smp_start(mp_request.response);
+    neko::splash::animate();
     neko::term::write("[neko] SMP: ");
     neko::term::write_udec(neko::smp::online_count());
     neko::term::write(" of ");
@@ -252,6 +262,7 @@ uint64_t g_kernel_stack_top = 0;
     neko::block::start_writeback();      // the block cache writes dirty lines back in the background
     neko::display::init(g_info.Screen);  // /dev/fb0: the bootloader's framebuffer (bootfb driver)
     neko::input::init();                 // /dev/input
+    neko::splash::step("Drivers: disks, USB, network, display", 32);
     neko::drivers::init();  // needs interrupts (completion IRQs) and the VFS (/dev nodes)
     uint64_t reclaimed = reclaim_bootloader_memory();
     neko::term::write("[neko] reclaimed ");
@@ -273,6 +284,7 @@ uint64_t g_kernel_stack_top = 0;
     neko::term::write_udec(neko::sysinfo::cpu_mhz());
     neko::term::write(" MHz — entering C# kernel\n");
 
+    neko::splash::step("Starting the kernel", 50);
     neko_kernel_main(&g_info);
 
     neko::term::write("[neko] kernel entry returned, halting\n");

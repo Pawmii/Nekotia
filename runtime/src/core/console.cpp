@@ -5,6 +5,7 @@
 // scrolling a mostly empty screen stays cheap even on slow framebuffers.
 #include <neko/console.hpp>
 #include <neko/runtime.hpp>
+#include <neko/splash.hpp>
 
 extern "C" const uint8_t neko_font_psf[];
 extern "C" const uint8_t neko_font_psf_end[];
@@ -147,6 +148,9 @@ uint32_t g_fg = kDefaultFg, g_bg = kDefaultBg;
 bool g_cursor_visible = true;
 bool g_cursor_drawn = false;
 bool g_paused = false;  // a display server owns the screen: keep the cells, touch no pixels
+bool g_covered = false; // the boot splash owns the screen (neko/splash.hpp): the same, until it ends
+
+bool hidden() { return g_paused || g_covered; }
 volatile uint64_t g_changes = 0;
 
 // UTF-8 decoder
@@ -162,7 +166,7 @@ uint32_t g_param_count = 0;
 uint32_t* pixel_row(uint32_t y) { return reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(g_fb.Address) + y * g_fb.Pitch); }
 
 void paint(uint32_t col, uint32_t row, const Cell& c) {
-    if (g_paused) return;
+    if (hidden()) return;
     ++g_changes;
     const uint8_t* glyph = g_font.glyphs + size_t(glyph_for(c.cp)) * g_font.bytes_per_glyph;
     uint32_t px = col * g_font.width;
@@ -191,7 +195,7 @@ void hide_cursor() {
 }
 
 void show_cursor() {
-    if (g_paused || !g_cursor_visible || g_x >= g_cols || g_y >= g_rows) return;
+    if (hidden() || !g_cursor_visible || g_x >= g_cols || g_y >= g_rows) return;
     const Cell& c = g_cells[g_y * g_cols + g_x];
     for (uint32_t gy = g_font.height - 2; gy < g_font.height; ++gy) {
         uint32_t* out = pixel_row(g_y * g_font.height + gy) + g_x * g_font.width;
@@ -403,7 +407,7 @@ void set_cursor_visible(bool visible) {
 }
 
 void draw_large(uint32_t column, uint32_t row, const char* text, uint32_t fg, uint32_t bg, uint32_t scale) {
-    if (!g_ready || !text || g_paused) return;
+    if (!g_ready || !text || hidden()) return;
     uint32_t x0 = column * g_font.width;
     uint32_t y0 = row * g_font.height;
     for (const uint8_t* p = reinterpret_cast<const uint8_t*>(text); *p; ++p) {
@@ -438,11 +442,29 @@ uint64_t changes() { return g_changes; }
 void retarget(const Framebuffer& fb) {
     if (!g_ready || fb.Width != g_fb.Width || fb.Height != g_fb.Height || fb.Bpp != 32) return;
     g_fb = fb;
-    redraw();
+    if (g_covered) splash::retarget(fb);
+    else redraw();
+}
+
+void set_covered(bool covered) {
+    bool was = g_covered;
+    g_covered = covered;
+    if (was && !covered) redraw();
+}
+
+Framebuffer framebuffer() { return g_fb; }
+
+void touch() { ++g_changes; }
+
+const uint8_t* glyph(uint32_t cp, uint32_t& width, uint32_t& height, uint32_t& bytes_per_row) {
+    width = g_font.width;
+    height = g_font.height;
+    bytes_per_row = g_font.bytes_per_row;
+    return g_ready ? g_font.glyphs + size_t(glyph_for(cp)) * g_font.bytes_per_glyph : nullptr;
 }
 
 void redraw() {
-    if (!g_ready || g_paused) return;
+    if (!g_ready || hidden()) return;
     for (uint32_t i = 0; i < g_cols * g_rows; ++i) g_drawn[i] = {0xFFFFFFFF, 0, 0};
     g_cursor_drawn = false;
     for (uint64_t y = uint64_t(g_rows) * g_font.height; y < g_fb.Height; ++y) {

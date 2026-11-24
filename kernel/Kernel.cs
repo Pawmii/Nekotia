@@ -20,6 +20,7 @@ public static unsafe class Kernel
         Info = info;
         Syscalls.Init();
         Banner();
+        Splash.Step("Network", 58);
         StartNetwork();   // before the self tests: they ping the gateway
         Proc.Init();
         if (Str.StartsWith(info->CommandLine, "test")) {
@@ -27,13 +28,17 @@ public static unsafe class Kernel
             int failed = SelfTest.Run(true);
             Power.TestExit(failed == 0 ? (byte)0 : (byte)1);
         }
+        Splash.Step("Self tests", 70);
         SelfTest.Run(false);
+        Splash.Step("Disks", 86);
         MountDisk();
         Storage.Init();
+        Splash.Step("Keyboard, mouse and clock", 95);
         Motd();
         Rtc.Init();
         Keyboard.Init();
         Mouse.Init();
+        Splash.Finish();
         RunInit((byte*)info->CommandLine);
         Shell.Run();
     }

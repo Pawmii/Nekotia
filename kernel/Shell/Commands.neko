@@ -13,7 +13,7 @@ namespace Nekotia.OS;
 public static unsafe class Commands
 {
     /// Space-separated, used by Tab completion.
-    public const string Names = "help clear info ps lspci lsusb dmesg loglevel ifconfig ping arp dhcp netstat disks mount umount mkfs sync ls cd pwd cat mkdir rm mv write df run progs kill spawn mem vm pages alloc uptime echo sleep irq layout colors neko selftest panic crash reboot shutdown";
+    public const string Names = "help clear info ps lspci lsusb dmesg loglevel ifconfig ping arp dhcp netstat disks mount umount mkfs sync ls cd pwd cat mkdir rm mv write df run progs kill spawn mem vm pages alloc uptime echo sleep irq layout colors neko beep selftest panic crash reboot shutdown";
 
     public static void Run(byte* cmd, byte* args)
     {
@@ -59,6 +59,7 @@ public static unsafe class Commands
         else if (Is(cmd, "layout")) Layout();
         else if (Is(cmd, "colors")) Colors();
         else if (Is(cmd, "neko")) Neko();
+        else if (Is(cmd, "beep")) Beep(args);
         else if (Is(cmd, "selftest")) SelfTest.Run(true);
         else if (Is(cmd, "panic")) Debug.Panic("requested from the shell");
         else if (Is(cmd, "crash")) Crash(args);
@@ -181,6 +182,7 @@ public static unsafe class Commands
         Line("layout", "switch keyboard layout EN/RU (also Alt+Shift)");
         Line("colors", "console palette");
         Line("neko", "draw the cat (any key to return)");
+        Line("beep [HZ [MS]]", "PC speaker tone; `beep sad` plays the stop screen tune");
         Line("clear", "clear the screen (also Ctrl+L)");
         Line("reboot / shutdown", "restart / power off (QEMU)");
         Section("Testing:");
@@ -679,6 +681,28 @@ public static unsafe class Commands
     {
         Terminal.Write(args);
         Terminal.WriteLine();
+    }
+
+    /// `beep` (A5, 150 ms), `beep HZ MS`, or `beep sad` — the stop screen's tune.
+    static void Beep(byte* args)
+    {
+        if (Str.StartsWith(args, "sad")) {
+            Speaker.PlayStopTune();
+            return;
+        }
+        ulong hz = 880, ms = 150;
+        if (*args != 0) {
+            byte* rest = args;
+            while (*rest != 0 && *rest != ' ')
+                rest++;
+            while (*rest == ' ')
+                rest++;
+            unless (ParseNumber(args, out hz) && (*rest == 0 || ParseNumber(rest, out ms))) {
+                Terminal.WriteLine("usage: beep [HZ [MS]] | beep sad");
+                return;
+            }
+        }
+        Speaker.Beep((uint)hz, (uint)ms);
     }
 
     static void Sleep(byte* args)

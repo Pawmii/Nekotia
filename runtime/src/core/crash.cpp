@@ -12,6 +12,8 @@
 //   press R to reboot
 #include <neko/crash.hpp>
 #include <neko/runtime.hpp>
+#include <neko/speaker.hpp>
+#include <neko/splash.hpp>
 #include <neko/sched.hpp>
 #include <neko/smp.hpp>
 
@@ -316,6 +318,7 @@ void stack(const Report& r) {
 
 void title(const Report& r) {
     display::emergency_reset();  // buffer 0 on screen: a display server may have flipped to another
+    splash::abort();             // crashed while booting: the splash goes, the log is what matters now
     console::set_paused(false);  // take the screen back from a display server
     bool screen = console::ready();
     color(kText);
@@ -456,6 +459,15 @@ void system_state() {
     nl();
 }
 
+bool g_reboot_key = false;
+
+bool reboot_key() {
+    if (cpu::inb(0x64) & 1) {
+        if (cpu::inb(0x60) == 0x13) g_reboot_key = true;
+    }
+    return g_reboot_key;
+}
+
 NEKO_NORETURN void show(Report& r) {
     cpu::disable_interrupts();
     if (g_crashing) {  // crashed while drawing the crash screen: keep it minimal
@@ -483,11 +495,11 @@ NEKO_NORETURN void show(Report& r) {
     display::emergency_present();  // GPUs that show nothing until told (virtio-gpu)
 
 #if !NEKO_HOSTED
-    // Interrupts are off: poll the PS/2 controller for the R key (make code 0x13).
+    // A sad little tune on the PC speaker (`nosound` turns it off), then wait for R. Interrupts are off:
+    // the PS/2 controller is polled for the R key (make code 0x13) — also while the tune plays.
+    speaker::play_stop_tune(&reboot_key);
     for (;;) {
-        if (cpu::inb(0x64) & 1) {
-            if (cpu::inb(0x60) == 0x13) power::reboot();
-        }
+        if (reboot_key()) power::reboot();
         cpu::io_wait();
     }
 #else

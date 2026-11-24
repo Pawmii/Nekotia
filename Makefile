@@ -34,7 +34,11 @@ OVMF       ?= $(firstword $(wildcard /usr/share/edk2/x64/OVMF.4m.fd /usr/share/e
 ACCEL      ?= $(if $(wildcard /dev/kvm),-accel kvm -accel tcg,)
 # VGA=virtio: the virtio-gpu driver (present + flip) instead of the standard VGA (bochs driver).
 VGA        ?=
-QEMU_FLAGS ?= -M q35 $(ACCEL) $(if $(VGA),-vga $(VGA)) -cpu qemu64,+smep,+smap -m 512M -smp 4 -serial stdio -no-reboot -no-shutdown -rtc base=localtime
+# The PC speaker (boot splash is silent; the stop screen plays a tune) goes to the host's sound: pa (PulseAudio or
+# PipeWire's pulse server) by default, AUDIO=pipewire / alsa / none to change.
+AUDIO      ?= pa
+AUDIO_FLAGS = $(if $(filter none,$(AUDIO)),,-audiodev $(AUDIO),id=snd0 -machine pcspk-audiodev=snd0)
+QEMU_FLAGS ?= -M q35 $(ACCEL) $(if $(VGA),-vga $(VGA)) -cpu qemu64,+smep,+smap -m 512M -smp 4 -serial stdio -no-reboot -no-shutdown -rtc base=localtime $(AUDIO_FLAGS)
 # make debug builds an -O0 kernel in build/debug for faithful C# line stepping in gdb
 HEAP_SIZE  ?= 4194304  # initial kernel heap; it grows on demand
 

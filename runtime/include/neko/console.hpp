@@ -34,6 +34,14 @@ uint64_t changes();
 // Another framebuffer of the same size takes over (a display driver replaced the bootloader's): repaint there.
 void retarget(const Framebuffer& fb);
 
+// For the boot splash (neko/splash.hpp): while covered the console keeps its text but draws nothing, like
+// paused; uncovering repaints it. touch() counts pixels drawn by someone else (they get presented).
+void set_covered(bool covered);
+Framebuffer framebuffer();
+void touch();
+// The bitmap of `cp` in the console font: `height` rows of `bytes_per_row` bytes, MSB first.
+const uint8_t* glyph(uint32_t cp, uint32_t& width, uint32_t& height, uint32_t& bytes_per_row);
+
 // Draws ASCII/UTF-8 text `scale` times larger, top-left at cell (column, row), straight to the framebuffer.
 // The cells underneath are not updated — meant for screens that are drawn once (the stop screen).
 void draw_large(uint32_t column, uint32_t row, const char* text, uint32_t fg, uint32_t bg, uint32_t scale);
