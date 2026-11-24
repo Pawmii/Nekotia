@@ -31,6 +31,12 @@ public static unsafe class Icmp
             Stack.Put16(q + 2, Stack.Checksum(q, length));
             Ip.Send(Ip.ProtoIcmp, source, length);
             EchoesAnswered++;
+        } else if (p[0] == 3 && length >= 8 + 20 + 4) {   // unreachable: which of our datagrams it was about
+            int quotedHeader = (p[8] & 15) * 4;
+            if (p[8 + 9] == Ip.ProtoUdp && length >= 8 + quotedHeader + 4) {
+                LastUnreachablePort = Stack.Get16(p + 8 + quotedHeader + 2);
+                UnreachablesReceived++;
+            }
         } else if (p[0] == 0 && Stack.Get16(p + 4) == Identifier) {
             _replyFrom = source;
             _replyTtl = ttl;
@@ -38,6 +44,37 @@ public static unsafe class Icmp
             _replySeq = Stack.Get16(p + 6);
             _replied.Signal();
         }
+    }
+
+    public const byte CodeNetUnreachable = 0, CodeHostUnreachable = 1, CodeProtocolUnreachable = 2, CodePortUnreachable = 3;
+    public static ulong UnreachablesSent, UnreachablesReceived;
+    public static ushort LastUnreachablePort;   // UDP port of the last "port unreachable" we got
+    static ulong _unreachableSecond, _unreachableThisSecond;
+
+    /// "Destination unreachable" back to `destination` about the datagram whose IP header is `ip` (RFC 792:
+    /// its header and first 8 data bytes go along). At most 10 a second. Lock held.
+    public static void Unreachable(uint destination, byte* ip, int headerLength, byte code)
+    {
+        ulong second = Time.UptimeMs() / 1000;
+        if (second != _unreachableSecond) {
+            _unreachableSecond = second;
+            _unreachableThisSecond = 0;
+        }
+        if (++_unreachableThisSecond > 10)
+            return;
+        int quoted = headerLength + 8;
+        int total = Stack.Get16(ip + 2);
+        if (quoted > total)
+            quoted = total;
+        byte* q = Stack.Payload();
+        q[0] = 3;   // destination unreachable
+        q[1] = code;
+        Stack.Put16(q + 2, 0);
+        Stack.Put32(q + 4, 0);
+        Memory.Copy(q + 8, ip, (nuint)quoted);
+        Stack.Put16(q + 2, Stack.Checksum(q, 8 + quoted));
+        Ip.Send(Ip.ProtoIcmp, destination, 8 + quoted);
+        UnreachablesSent++;
     }
 
     /// Sends echo request `sequence` with `size` data bytes (Lock taken here).

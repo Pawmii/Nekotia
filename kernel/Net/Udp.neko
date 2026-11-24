@@ -162,22 +162,23 @@ public static unsafe class Udp
         }
     }
 
-    public static void Receive(uint source, uint destination, byte* p, int length)
+    /// Queues a datagram for its socket. False when no socket has that port (the caller answers with ICMP).
+    public static bool Receive(uint source, uint destination, byte* p, int length)
     {
         if (length < 8)
-            return;
+            return true;
         int size = Stack.Get16(p + 4);
         if (size < 8 || size > length)
-            return;
+            return true;
         if (Stack.Get16(p + 6) != 0 && Stack.Fold(Stack.Sum(p, size, Pseudo(source, destination, Ip.ProtoUdp, size))) != 0)
-            return;   // a bad checksum (0 = none sent)
+            return true;   // a bad checksum (0 = none sent): dropped quietly
         ushort port = Stack.Get16(p + 2);
         for int i in 0..Sockets {
             UdpSocket* s = &Table[i];
             if (!s->Used || s->Port != port)
                 continue;
             if (s->Count == QueueLength)
-                return;   // full: dropped, like any UDP
+                return true;   // full: dropped, like any UDP
             Datagram* d = &s->Queue[(s->Head + s->Count) % QueueLength];
             d->From = source;
             d->FromPort = Stack.Get16(p);
@@ -185,9 +186,10 @@ public static unsafe class Udp
             Memory.Copy(d->Data, p + 8, (nuint)d->Length);
             s->Count++;
             s->Ready.Signal();
-            return;
+            return true;
         }
         NoListener++;
+        return false;
     }
 
     /// Closes every socket of process `pid` (when it exits).

@@ -1,8 +1,20 @@
-// TCP (RFC 793/9293, the parts a small host needs): connect, listen/accept, reliable ordered byte
-// streams both ways, graceful close with FIN in both directions, RST, retransmission with
-// exponential back-off, window flow control (with zero-window probes), MSS option, TIME_WAIT.
-// Not done: congestion control (slow start), SACK, window scaling, timestamps, urgent data,
-// keeping out-of-order segments (they are dropped and re-ACKed; the peer retransmits).
+// TCP (RFC 9293): connect, listen/accept, reliable ordered byte streams both ways, graceful close with FIN in
+// both directions, RST, TIME_WAIT, and what makes it hold up on a real network:
+//
+//   RTT estimation      RFC 6298: SRTT/RTTVAR from one timed segment at a time (Karn: never a retransmitted
+//                       one), RTO = SRTT + 4·RTTVAR within [200 ms, 8 s], doubled on every timeout
+//   congestion control  RFC 5681: slow start from 10 segments (RFC 6928), congestion avoidance, fast
+//                       retransmit after 3 duplicate ACKs, fast recovery with NewReno partial ACKs (RFC 6582);
+//                       a timeout falls back to one segment and resends everything unacknowledged
+//   reassembly          segments that arrive out of order are kept in the receive ring (up to 8 holes)
+//                       and reported with SACK blocks (RFC 2018); in-order data then fills the gap
+//   SACK recovery       the peer's SACK blocks form a scoreboard; in fast recovery every duplicate or
+//                       partial ACK resends the next hole below the highest SACKed byte (RFC 6675's NextSeg),
+//                       so several losses in one window are repaired in about one round trip
+//   window scaling      RFC 7323: 128 KiB buffers, our shift 2; used when the peer offers it too
+//   flow control        the peer's window (zero-window probes), and window updates after reads
+//
+// Not done: timestamps, urgent data, delayed ACKs, Nagle.
 //
 // Everything runs under Stack.Lock: segments from the net-rx thread, Tick() from net-timer every
 // 100 ms, and the calls below from whoever uses a connection. Callers that must wait (accept,
@@ -40,15 +52,40 @@ public unsafe struct TcpConnection
 
     public uint SendUnacked;   // SND.UNA
     public uint SendNext;      // SND.NXT
-    public uint SendWindow;    // what the peer accepts beyond SendUnacked
+    public uint HighWater;     // SND.MAX: highest SendNext so far (a timeout sends SendNext back; ACKs up to here count)
+    public uint FinSequence;   // where our FIN is (valid once FinSent was set at least once)
+    public bool FinEverSent;
+    public uint SendWindow;    // what the peer accepts beyond SendUnacked (scaled)
     public uint ReceiveNext;   // RCV.NXT
     public ushort PeerMss;
     public uint AdvertisedEdge; // ReceiveNext + the window we last advertised
 
-    public byte* SendBuffer;   // bytes from SendUnacked on: sent but unacknowledged, then unsent
-    public int SendCount;
-    public byte* ReceiveBuffer;
+    // options agreed in the handshake
+    public byte SendScale;     // the peer's window shift (0 without scaling)
+    public byte ReceiveScale;  // ours
+    public bool SackOk;
+
+    // congestion control (bytes)
+    public uint Cwnd, Ssthresh;
+    public int DupAcks;
+    public bool InRecovery;
+    public uint Recover;       // SendNext when fast recovery began
+    public fixed uint Sacked[8];  // what the peer's SACK blocks say it has beyond SendUnacked, pairs [start, end)
+    public int SackedCount;
+    public uint RetransmitMark;   // in recovery: holes below this have been resent already
+
+    // round-trip time (ms; Srtt scaled by 8, Rttvar by 4 — Jacobson's integer form)
+    public long Srtt, Rttvar;
+    public bool RttTiming;
+    public uint RttSequence;   // the timed segment is acknowledged when ACK passes this
+    public ulong RttStart;
+
+    public byte* SendBuffer;   // ring: bytes from SendUnacked on (sent but unacknowledged, then unsent)
+    public int SendHead, SendCount;
+    public byte* ReceiveBuffer;  // ring: in-order bytes not read yet, then room (where out-of-order data waits)
     public int ReceiveHead, ReceiveCount;
+    public fixed uint Holes[16];  // received ranges beyond ReceiveNext, [start, end) sequence numbers, pairs
+    public int HoleCount;
 
     public ulong RetransmitAt; // 0 = timer off
     public ulong Rto;
@@ -62,15 +99,17 @@ public unsafe struct TcpConnection
 public static unsafe class Tcp
 {
     public const int Connections = 32;
-    public const int BufferSize = 16384;
+    public const int BufferSize = 131072;   // each way, per connection (allocated on first use)
     public const int Mss = 1460;
+    const byte OurScale = 2;                 // 128 KiB >> 2 fits the 16-bit window field
     const byte Fin = 1, Syn = 2, Rst = 4, Psh = 8, Ack = 16;
-    const ulong InitialRto = 300, MaxRto = 4000;
+    const ulong InitialRto = 1000, MinRto = 200, MaxRto = 8000;
     const int MaxRetries = 8;
+    const int MaxHoles = 8;
 
     public static TcpConnection* Table;
     static ushort _ephemeral = 50000;
-    public static ulong Retransmits, ResetsSent;
+    public static ulong Retransmits, FastRetransmits, ResetsSent, OutOfOrderKept;
 
     public static void Init()
     {
@@ -80,6 +119,8 @@ public static unsafe class Tcp
 
     static bool Before(uint a, uint b) => (int)(a - b) < 0;
     static bool BeforeOrSame(uint a, uint b) => (int)(a - b) <= 0;
+    static uint Min(uint a, uint b) => a < b ? a : b;
+    static uint Max(uint a, uint b) => a > b ? a : b;
 
     static void Notify(TcpConnection* c)
     {
@@ -126,12 +167,30 @@ public static unsafe class Tcp
             c->RemotePort = 0;
             c->SendUnacked = 0;
             c->SendNext = 0;
+            c->HighWater = 0;
+            c->FinSequence = 0;
+            c->FinEverSent = false;
             c->SendWindow = 0;
             c->ReceiveNext = 0;
             c->AdvertisedEdge = 0;
+            c->SendScale = 0;
+            c->ReceiveScale = 0;
+            c->SackOk = false;
+            c->Cwnd = 10 * Mss;
+            c->Ssthresh = 0xFFFFFFFF;
+            c->DupAcks = 0;
+            c->InRecovery = false;
+            c->Recover = 0;
+            c->SackedCount = 0;
+            c->RetransmitMark = 0;
+            c->Srtt = 0;
+            c->Rttvar = 0;
+            c->RttTiming = false;
+            c->SendHead = 0;
             c->SendCount = 0;
             c->ReceiveHead = 0;
             c->ReceiveCount = 0;
+            c->HoleCount = 0;
             c->RetransmitAt = 0;
             c->Retries = 0;
             c->TimeWaitUntil = 0;
@@ -169,36 +228,70 @@ public static unsafe class Tcp
 
     static uint InitialSequence() => (uint)(Cpu.ReadTimestamp() >> 4);
 
+    /// Data bytes per segment: the peer's MSS, minus room for SACK blocks while we report holes.
+    static int SegmentSize(TcpConnection* c) => (c->PeerMss < Mss ? c->PeerMss : Mss) - (c->SackOk && c->HoleCount > 0 ? 28 : 0);
+
     // ---------------------------------------------------------------- output
 
-    static ushort Window(TcpConnection* c)
-    {
-        int free = BufferSize - c->ReceiveCount;
-        return (ushort)(free > 65535 ? 65535 : free);
-    }
+    /// Free room in the receive ring, as the window we offer (unscaled bytes).
+    static uint FreeRoom(TcpConnection* c) => (uint)(BufferSize - c->ReceiveCount);
 
-    /// One segment with `length` bytes from the send buffer at `offset` (from SendUnacked). Lock held.
+    /// One segment with `length` bytes of the send ring at `offset` (from SendUnacked). Lock held.
     static void Segment(TcpConnection* c, uint sequence, byte flags, int offset, int length)
     {
         byte* t = Stack.Payload();
-        int header = (flags & Syn) != 0 ? 24 : 20;
+        bool syn = (flags & Syn) != 0;
+        // Options: in SYNs MSS, window scale and SACK-permitted; later SACK blocks while we have holes.
+        int options = 0;
+        byte* o = t + 20;
+        if (syn) {
+            o[0] = 2;
+            o[1] = 4;
+            Stack.Put16(o + 2, Mss);
+            options = 4;
+            bool active = (flags & Ack) == 0;   // our SYN offers; our SYN-ACK only answers what the peer offered
+            if (active || c->ReceiveScale != 0) {
+                o[4] = 1;   // NOP
+                o[5] = 3;
+                o[6] = 3;
+                o[7] = OurScale;
+                options = 8;
+            }
+            if (active || c->SackOk) {
+                o[options] = 1;
+                o[options + 1] = 1;
+                o[options + 2] = 4;   // SACK permitted
+                o[options + 3] = 2;
+                options += 4;
+            }
+        } else if (c->SackOk && c->HoleCount > 0 && (flags & Ack) != 0) {
+            int blocks = c->HoleCount < 3 ? c->HoleCount : 3;
+            o[0] = 1;
+            o[1] = 1;
+            o[2] = 5;
+            o[3] = (byte)(2 + 8 * blocks);
+            for int b in 0..blocks {
+                Stack.Put32(o + 4 + b * 8, c->Holes[b * 2]);
+                Stack.Put32(o + 8 + b * 8, c->Holes[b * 2 + 1]);
+            }
+            options = 4 + 8 * blocks;
+        }
+        int header = 20 + options;
         Stack.Put16(t, c->LocalPort);
         Stack.Put16(t + 2, c->RemotePort);
         Stack.Put32(t + 4, sequence);
         Stack.Put32(t + 8, (flags & Ack) != 0 ? c->ReceiveNext : 0);
         t[12] = (byte)((header / 4) << 4);
         t[13] = flags;
-        ushort window = Window(c);
+        uint room = FreeRoom(c);
+        uint field = syn ? Min(room, 65535) : Min(room >> c->ReceiveScale, 65535);   // SYNs are never scaled
         if ((flags & Ack) != 0)
-            c->AdvertisedEdge = c->ReceiveNext + window;
-        Stack.Put16(t + 14, window);
+            c->AdvertisedEdge = c->ReceiveNext + (syn ? field : field << c->ReceiveScale);
+        Stack.Put16(t + 14, field);
         Stack.Put32(t + 16, 0);   // checksum, urgent pointer
-        if (header == 24) {       // MSS option
-            t[20] = 2;
-            t[21] = 4;
-            Stack.Put16(t + 22, Mss);
+        for int i in 0..length {
+            t[header + i] = c->SendBuffer[(c->SendHead + offset + i) % BufferSize];
         }
-        for int i in 0..length { t[header + i] = c->SendBuffer[offset + i]; }
         int size = header + length;
         Stack.Put16(t + 16, Stack.Fold(Stack.Sum(t, size, Udp.Pseudo(c->LocalIp, c->RemoteIp, Ip.ProtoTcp, size))));
         Ip.Send(Ip.ProtoTcp, c->RemoteIp, size);
@@ -212,30 +305,49 @@ public static unsafe class Tcp
             c->RetransmitAt = Time.UptimeMs() + c->Rto;
     }
 
-    /// Sends whatever the window allows, then the FIN when everything is out. Lock held.
+    static bool CanSend(TcpConnection* c) =>
+        c->State == TcpState.Established || c->State == TcpState.CloseWait || c->State == TcpState.FinWait1
+        || c->State == TcpState.LastAck || c->State == TcpState.Closing;
+
+    /// Sends what both windows (the peer's and the congestion window) allow, then the FIN once
+    /// everything is out. Lock held.
     static void Output(TcpConnection* c)
     {
-        if (c->State != TcpState.Established && c->State != TcpState.CloseWait
-            && c->State != TcpState.FinWait1 && c->State != TcpState.LastAck && c->State != TcpState.Closing)
+        if (!CanSend(c))
             return;
-        int mss = c->PeerMss < Mss ? c->PeerMss : Mss;
+        int mss = SegmentSize(c);
+        uint window = Min(c->SendWindow, c->Cwnd);
         loop {
             int inFlight = (int)(c->SendNext - c->SendUnacked) - (c->FinSent ? 1 : 0);
             int unsent = c->SendCount - inFlight;
-            int room = (int)c->SendWindow - inFlight;
+            int room = (int)window - inFlight;
             if (unsent <= 0 || room <= 0 || c->FinSent)
                 break;
             int n = unsent < mss ? unsent : mss;
-            if (n > room)
+            if (n > room) {
+                if (inFlight > 0 && room < mss)
+                    break;   // a small window: wait for a full segment's worth (sender-side silly window avoidance)
                 n = room;
+            }
             Segment(c, c->SendNext, (byte)(Ack | Psh), inFlight, n);
+            if (!c->RttTiming && !Before(c->SendNext, c->HighWater)) {   // time this one (new data only: Karn)
+                c->RttTiming = true;
+                c->RttSequence = c->SendNext + (uint)n;
+                c->RttStart = Time.UptimeMs();
+            }
             c->SendNext += (uint)n;
+            if (Before(c->HighWater, c->SendNext))
+                c->HighWater = c->SendNext;
             StartTimer(c);
         }
         int pending = c->SendCount - (int)(c->SendNext - c->SendUnacked);
         if (c->FinQueued && !c->FinSent && pending <= 0) {
             Segment(c, c->SendNext, (byte)(Fin | Ack), 0, 0);
+            c->FinSequence = c->SendNext;
+            c->FinEverSent = true;
             c->SendNext++;
+            if (Before(c->HighWater, c->SendNext))
+                c->HighWater = c->SendNext;
             c->FinSent = true;
             if (c->State == TcpState.Established)
                 c->State = TcpState.FinWait1;
@@ -243,6 +355,19 @@ public static unsafe class Tcp
                 c->State = TcpState.LastAck;
             StartTimer(c);
         }
+    }
+
+    /// The first unacknowledged segment again (fast retransmit, partial ACK, timeout).
+    static void RetransmitFirst(TcpConnection* c)
+    {
+        int inFlight = (int)(c->SendNext - c->SendUnacked) - (c->FinSent ? 1 : 0);
+        int mss = SegmentSize(c);
+        Retransmits++;
+        c->RttTiming = false;   // Karn: no RTT sample from a segment sent twice
+        if (inFlight > 0)
+            Segment(c, c->SendUnacked, (byte)(Ack | Psh), 0, inFlight < mss ? inFlight : mss);
+        else if (c->FinSent)
+            Segment(c, c->SendNext - 1, (byte)(Fin | Ack), 0, 0);
     }
 
     /// RST in answer to a segment that belongs to nothing (Lock held).
@@ -264,6 +389,262 @@ public static unsafe class Tcp
         Stack.Put16(r + 16, Stack.Fold(Stack.Sum(r, 20, Udp.Pseudo(destination, source, Ip.ProtoTcp, 20))));
         Ip.Send(Ip.ProtoTcp, source, 20);
         ResetsSent++;
+    }
+
+    // ---------------------------------------------------------------- round trip and congestion
+
+    /// RFC 6298 with Jacobson's scaled integers: Srtt = 8·SRTT, Rttvar = 4·RTTVAR.
+    static void RttSample(TcpConnection* c, long ms)
+    {
+        if (ms < 1)
+            ms = 1;
+        if (c->Srtt == 0) {
+            c->Srtt = ms << 3;
+            c->Rttvar = ms << 1;
+        } else {
+            long delta = ms - (c->Srtt >> 3);
+            c->Srtt += delta;
+            if (delta < 0)
+                delta = -delta;
+            c->Rttvar += delta - (c->Rttvar >> 2);
+        }
+        long rto = (c->Srtt >> 3) + (c->Rttvar > 25 ? c->Rttvar : 25);   // + max(timer granularity, 4·RTTVAR)
+        c->Rto = rto < (long)MinRto ? MinRto : rto > (long)MaxRto ? MaxRto : (ulong)rto;
+    }
+
+    /// New data acknowledged (`acked` bytes): grow the congestion window, or leave/continue fast recovery.
+    static void OnNewAck(TcpConnection* c, uint ack, int acked)
+    {
+        uint mss = (uint)SegmentSize(c);
+        c->DupAcks = 0;
+        if (c->InRecovery) {
+            if (!Before(ack, c->Recover)) {   // everything sent before the loss is through: recovery is over
+                c->InRecovery = false;
+                c->Cwnd = c->Ssthresh;
+            } else {                           // partial ACK: the next hole, resent at once (NewReno)
+                if (Before(c->RetransmitMark, ack))
+                    c->RetransmitMark = ack;
+                if (!RetransmitNextHole(c))
+                    RetransmitFirst(c);
+                c->Cwnd = c->Cwnd > (uint)acked ? c->Cwnd - (uint)acked + mss : mss;
+            }
+            return;
+        }
+        if (c->Cwnd < c->Ssthresh)
+            c->Cwnd += Min((uint)acked, mss);                // slow start: doubles every round trip
+        else
+            c->Cwnd += Max(mss * mss / c->Cwnd, 1);           // congestion avoidance: one segment per round trip
+    }
+
+    static void OnDuplicateAck(TcpConnection* c)
+    {
+        uint mss = (uint)SegmentSize(c);
+        c->DupAcks++;
+        if (c->InRecovery) {
+            c->Cwnd += mss;          // a segment has left the network
+            RetransmitNextHole(c);   // SACK says what else is missing: repair it now, not a round trip later
+            return;
+        }
+        if (c->DupAcks == 3) {   // fast retransmit
+            uint flight = c->SendNext - c->SendUnacked;
+            c->Ssthresh = Max(flight / 2, 2 * mss);
+            FastRetransmits++;
+            RetransmitFirst(c);
+            c->Cwnd = c->Ssthresh + 3 * mss;
+            c->InRecovery = true;
+            c->Recover = c->SendNext;
+            c->RetransmitMark = c->SendUnacked + Min(flight, mss);
+        }
+    }
+
+    /// Takes the peer's SACK blocks from an ACK into the scoreboard (ranges above SendUnacked, merged).
+    static void ReadSack(TcpConnection* c, byte* t, int header)
+    {
+        // forget what the cumulative ACK has passed
+        for (int i = 0; i < c->SackedCount; i++) {
+            if (BeforeOrSame(c->Sacked[i * 2 + 1], c->SendUnacked)) {
+                RemoveSacked(c, i);
+                i--;
+            } else if (Before(c->Sacked[i * 2], c->SendUnacked)) {
+                c->Sacked[i * 2] = c->SendUnacked;
+            }
+        }
+        for (int i = 20; i + 1 < header;) {
+            byte kind = t[i];
+            if (kind == 0)
+                break;
+            if (kind == 1) {
+                i++;
+                continue;
+            }
+            byte len = t[i + 1];
+            if (len < 2 || i + len > header)
+                break;
+            if (kind == 5) {
+                for (int b = i + 2; b + 8 <= i + len; b += 8) {
+                    uint s = Stack.Get32(t + b), e = Stack.Get32(t + b + 4);
+                    if (Before(c->SendUnacked, s) && Before(s, e) && BeforeOrSame(e, c->HighWater))
+                        AddSacked(c, s, e);
+                }
+            }
+            i += len;
+        }
+    }
+
+    static void AddSacked(TcpConnection* c, uint start, uint end)
+    {
+        for (int i = 0; i < c->SackedCount; i++) {
+            uint s = c->Sacked[i * 2], e = c->Sacked[i * 2 + 1];
+            if (Before(end, s) || Before(e, start))
+                continue;
+            if (Before(s, start))
+                start = s;
+            if (Before(end, e))
+                end = e;
+            RemoveSacked(c, i);
+            i = -1;
+        }
+        if (c->SackedCount == 4) {   // full: the lowest block goes (it is the oldest news)
+            int low = 0;
+            for (int i = 1; i < 4; i++) {
+                if (Before(c->Sacked[i * 2], c->Sacked[low * 2]))
+                    low = i;
+            }
+            RemoveSacked(c, low);
+        }
+        c->Sacked[c->SackedCount * 2] = start;
+        c->Sacked[c->SackedCount * 2 + 1] = end;
+        c->SackedCount++;
+    }
+
+    static void RemoveSacked(TcpConnection* c, int i)
+    {
+        for (int j = i + 1; j < c->SackedCount; j++) {
+            c->Sacked[(j - 1) * 2] = c->Sacked[j * 2];
+            c->Sacked[(j - 1) * 2 + 1] = c->Sacked[j * 2 + 1];
+        }
+        c->SackedCount--;
+    }
+
+    /// In recovery: resends the lowest range the peer has not got (below its highest SACKed byte) that was
+    /// not resent yet in this recovery (a simple RFC 6675 NextSeg). False when there is none.
+    static bool RetransmitNextHole(TcpConnection* c)
+    {
+        if (c->SackedCount == 0)
+            return false;
+        uint top = c->SendUnacked;
+        for (int i = 0; i < c->SackedCount; i++) {
+            if (Before(top, c->Sacked[i * 2 + 1]))
+                top = c->Sacked[i * 2 + 1];
+        }
+        uint seq = Before(c->SendUnacked, c->RetransmitMark) ? c->RetransmitMark : c->SendUnacked;
+        bool moved = true;
+        while (moved) {   // skip what the peer has
+            moved = false;
+            for (int i = 0; i < c->SackedCount; i++) {
+                if (!Before(seq, c->Sacked[i * 2]) && Before(seq, c->Sacked[i * 2 + 1])) {
+                    seq = c->Sacked[i * 2 + 1];
+                    moved = true;
+                }
+            }
+        }
+        if (!Before(seq, top))
+            return false;   // nothing missing below the highest SACKed byte
+        uint end = top;     // up to the next SACKed block
+        for (int i = 0; i < c->SackedCount; i++) {
+            if (Before(seq, c->Sacked[i * 2]) && Before(c->Sacked[i * 2], end))
+                end = c->Sacked[i * 2];
+        }
+        int length = (int)(end - seq);
+        int mss = SegmentSize(c);
+        if (length > mss)
+            length = mss;
+        int offset = (int)(seq - c->SendUnacked);
+        int dataInFlight = (int)(c->HighWater - c->SendUnacked) - (c->FinEverSent ? 1 : 0);
+        if (offset + length > c->SendCount)
+            length = c->SendCount - offset;
+        if (length <= 0 || offset >= dataInFlight)
+            return false;
+        Retransmits++;
+        c->RttTiming = false;
+        Segment(c, seq, (byte)(Ack | Psh), offset, length);
+        c->RetransmitMark = seq + (uint)length;
+        return true;
+    }
+
+    // ---------------------------------------------------------------- reassembly
+
+    /// Puts `length` bytes of `data` that start `offset` bytes after ReceiveNext into the ring. Returns how
+    /// many fit (the window is the ring's free room).
+    static int Store(TcpConnection* c, int offset, byte* data, int length)
+    {
+        int room = BufferSize - c->ReceiveCount;
+        if (offset >= room)
+            return 0;
+        int n = length < room - offset ? length : room - offset;
+        int at = c->ReceiveHead + c->ReceiveCount + offset;
+        for int i in 0..n {
+            c->ReceiveBuffer[(at + i) % BufferSize] = data[i];
+        }
+        return n;
+    }
+
+    /// Remembers [start, end) as received beyond ReceiveNext, merging with what touches it. False when full.
+    static bool AddHole(TcpConnection* c, uint start, uint end)
+    {
+        for (int i = 0; i < c->HoleCount; i++) {
+            uint s = c->Holes[i * 2], e = c->Holes[i * 2 + 1];
+            if (Before(end, s) || Before(e, start))
+                continue;   // separate
+            if (Before(s, start))
+                start = s;
+            if (Before(end, e))
+                end = e;
+            RemoveHole(c, i);
+            i = -1;   // the bigger range may now touch others: look again
+        }
+        if (c->HoleCount == MaxHoles)
+            return false;
+        // newest first: SACK reports the most recent block first (RFC 2018)
+        for (int i = c->HoleCount; i > 0; i--) {
+            c->Holes[i * 2] = c->Holes[(i - 1) * 2];
+            c->Holes[i * 2 + 1] = c->Holes[(i - 1) * 2 + 1];
+        }
+        c->Holes[0] = start;
+        c->Holes[1] = end;
+        c->HoleCount++;
+        return true;
+    }
+
+    static void RemoveHole(TcpConnection* c, int i)
+    {
+        for (int j = i + 1; j < c->HoleCount; j++) {
+            c->Holes[(j - 1) * 2] = c->Holes[j * 2];
+            c->Holes[(j - 1) * 2 + 1] = c->Holes[j * 2 + 1];
+        }
+        c->HoleCount--;
+    }
+
+    /// In-order data reached a kept range: take it in.
+    static void Absorb(TcpConnection* c)
+    {
+        bool again = true;
+        while (again) {
+            again = false;
+            for (int i = 0; i < c->HoleCount; i++) {
+                uint s = c->Holes[i * 2], e = c->Holes[i * 2 + 1];
+                if (Before(c->ReceiveNext, s))
+                    continue;
+                if (Before(c->ReceiveNext, e)) {
+                    int more = (int)(e - c->ReceiveNext);
+                    c->ReceiveCount += more;
+                    c->ReceiveNext = e;
+                }
+                RemoveHole(c, i);
+                again = true;
+                break;
+            }
+        }
     }
 
     // ---------------------------------------------------------------- input
@@ -319,12 +700,13 @@ public static unsafe class Tcp
             if ((flags & (Syn | Ack)) == (Syn | Ack) && ack == c->SendNext) {
                 c->ReceiveNext = seq + 1;
                 c->SendUnacked = ack;
-                c->SendWindow = window;
-                ReadMss(c, t, header);
+                ReadOptions(c, t, header, true);
+                c->SendWindow = window;   // the window in a SYN is never scaled
                 c->State = TcpState.Established;
                 c->RetransmitAt = 0;
                 c->Retries = 0;
-                c->Rto = InitialRto;
+                if (c->RttStart != 0)   // 0: the SYN was sent twice (Karn)
+                    RttSample(c, (long)(Time.UptimeMs() - c->RttStart));
                 SendAck(c);
                 Notify(c);
             }
@@ -333,27 +715,43 @@ public static unsafe class Tcp
 
         // ACK: what the peer has received.
         if ((flags & Ack) != 0) {
-            if (Before(c->SendUnacked, ack) && BeforeOrSame(ack, c->SendNext)) {
+            uint scaled = window << c->SendScale;
+            // Up to SND.MAX: after a timeout SendNext went back, but the peer may already have had more.
+            if (Before(c->SendUnacked, ack) && BeforeOrSame(ack, c->HighWater)) {
+                if (Before(c->SendNext, ack))
+                    c->SendNext = ack;
                 int acked = (int)(ack - c->SendUnacked);
-                if (c->State == TcpState.SynReceived) {   // our SYN counts as one
+                bool synAcked = c->State == TcpState.SynReceived;
+                if (synAcked) {   // our SYN counts as one
                     acked--;
                     c->State = TcpState.Established;
                     TcpConnection* parent = c->Parent >= 0 ? &Table[c->Parent] : null;
                     if (parent != null)
                         Notify(parent);   // accept() can take it
+                    if (c->RttStart != 0)
+                        RttSample(c, (long)(Time.UptimeMs() - c->RttStart));
                 }
-                bool finAcked = c->FinSent && ack == c->SendNext;
+                bool finAcked = c->FinEverSent && ack == c->FinSequence + 1;
+                if (finAcked)
+                    c->FinSent = true;   // even if a timeout had taken it back for resending
                 int dataAcked = acked - (finAcked ? 1 : 0);
                 if (dataAcked > c->SendCount)
                     dataAcked = c->SendCount;
                 if (dataAcked > 0) {
-                    Memory.Move(c->SendBuffer, c->SendBuffer + dataAcked, (nuint)(c->SendCount - dataAcked));
+                    c->SendHead = (c->SendHead + dataAcked) % BufferSize;
                     c->SendCount -= dataAcked;
                 }
+                if (c->RttTiming && !Before(ack, c->RttSequence)) {
+                    c->RttTiming = false;
+                    RttSample(c, (long)(Time.UptimeMs() - c->RttStart));
+                }
                 c->SendUnacked = ack;
+                if (c->SackOk)
+                    ReadSack(c, t, header);
                 c->Retries = 0;
-                c->Rto = InitialRto;
                 c->RetransmitAt = c->SendUnacked == c->SendNext ? 0UL : Time.UptimeMs() + c->Rto;
+                if (!synAcked && dataAcked > 0)
+                    OnNewAck(c, ack, dataAcked);
                 if (finAcked) {
                     if (c->State == TcpState.FinWait1)
                         c->State = TcpState.FinWait2;
@@ -366,9 +764,16 @@ public static unsafe class Tcp
                     }
                 }
                 Notify(c);
+            } else if (ack == c->SendUnacked && dataLength == 0 && (flags & (Syn | Fin)) == 0
+                       && (scaled == c->SendWindow || HasSack(t, header)) && c->SendNext != c->SendUnacked && CanSend(c)) {
+                // The peer got something after a hole. A window that moved (the reader took data) still
+                // counts when SACK blocks prove it is about new segments (as Linux does).
+                if (c->SackOk)
+                    ReadSack(c, t, header);
+                OnDuplicateAck(c);
             }
             if (c->State != TcpState.SynReceived)
-                c->SendWindow = window;
+                c->SendWindow = scaled;
         }
         if (c->State == TcpState.SynReceived || c->State == TcpState.Closed)
             return;
@@ -378,23 +783,38 @@ public static unsafe class Tcp
             return;
         }
 
-        // Data, in order only.
+        // Data: in order goes straight in; ahead of a hole is kept for later; old bytes are trimmed.
         bool ackNow = false;
+        bool accepting = c->State == TcpState.Established || c->State == TcpState.FinWait1 || c->State == TcpState.FinWait2;
         if (dataLength > 0) {
-            bool accepting = c->State == TcpState.Established || c->State == TcpState.FinWait1 || c->State == TcpState.FinWait2;
-            if (accepting && seq == c->ReceiveNext) {
-                int room = BufferSize - c->ReceiveCount;
-                int n = dataLength < room ? dataLength : room;
-                for int i in 0..n {
-                    c->ReceiveBuffer[(c->ReceiveHead + c->ReceiveCount + i) % BufferSize] = data[i];
+            ackNow = true;   // in order: acknowledge; out of order or duplicate: repeat our ACK (with SACK)
+            int offset = (int)(seq - c->ReceiveNext);
+            if (offset < 0) {   // starts with bytes we already have
+                if (-offset >= dataLength) {
+                    dataLength = 0;
+                    flags = (byte)(flags & ~Fin);
+                } else {
+                    data += -offset;
+                    dataLength += offset;
+                    seq = c->ReceiveNext;
+                    offset = 0;
                 }
-                c->ReceiveCount += n;
-                c->ReceiveNext += (uint)n;
+            }
+            if (accepting && dataLength > 0) {
+                int n = Store(c, offset, data, dataLength);
                 if (n < dataLength)
                     flags = (byte)(flags & ~Fin);   // the FIN is after bytes we could not take
-                Notify(c);
+                if (offset == 0 && n > 0) {
+                    c->ReceiveCount += n;
+                    c->ReceiveNext += (uint)n;
+                    Absorb(c);
+                    Notify(c);
+                } else if (n > 0) {
+                    if (AddHole(c, seq, seq + (uint)n))
+                        OutOfOrderKept++;
+                    flags = (byte)(flags & ~Fin);   // a FIN out of order: it comes again
+                }
             }
-            ackNow = true;   // in order: acknowledge; out of order or duplicate: repeat our ACK
         }
         if ((flags & Fin) != 0 && seq + (uint)dataLength == c->ReceiveNext) {
             c->ReceiveNext++;
@@ -409,12 +829,36 @@ public static unsafe class Tcp
         }
         if (ackNow)
             SendAck(c);
-        Output(c);   // the window may have opened
+        Output(c);   // the windows may have opened
     }
 
-    static void ReadMss(TcpConnection* c, byte* t, int header)
+    static bool HasSack(byte* t, int header)
     {
         for (int i = 20; i + 1 < header;) {
+            byte kind = t[i];
+            if (kind == 0)
+                return false;
+            if (kind == 1) {
+                i++;
+                continue;
+            }
+            if (kind == 5)
+                return true;
+            byte len = t[i + 1];
+            if (len < 2)
+                return false;
+            i += len;
+        }
+        return false;
+    }
+
+    /// MSS, window scale and SACK-permitted from a SYN (`synAck`: the answer to ours — scaling and SACK are on
+    /// only when both sides offered them).
+    static void ReadOptions(TcpConnection* c, byte* t, int header, bool synAck)
+    {
+        bool scale = false, sack = false;
+        byte shift = 0;
+        for (int i = 20; i < header;) {
             byte kind = t[i];
             if (kind == 0)
                 break;
@@ -422,13 +866,24 @@ public static unsafe class Tcp
                 i++;
                 continue;
             }
+            if (i + 1 >= header)
+                break;
             byte len = t[i + 1];
             if (len < 2 || i + len > header)
                 break;
             if (kind == 2 && len == 4)
                 c->PeerMss = Stack.Get16(t + i + 2);
+            else if (kind == 3 && len == 3) {
+                scale = true;
+                shift = t[i + 2] > 14 ? (byte)14 : t[i + 2];
+            } else if (kind == 4 && len == 2)
+                sack = true;
             i += len;
         }
+        // Our SYN offered both (active open); in a passive open we answer with what the peer offered.
+        c->SendScale = scale ? shift : (byte)0;
+        c->ReceiveScale = scale ? OurScale : (byte)0;
+        c->SackOk = sack;
     }
 
     static void Incoming(int listener, uint source, uint destination, ushort sport, ushort dport, uint seq, uint window,
@@ -453,10 +908,12 @@ public static unsafe class Tcp
         c->RemotePort = sport;
         c->ReceiveNext = seq + 1;
         c->SendWindow = window;
-        ReadMss(c, t, header);
+        ReadOptions(c, t, header, false);
         uint iss = InitialSequence();
         c->SendUnacked = iss;
         c->SendNext = iss + 1;
+        c->HighWater = iss + 1;
+        c->RttStart = Time.UptimeMs();
         Segment(c, iss, (byte)(Syn | Ack), 0, 0);
         StartTimer(c);
     }
@@ -521,18 +978,33 @@ public static unsafe class Tcp
                     Free(c);
                 continue;
             }
-            Retransmits++;
-            if (c->State == TcpState.SynSent)
+            c->RttTiming = false;
+            c->RttStart = 0;   // a handshake segment sent twice gives no RTT sample
+            if (c->State == TcpState.SynSent) {
+                Retransmits++;
                 Segment(c, c->SendUnacked, Syn, 0, 0);
-            else if (c->State == TcpState.SynReceived)
+            } else if (c->State == TcpState.SynReceived) {
+                Retransmits++;
                 Segment(c, c->SendUnacked, (byte)(Syn | Ack), 0, 0);
-            else {
-                int unackedData = inFlight - (c->FinSent ? 1 : 0);
-                int mss = c->PeerMss < Mss ? c->PeerMss : Mss;
-                if (unackedData > 0)
-                    Segment(c, c->SendUnacked, (byte)(Ack | Psh), 0, unackedData < mss ? unackedData : mss);
-                else if (c->FinSent)
-                    Segment(c, c->SendNext - 1, (byte)(Fin | Ack), 0, 0);
+            } else {
+                // A timeout means real loss: one segment at a time again, and everything after SND.UNA resent
+                // (go back N) — the peer may have dropped what followed the hole.
+                uint mss = (uint)SegmentSize(c);
+                c->Ssthresh = Max((c->SendNext - c->SendUnacked) / 2, 2 * mss);
+                c->Cwnd = mss;
+                c->InRecovery = false;
+                c->DupAcks = 0;
+                c->SackedCount = 0;   // the peer may have dropped what it SACKed (RFC 2018 allows reneging)
+                if (c->FinSent && c->SendCount > 0) {
+                    c->FinSent = false;   // the FIN goes again after the data
+                }
+                c->SendNext = c->SendUnacked + (c->FinSent ? 1u : 0u);
+                if (c->FinSent)
+                    RetransmitFirst(c);
+                else {
+                    Retransmits++;
+                    Output(c);
+                }
             }
             c->Rto = c->Rto * 2 > MaxRto ? MaxRto : c->Rto * 2;
             c->RetransmitAt = now + c->Rto;
@@ -615,7 +1087,9 @@ public static unsafe class Tcp
         uint iss = InitialSequence();
         c->SendUnacked = iss;
         c->SendNext = iss + 1;
+        c->HighWater = iss + 1;
         c->State = TcpState.SynSent;
+        c->RttStart = Time.UptimeMs();
         Segment(c, iss, Syn, 0, 0);
         StartTimer(c);
         while (c->State == TcpState.SynSent) {
@@ -652,7 +1126,11 @@ public static unsafe class Tcp
                 continue;
             }
             int n = length - done < room ? length - done : room;
-            Memory.Copy(c->SendBuffer + c->SendCount, data + done, (nuint)n);
+            int tail = (c->SendHead + c->SendCount) % BufferSize;
+            int first = n < BufferSize - tail ? n : BufferSize - tail;
+            Memory.Copy(c->SendBuffer + tail, data + done, (nuint)first);
+            if (n > first)
+                Memory.Copy(c->SendBuffer, data + done + first, (nuint)(n - first));
             c->SendCount += n;
             done += n;
             Output(c);
@@ -671,12 +1149,15 @@ public static unsafe class Tcp
         loop {
             if (c->ReceiveCount > 0) {
                 int n = c->ReceiveCount < capacity ? c->ReceiveCount : capacity;
-                for int i in 0..n { buffer[i] = c->ReceiveBuffer[(c->ReceiveHead + i) % BufferSize]; }
+                int first = n < BufferSize - c->ReceiveHead ? n : BufferSize - c->ReceiveHead;
+                Memory.Copy(buffer, c->ReceiveBuffer + c->ReceiveHead, (nuint)first);
+                if (n > first)
+                    Memory.Copy(buffer + first, c->ReceiveBuffer, (nuint)(n - first));
                 c->ReceiveHead = (c->ReceiveHead + n) % BufferSize;
                 c->ReceiveCount -= n;
                 // Window update once the right edge moved by a full segment: a sender that saw a small
                 // window waits for a big one (silly window avoidance), so it must be told.
-                uint edge = c->ReceiveNext + Window(c);
+                uint edge = c->ReceiveNext + FreeRoom(c);
                 bool receiving = c->State == TcpState.Established || c->State == TcpState.FinWait1 || c->State == TcpState.FinWait2;
                 if (receiving && (int)(edge - c->AdvertisedEdge) >= Mss)
                     SendAck(c);

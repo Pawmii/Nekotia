@@ -13,6 +13,7 @@ public static unsafe class Ip
     public const int MaxPayload = 1500 - Stack.IpHeader;
 
     static ushort _id;
+    static ulong _lossCounter;
     public static ulong Received, Sent, Bad;
 
     /// Sends the `length` payload bytes already at Stack.Payload() to `destination` (Lock held).
@@ -37,6 +38,10 @@ public static unsafe class Ip
         Stack.Put32(h + 16, destination);
         Stack.Put16(h + 10, Stack.Checksum(h, Stack.IpHeader));
         Sent++;
+        if (local && Stack.LossEvery > 0 && protocol == ProtoTcp && ++_lossCounter % (ulong)Stack.LossEvery == 0) {
+            Stack.LossDropped++;   // testing: a lossy link (self test of retransmission and reassembly)
+            return 0;
+        }
         if (local) {   // loopback: back into our own receive queue
             Stack.CopyMac(frame, Stack.Mac);
             Stack.CopyMac(frame + 6, Stack.Mac);
@@ -87,8 +92,11 @@ public static unsafe class Ip
         int size = total - header;
         if (h[9] == ProtoIcmp)
             Icmp.Receive(source, payload, size, h[8]);
-        else if (h[9] == ProtoUdp)
-            Udp.Receive(source, destination, payload, size);
+        else if (h[9] == ProtoUdp) {
+            bool unicast = destination == Stack.Address || Stack.IsLocal(destination);
+            if (!Udp.Receive(source, destination, payload, size) && unicast && Stack.Address != 0)
+                Icmp.Unreachable(source, h, header, Icmp.CodePortUnreachable);   // nobody listens there
+        }
         else if (h[9] == ProtoTcp)
             Tcp.Receive(source, destination, payload, size);
     }

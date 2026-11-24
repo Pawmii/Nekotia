@@ -140,7 +140,8 @@ public static unsafe class Network
                 Terminal.WriteLine($"{s->Count} datagram(s)");
             }
         }
-        Terminal.WriteLine($"TCP: {Tcp.Retransmits} retransmits, {Tcp.ResetsSent} resets sent");
+        Terminal.WriteLine($"TCP: {Tcp.Retransmits} retransmits ({Tcp.FastRetransmits} fast), {Tcp.OutOfOrderKept} out-of-order segments kept, {Tcp.ResetsSent} resets sent");
+        Terminal.WriteLine($"ICMP: {Icmp.UnreachablesSent} port-unreachable sent, {Icmp.UnreachablesReceived} received");
     }
 
     public static void ArpTable()

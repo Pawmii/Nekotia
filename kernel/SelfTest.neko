@@ -1033,6 +1033,11 @@ public static unsafe class SelfTest
         long n = Udp.ReceiveFrom(b, buf, 64, out from, out port, 1000);
         Check(n == 9 && buf[0] == 'h' && buf[8] == 'p' && from == Stack.Address && port == Udp.PortOf(a), "udp: the datagram arrives with its sender");
         Check(Udp.ReceiveFrom(b, buf, 64, out from, out port, 50) == 0, "udp: an empty queue times out");
+        Icmp.LastUnreachablePort = 0;
+        Udp.SendTo(a, 0x7F000001, 9, Str.Bytes("anyone?"), 7);
+        for (int i = 0; i < 100 && Icmp.LastUnreachablePort != 9; i++)
+            Thread.Sleep(10);
+        Check(Icmp.LastUnreachablePort == 9, "udp: a port nobody listens on answers ICMP port unreachable");
         Udp.Close(a);
         Udp.Close(b);
         TcpLoopback();
@@ -1092,7 +1097,7 @@ public static unsafe class SelfTest
                 break;
             sent += n;
         }
-        Check(sent == TcpBytes, "tcp: 100 KB sent through 16 KiB buffers (flow control)");
+        Check(sent == TcpBytes, "tcp: 100 KB sent in uneven pieces (flow control)");
         // Half close: our FIN tells the server we are done; its answer still arrives.
         byte* reply = stackalloc byte[16];
         long got = 0;
@@ -1111,6 +1116,49 @@ public static unsafe class SelfTest
         Check(_tcpServerCount == TcpBytes && _tcpServerSum == sum, "tcp: every byte arrived, in order");
         Check(got == 8 && Stack.Get32(reply) == TcpBytes && Stack.Get32(reply + 4) == (uint)sum, "tcp: half close; the answer comes back, then end of stream");
         Check(Tcp.Connect(0x7F000001, 7778, 0) == (int)Process.ErrNotFound, "tcp: a closed port refuses (RST)");
+        TcpLossy();
+    }
+
+    const int LossyBytes = 1048576;
+
+    /// 1 MiB over a loopback that loses every 9th segment: retransmission, fast retransmit, reassembly.
+    static void TcpLossy()
+    {
+        _tcpListener = Tcp.Listen(7779, 0);
+        Thread.Start("tcp-server", &TcpServer);
+        ulong retransmits = Tcp.Retransmits, fast = Tcp.FastRetransmits, kept = Tcp.OutOfOrderKept;
+        ulong start = Time.UptimeMs();
+        Stack.LossEvery = 9;
+        int c = Tcp.Connect(0x7F000001, 7779, 0);
+        byte* data = (byte*)Heap.Alloc(LossyBytes);
+        defer Heap.Free(data);
+        ulong sum = 0;
+        for int i in 0..LossyBytes {
+            data[i] = (byte)(i * 7 + (i >> 12));
+            sum = sum * 31 + data[i];
+        }
+        long sent = 0;
+        while (c >= 0 && sent < LossyBytes) {
+            long n = Tcp.Send(c, data + sent, LossyBytes - (int)sent);
+            if (n <= 0)
+                break;
+            sent += n;
+        }
+        if (c >= 0) {
+            Tcp.Shutdown(c);
+            byte* reply = stackalloc byte[16];
+            while (Tcp.Receive(c, reply, 16) > 0) { }
+            Tcp.Close(c);
+        }
+        _tcpServerDone.Wait();
+        Stack.LossEvery = 0;
+        Tcp.Close(_tcpListener);
+        ulong took = Time.UptimeMs() - start;
+        Log.Debug($"tcp lossy: {took} ms, {Stack.LossDropped} segments lost, {Tcp.Retransmits - retransmits} retransmits, {Tcp.FastRetransmits - fast} fast");
+        Check(c >= 0 && _tcpServerCount == LossyBytes && _tcpServerSum == sum, "tcp: 1 MiB intact over a link losing every 9th segment");
+        Check(Tcp.FastRetransmits > fast && Tcp.Retransmits > retransmits,
+              "tcp: losses are repaired by fast retransmit (3 duplicate ACKs), not only by timeouts");
+        Check(Tcp.OutOfOrderKept > kept, "tcp: segments after a hole are kept (reassembly) and SACKed");
     }
 
     static void UserMode()

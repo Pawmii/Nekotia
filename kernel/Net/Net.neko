@@ -39,6 +39,9 @@ public static unsafe class Stack
     static byte* _tx;   // one frame being built (Lock held)
     static byte* _rx;
     public static ulong Dropped;
+    /// Testing: drop every Nth TCP segment on loopback (0 = never) — exercises retransmission and reassembly.
+    public static int LossEvery;
+    public static ulong LossDropped;
 
     public static void Init()
     {

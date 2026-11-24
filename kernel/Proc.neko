@@ -211,7 +211,7 @@ public static unsafe class Proc
         Text t = new Text(buffer, capacity);
         if (!Stack.Up)
             return 0;
-        t.WriteLine("LOCAL                  REMOTE                 STATE  OWNER  IN/OUT");
+        t.WriteLine("LOCAL                  REMOTE                 STATE  OWNER  IN/OUT  CWND  SRTT_MS  RTO_MS");
         byte* local = stackalloc byte[24];
         byte* remote = stackalloc byte[24];
         lock (Stack.Lock) {
@@ -225,7 +225,7 @@ public static unsafe class Proc
                 Text r = new Text(remote, 24);
                 WriteIp(ref r, c->RemoteIp);
                 r.Write($":{c->RemotePort}");
-                t.WriteLine($"{local,-23}{remote,-23}{(byte)c->State,-7}{c->Owner,-7}{c->ReceiveCount}/{c->SendCount}");
+                t.WriteLine($"{local,-23}{remote,-23}{(byte)c->State,-7}{c->Owner,-7}{c->ReceiveCount}/{c->SendCount}  {c->Cwnd}  {c->Srtt >> 3}  {c->Rto}");
             }
         }
         return t.Length;

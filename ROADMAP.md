@@ -158,7 +158,11 @@
       DHCP, DNS, TCP (рукопожатие, окна, повторная передача, FIN/RST, TIME_WAIT); сокеты — файловые дескрипторы,
       системные вызовы 40–48 на C# (`@syscall`); `ifconfig`, `ping`, `arp`, `netstat`; программы `httpd`, `fetch`,
       `nc`, `host`; `make run` пробрасывает localhost:8080 → :80
-- [ ] TCP: контроль перегрузки (slow start), SACK, масштабирование окна; IPv6; ICMP «порт недоступен»
+- [x] TCP: оценка RTT (RFC 6298, Карн), контроль перегрузки (slow start, congestion avoidance, fast retransmit/recovery
+      NewReno), сборка сегментов не по порядку в кольце + SACK в обе стороны (восстановление нескольких дыр за RTT),
+      масштабирование окна и буферы 128 КиБ, ACK до SND.MAX после отката; ICMP «порт недоступен»; самотест: 1 МиБ по
+      loopback, теряющему каждый 9-й сегмент (`Stack.LossEvery`), — 1.3 с вместо 29
+- [ ] IPv6, TCP timestamps, delayed ACK
 - [x] USB: xHCI (передача от BIOS, сброс, кольца команд/событий, scratchpad, MSI-X), перечисление устройств на
       корневых портах, HID boot-клавиатура (→ скан-коды PS/2 для драйвера на C#, автоповтор через SET_IDLE) и мышь; `lsusb`
 - [ ] USB: хабы, горячее подключение, накопители (mass storage)
