@@ -589,6 +589,31 @@ public static unsafe class Program
         long input = File.Open("/dev/input", File.Read);
         Check(input >= 0 && File.Open("/dev/input", File.Read) == Process.ErrBusy, "/dev/input has one reader at a time");
         File.Close((int)input);
+        AudioDevice();
+    }
+
+    static void AudioDevice()
+    {
+        long fd = Audio.Open();
+        if (fd < 0)
+            return;   // no sound device
+        long old = Audio.Volume((int)fd);
+        Check(Audio.SetVolume((int)fd, 30) == 0 && Audio.Volume((int)fd) == 30 && Audio.SetVolume((int)fd, 101) == Process.ErrBadArgument,
+              "audio: master volume set and read back, out of range refused");
+        Audio.SetVolume((int)fd, (uint)old);
+        Check(Device.Control((int)fd, 0x4103, null) == 48000, "audio: 48 kHz");
+        int frames = 4800;   // 0.1 s of a quiet 440 Hz square
+        short* pcm = (short*)Memory.Alloc((ulong)frames * 4);
+        for (int i = 0; i < frames; i++)
+            pcm[i * 2] = pcm[i * 2 + 1] = (short)((i / 54) % 2 == 0 ? 600 : -600);
+        ulong start = Time.UptimeMs();
+        long put = File.WriteBytes((int)fd, pcm, (ulong)frames * 4);
+        long drained = Audio.Drain((int)fd);
+        ulong took = Time.UptimeMs() - start;
+        Check(put == frames * 4 && drained == 0 && Audio.Queued((int)fd) == 0 && took >= 80,
+              "audio: 0.1 s of PCM queued, mixed and played (drain waits for it)");
+        Memory.Free(pcm);
+        File.Close((int)fd);
     }
 
     // ---------------------------------------------------------------- futex and pages

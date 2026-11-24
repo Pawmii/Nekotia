@@ -34,10 +34,10 @@ OVMF       ?= $(firstword $(wildcard /usr/share/edk2/x64/OVMF.4m.fd /usr/share/e
 ACCEL      ?= $(if $(wildcard /dev/kvm),-accel kvm -accel tcg,)
 # VGA=virtio: the virtio-gpu driver (present + flip) instead of the standard VGA (bochs driver).
 VGA        ?=
-# The PC speaker (boot splash is silent; the stop screen plays a tune) goes to the host's sound: pa (PulseAudio or
-# PipeWire's pulse server) by default, AUDIO=pipewire / alsa / none to change.
+# Sound: an HDA controller with an output codec (drivers/hda.cpp, /dev/audio) and the PC speaker, both to the
+# host's sound: pa (PulseAudio or PipeWire's pulse server) by default, AUDIO=pipewire / alsa / none to change.
 AUDIO      ?= pa
-AUDIO_FLAGS = $(if $(filter none,$(AUDIO)),,-audiodev $(AUDIO),id=snd0 -machine pcspk-audiodev=snd0)
+AUDIO_FLAGS = -audiodev $(AUDIO),id=snd0 -machine pcspk-audiodev=snd0 -device ich9-intel-hda -device hda-output,audiodev=snd0
 QEMU_FLAGS ?= -M q35 $(ACCEL) $(if $(VGA),-vga $(VGA)) -cpu qemu64,+smep,+smap -m 512M -smp 4 -serial stdio -no-reboot -no-shutdown -rtc base=localtime $(AUDIO_FLAGS)
 # make debug builds an -O0 kernel in build/debug for faithful C# line stepping in gdb
 HEAP_SIZE  ?= 4194304  # initial kernel heap; it grows on demand
@@ -283,6 +283,7 @@ $(DISK):
 	truncate -s $(DISK_SIZE) $@
 
 TEST_FLAGS ?= -M q35 -cpu qemu64,+smep,+smap -m 256M -smp 4 -display none -serial stdio -no-reboot \
+              -audiodev none,id=snd0 -device ich9-intel-hda -device hda-output,audiodev=snd0 \
               -device isa-debug-exit,iobase=0xf4,iosize=0x04
 TEST_TIMEOUT ?= 60
 

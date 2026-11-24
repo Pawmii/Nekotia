@@ -495,9 +495,9 @@ NEKO_NORETURN void show(Report& r) {
     display::emergency_present();  // GPUs that show nothing until told (virtio-gpu)
 
 #if !NEKO_HOSTED
-    // A sad little tune on the PC speaker (`nosound` turns it off), then wait for R. Interrupts are off:
+    // A sad little tune (HDA or the PC speaker) (`nosound` turns it off), then wait for R. Interrupts are off:
     // the PS/2 controller is polled for the R key (make code 0x13) — also while the tune plays.
-    speaker::play_stop_tune(&reboot_key);
+    audio::play_stop_tune(&reboot_key);  // HDA when there is one, else the PC speaker
     for (;;) {
         if (reboot_key()) power::reboot();
         cpu::io_wait();

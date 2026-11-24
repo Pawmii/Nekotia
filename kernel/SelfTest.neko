@@ -83,12 +83,29 @@ public static unsafe class SelfTest
         PciBus();
         FileSystem();
         Disks();
+        SoundOutput();
         Logging();
         ProcFiles();
         FatVolume();
         Networking();
         UserMode();
         return _failed;
+    }
+
+    /// The HDA output (QEMU: -device ich9-intel-hda -device hda-output): the mixer keeps the ring fed in real time.
+    static void SoundOutput()
+    {
+        unless (Sound.Available())
+            return;
+        SoundStats before = Sound.Stats();
+        Time.Sleep(100);
+        SoundStats after = Sound.Stats();
+        ulong mixed = after.Frames - before.Frames;
+        Check(mixed >= 48000 / 20 && mixed <= 48000 / 4, "audio: the mixer follows the device's play position (~0.1 s in 0.1 s)");
+        uint old = Sound.Volume();
+        Sound.SetVolume(150);
+        Check(Sound.Volume() == 100, "audio: volume is clamped to 100");
+        Sound.SetVolume(old);
     }
 
     static void Report()

@@ -11,12 +11,32 @@ public static unsafe class Splash
     [Native("::neko::splash::finish")] public static extern void Finish();
 }
 
-/// The PC speaker (runtime/include/neko/speaker.hpp): one square wave. `nosound` on the command line mutes it.
-public static unsafe class Speaker
+/// Sound (runtime/include/neko/audio.hpp): the HDA output with a mixer and a synthesizer, or the PC speaker when
+/// there is no sound device. `nosound` on the command line mutes the speaker.
+[Native("::neko::audio::Stats")]
+public struct SoundStats
+{
+    public ulong Frames;
+    public uint Underruns;
+    public uint Clients;
+}
+
+public static unsafe class Sound
 {
     /// A tone of `hz` for `ms` milliseconds (it sleeps meanwhile).
-    [Native("::neko::speaker::beep")] public static extern void Beep(uint hz, uint ms);
+    [Native("::neko::audio::beep")] public static extern void Beep(uint hz, uint ms);
 
-    /// The stop screen's tune (it busy-waits about three seconds).
-    [Native("::neko::speaker::play_stop_tune")] public static extern void PlayStopTune();
+    /// The stop screen's tune (about three seconds).
+    [Native("::neko::audio::play_stop_tune")] public static extern void PlayStopTune();
+
+    /// A sound device is there (/dev/audio exists).
+    [Native("::neko::audio::available")] public static extern bool Available();
+
+    [Native("::neko::audio::device_name")] public static extern byte* DeviceName();
+
+    /// Master volume, 0–100.
+    [Native("::neko::audio::volume")] public static extern uint Volume();
+    [Native("::neko::audio::set_volume")] public static extern void SetVolume(uint percent);
+
+    [Native("::neko::audio::stats")] public static extern SoundStats Stats();
 }

@@ -1,0 +1,17 @@
+{
+  // A Nekotia user program: nekoc → C++ → static ELF in the initrd at /bin/volume (see Makefile, runtime/user/).
+  "name": "volume",
+  "target": "user",
+  "sources": [
+    "../../sdk/Nekotia.Sdk/Attributes.cs",
+    "../../sdk/Nekotia.Sdk/Intrinsics.cs",
+    "../../sdk/Nekotia.Sdk/Debug.cs",
+    "../../sdk/Nekotia.Sdk/Maths.cs",
+    "../../sdk/Nekotia.Sdk/Text.cs",
+    "../../sdk/Nekotia.User",
+    "."
+  ],
+  "output": "../../build/user/volume/gen",
+  "lineDirectives": true,
+  "defines": ["NEKOTIA", "NEKOTIA_USER"]
+}

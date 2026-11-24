@@ -12,6 +12,7 @@ void probe_xhci(uint32_t pci);
 void probe_virtio_input(uint32_t pci);
 void probe_bochs(uint32_t pci);
 void probe_virtio_gpu(uint32_t pci);
+void probe_hda(uint32_t pci);
 
 void init() {
     for (uint32_t i = 0; i < pci::count(); ++i) {
@@ -26,6 +27,10 @@ void init() {
         }
         if (d->class_code == 0x0C && d->subclass == 0x03 && d->prog_if == 0x30) {  // USB xHCI
             probe_xhci(i);
+            continue;
+        }
+        if (d->class_code == 0x04 && d->subclass == 0x03) {  // High Definition Audio
+            probe_hda(i);
             continue;
         }
         if (d->vendor_id == 0x1234 && d->device_id == 0x1111) {  // QEMU/Bochs VGA, bochs-display

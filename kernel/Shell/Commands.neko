@@ -13,7 +13,7 @@ namespace Nekotia.OS;
 public static unsafe class Commands
 {
     /// Space-separated, used by Tab completion.
-    public const string Names = "help clear info ps lspci lsusb dmesg loglevel ifconfig ping arp dhcp netstat disks mount umount mkfs sync ls cd pwd cat mkdir rm mv write df run progs kill spawn mem vm pages alloc uptime echo sleep irq layout colors neko beep selftest panic crash reboot shutdown";
+    public const string Names = "help clear info ps lspci lsusb dmesg loglevel ifconfig ping arp dhcp netstat disks mount umount mkfs sync ls cd pwd cat mkdir rm mv write df run progs kill spawn mem vm pages alloc uptime echo sleep irq layout colors neko beep volume selftest panic crash reboot shutdown";
 
     public static void Run(byte* cmd, byte* args)
     {
@@ -60,6 +60,7 @@ public static unsafe class Commands
         else if (Is(cmd, "colors")) Colors();
         else if (Is(cmd, "neko")) Neko();
         else if (Is(cmd, "beep")) Beep(args);
+        else if (Is(cmd, "volume")) Volume(args);
         else if (Is(cmd, "selftest")) SelfTest.Run(true);
         else if (Is(cmd, "panic")) Debug.Panic("requested from the shell");
         else if (Is(cmd, "crash")) Crash(args);
@@ -182,7 +183,8 @@ public static unsafe class Commands
         Line("layout", "switch keyboard layout EN/RU (also Alt+Shift)");
         Line("colors", "console palette");
         Line("neko", "draw the cat (any key to return)");
-        Line("beep [HZ [MS]]", "PC speaker tone; `beep sad` plays the stop screen tune");
+        Line("beep [HZ [MS]]", "a tone (HDA or the PC speaker); `beep sad` plays the stop screen tune");
+        Line("volume [N]", "sound device and master volume (0-100)");
         Line("clear", "clear the screen (also Ctrl+L)");
         Line("reboot / shutdown", "restart / power off (QEMU)");
         Section("Testing:");
@@ -687,7 +689,7 @@ public static unsafe class Commands
     static void Beep(byte* args)
     {
         if (Str.StartsWith(args, "sad")) {
-            Speaker.PlayStopTune();
+            Sound.PlayStopTune();
             return;
         }
         ulong hz = 880, ms = 150;
@@ -702,7 +704,27 @@ public static unsafe class Commands
                 return;
             }
         }
-        Speaker.Beep((uint)hz, (uint)ms);
+        Sound.Beep((uint)hz, (uint)ms);
+    }
+
+    /// `volume` shows the sound device and the volume, `volume N` sets it (0–100).
+    static void Volume(byte* args)
+    {
+        if (*args != 0) {
+            ulong v = 0;
+            unless (ParseNumber(args, out v) && v <= 100) {
+                Terminal.WriteLine("usage: volume [0-100]");
+                return;
+            }
+            Sound.SetVolume((uint)v);
+        }
+        unless (Sound.Available()) {
+            Terminal.WriteLine("no sound device (the PC speaker has no volume) — QEMU: -device ich9-intel-hda -device hda-output");
+            return;
+        }
+        SoundStats s = Sound.Stats();
+        Terminal.Write(Sound.DeviceName());
+        Terminal.WriteLine($": volume {Sound.Volume()}%, {s.Frames / 48000} s mixed, {s.Underruns} underruns, {s.Clients} programs playing");
     }
 
     static void Sleep(byte* args)
