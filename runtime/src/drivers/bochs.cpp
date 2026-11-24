@@ -42,7 +42,7 @@ void flip(void*, uint32_t index) { write_reg(kRegYOffset, uint16_t(index * g_boc
 
 void owner_changed(void*, uint32_t) {}
 
-const display::Driver kDriver = {"bochs", nullptr, nullptr, owner_changed, flip, nullptr};
+const display::Driver kDriver = {"bochs", nullptr, nullptr, owner_changed, flip, nullptr, nullptr};
 
 }  // namespace
 

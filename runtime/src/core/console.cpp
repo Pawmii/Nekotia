@@ -147,6 +147,7 @@ uint32_t g_fg = kDefaultFg, g_bg = kDefaultBg;
 bool g_cursor_visible = true;
 bool g_cursor_drawn = false;
 bool g_paused = false;  // a display server owns the screen: keep the cells, touch no pixels
+volatile uint64_t g_changes = 0;
 
 // UTF-8 decoder
 uint32_t g_utf8_cp = 0;
@@ -162,6 +163,7 @@ uint32_t* pixel_row(uint32_t y) { return reinterpret_cast<uint32_t*>(reinterpret
 
 void paint(uint32_t col, uint32_t row, const Cell& c) {
     if (g_paused) return;
+    ++g_changes;
     const uint8_t* glyph = g_font.glyphs + size_t(glyph_for(c.cp)) * g_font.bytes_per_glyph;
     uint32_t px = col * g_font.width;
     for (uint32_t gy = 0; gy < g_font.height; ++gy) {
@@ -196,6 +198,7 @@ void show_cursor() {
         for (uint32_t gx = 0; gx < g_font.width; ++gx) out[gx] = c.fg;
     }
     g_cursor_drawn = true;
+    ++g_changes;
 }
 
 void flush_all() {
@@ -429,6 +432,14 @@ void set_paused(bool paused) {
 }
 
 bool paused() { return g_paused; }
+
+uint64_t changes() { return g_changes; }
+
+void retarget(const Framebuffer& fb) {
+    if (!g_ready || fb.Width != g_fb.Width || fb.Height != g_fb.Height || fb.Bpp != 32) return;
+    g_fb = fb;
+    redraw();
+}
 
 void redraw() {
     if (!g_ready || g_paused) return;

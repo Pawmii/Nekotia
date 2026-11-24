@@ -87,6 +87,7 @@ make run-desktop    # сразу в рабочий стол (init=nekowm)
 | `mmap(fd, size, write)` | видеопамять в адресное пространство программы, write-combining |
 | `ioctl(0x4401, Info*)` | размер, pitch, формат, флаги (`NeedsPresent`, `Accelerated`, `Primary`), имя драйвера, владелец |
 | `ioctl(0x4402, Rect*)` | «этот прямоугольник изменился»: драйверы, у которых CPU рисует не в память развёртки (virtio-gpu, видеокарта со своей VRAM), копируют его на экран |
+| `ioctl(0x4406, {N, Rect})` | как `PRESENT`, но для буфера N (скрытый буфер перед переключением) |
 | `ioctl(0x4403, N)` | показать буфер N (`Info.buffers` > 1; буферы идут в отображении через `Info.buffer_offset` байт) |
 | `ioctl(0x4404, Vblank*)` / `ioctl(0x4405)` | когда следующий vblank (номер, время, период, из железа или по таймеру) / дождаться его |
 | `ioctl(≥ 0x4480, …)` | запросы самого драйвера: ускорение, режимы, буферы |
@@ -232,9 +233,15 @@ loop {
    которую видит CPU (`phys`, `pitch`, `width`, `height`, `format`). `mmap` `/dev/fbN` отображает именно её.
 2. **Двойной буфер**: `Device.buffers = 2` и `Driver::flip(index)`; vblank из железа — `Driver::vblank`. Пример —
    `drivers/bochs.cpp`, около 100 строк.
+   Если память не непрерывна (страницы RAM, отображённые карте), драйвер отдаёт их постранично через
+   `Driver::page(offset)` — так `mmap` `/dev/fbN` работает и без одного физического окна.
 3. **Если CPU рисует не в память развёртки** (свой буфер в VRAM с копированием DMA, двойная буферизация,
-   virtio-gpu), драйвер ставит флаг `NeedsPresent` и реализует `Driver::present(x, y, w, h)`. `Screen.Present` в SDK
-   уже вызывает `ioctl(PRESENT)` для таких дисплеев.
+   virtio-gpu), драйвер ставит флаг `NeedsPresent` и реализует `Driver::present(buffer, x, y, w, h)`. SDK сам
+   передаёт изменения: `Screen.Present` — `ioctl(PRESENT)`, `Screen.PresentFrame` — `ioctl(PRESENT_BUFFER)` для
+   скрытого буфера перед `FLIP`. Консоль на таком дисплее выгружает фоновый поток `display-flush`, экран смерти —
+   `display::emergency_present`. Рабочий пример — `drivers/virtio_gpu.cpp` (`make run VGA=virtio`): два ресурса
+   хоста, `TRANSFER_TO_HOST_2D` + `RESOURCE_FLUSH`, переключение `SET_SCANOUT`. Так же будет устроен драйвер
+   видеокарты со своей VRAM.
 4. **Ускорение** — собственные запросы `ioctl` с номерами от `0x4480` (`Driver::control`) и флаг `Accelerated`:
    буферы в VRAM, блиты, заливки, позже — очереди команд. В SDK для этого понадобится второй бэкенд композитора:
    окна как текстуры, а не копирование через CPU. Протокол приложений при этом не меняется.

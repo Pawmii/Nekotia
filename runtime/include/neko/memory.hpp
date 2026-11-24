@@ -77,7 +77,7 @@ void* phys_to_virt(uint64_t phys);
 //
 //   0xffff800000000000  HHDM: all RAM, NX            (same offset as Limine)
 //   0xffffc00000000000  kernel heap, grows upwards
-//   0xffffd00000000000  free for VirtualMemory.Map (tests, drivers)
+//   0xffffd00000000000  free for VirtualMemory.Map (tests, drivers); 0xffffd80000000000: virtio-gpu buffers
 //   0xffffe00000000000  kernel stacks, each below an unmapped guard page
 //   0xffffffff80000000  kernel image: .text RX, .rodata R, .data/.bss RW (NX)
 namespace neko::vmm {

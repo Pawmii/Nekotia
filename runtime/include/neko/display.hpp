@@ -36,6 +36,7 @@ constexpr uint64_t kIoctlPresent = 0x4402;  // arg: Rect* — the rectangle chan
 constexpr uint64_t kIoctlFlip = 0x4403;     // arg: buffer index — show it (owner only; displays with buffers > 1)
 constexpr uint64_t kIoctlVblank = 0x4404;   // arg: Vblank* — when the next vertical blank comes
 constexpr uint64_t kIoctlWaitVblank = 0x4405;  // arg: unused — sleep until the next vertical blank
+constexpr uint64_t kIoctlPresentBuffer = 0x4406;  // arg: PresentArgs* — like PRESENT, for a given buffer (double buffering)
 constexpr uint64_t kIoctlDriverBase = 0x4480;  // driver-specific requests start here
 
 constexpr uint32_t kFormatXrgb8888 = 1;     // 32 bits: 0x00RRGGBB, little endian (B, G, R, X in memory)
@@ -72,11 +73,17 @@ struct Rect {
     int32_t x, y, w, h;
 };
 
+struct PresentArgs {
+    uint32_t buffer;
+    Rect rect;
+};
+
 // What a driver implements. Every callback is optional.
 struct Driver {
     const char* name;
-    // Copies [x, x+w) × [y, y+h) of the CPU-visible memory to the screen (already clipped to the display).
-    void (*present)(void* context, uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+    // Copies [x, x+w) × [y, y+h) of buffer `buffer` of the CPU-visible memory to the device (already clipped);
+    // for the buffer on screen that makes it visible, for a hidden one the next flip shows it.
+    void (*present)(void* context, uint32_t buffer, uint32_t x, uint32_t y, uint32_t w, uint32_t h);
     // Driver-specific ioctl (request ≥ kIoctlDriverBase); `flags` are the file's open flags.
     int64_t (*control)(void* context, uint32_t flags, uint64_t request, uint64_t arg);
     // The owner changed (pid, 0 = released): a driver may reset its engine state.
@@ -85,6 +92,9 @@ struct Driver {
     void (*flip)(void* context, uint32_t index);
     // Fills `out` from the hardware's scanout timing; false = use the software clock.
     bool (*vblank)(void* context, Vblank& out);
+    // Memory that is not physically contiguous (pages of guest RAM): the frame behind byte `offset` of the
+    // mapping, and whether to map it write-combining. Without it, mmap uses Device::phys + offset.
+    uint64_t (*page)(void* context, uint64_t offset, bool& write_combining);
 };
 
 struct Device {
@@ -112,7 +122,9 @@ void init(const Framebuffer& fb);
 bool replace(uint32_t index, const Device& d);
 const Device* get(uint32_t index);  // nullptr past the end (the description; do not keep it across replace)
 
-// The stop screen: show buffer 0 of the primary display again, whatever a server left on screen.
+// The stop screen: show buffer 0 of the primary display again, whatever a server left on screen; and once
+// it is drawn, push it to devices that need PRESENT.
 void emergency_reset();
+void emergency_present();
 
 }  // namespace neko::display

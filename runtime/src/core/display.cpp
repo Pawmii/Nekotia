@@ -94,15 +94,19 @@ int64_t fb_write(void* context, uint64_t offset, const void* buffer, uint64_t le
     if (offset >= bytes) return length ? kErrNoMemory : 0;
     if (length > bytes - offset) length = bytes - offset;
     mem::copy(s->dev.virt + offset, buffer, length);
-    if (s->dev.driver->present) s->dev.driver->present(s->dev.context, 0, 0, s->dev.width, s->dev.height);
+    if (s->dev.driver->present) s->dev.driver->present(s->dev.context, s->shown, 0, 0, s->dev.width, s->dev.height);
     return int64_t(length);
 }
 
 int64_t fb_map(void* context, uint64_t offset, uint64_t& phys, bool& write_combining) {
     auto* s = static_cast<Slot*>(context);
     if (offset >= s->size) return kErrBadArgument;
-    phys = s->dev.phys + offset;
     write_combining = true;
+    if (s->dev.driver->page) {
+        phys = s->dev.driver->page(s->dev.context, offset, write_combining);
+        return phys == ~0ull ? kErrBadArgument : 0;
+    }
+    phys = s->dev.phys + offset;
     return 0;
 }
 
@@ -149,17 +153,27 @@ int64_t fb_control(void* context, uint32_t flags, uint64_t request, uint64_t arg
             }
             return copy_to_user(reinterpret_cast<void*>(arg), &i, sizeof(i)) ? 0 : kErrBadAddress;
         }
-        case kIoctlPresent: {
+        case kIoctlPresent:
+        case kIoctlPresentBuffer: {
             if (!(flags & vfs::kWrite)) return kErrAccess;
             Rect r;
-            if (!copy_from_user(&r, reinterpret_cast<void*>(arg), sizeof(r))) return kErrBadAddress;
+            uint32_t buffer = s->shown;
+            if (request == kIoctlPresentBuffer) {
+                PresentArgs a;
+                if (!copy_from_user(&a, reinterpret_cast<void*>(arg), sizeof(a))) return kErrBadAddress;
+                if (a.buffer >= (s->dev.buffers ? s->dev.buffers : 1)) return kErrBadArgument;
+                r = a.rect;
+                buffer = a.buffer;
+            } else if (!copy_from_user(&r, reinterpret_cast<void*>(arg), sizeof(r))) {
+                return kErrBadAddress;
+            }
             if (!s->dev.driver->present) return 0;  // the CPU draws straight into the scanout memory
             int64_t x0 = r.x < 0 ? 0 : r.x, y0 = r.y < 0 ? 0 : r.y;
             int64_t x1 = int64_t(r.x) + r.w, y1 = int64_t(r.y) + r.h;
             if (x1 > s->dev.width) x1 = s->dev.width;
             if (y1 > s->dev.height) y1 = s->dev.height;
             if (x1 > x0 && y1 > y0)
-                s->dev.driver->present(s->dev.context, uint32_t(x0), uint32_t(y0), uint32_t(x1 - x0), uint32_t(y1 - y0));
+                s->dev.driver->present(s->dev.context, buffer, uint32_t(x0), uint32_t(y0), uint32_t(x1 - x0), uint32_t(y1 - y0));
             return 0;
         }
     }
@@ -192,7 +206,24 @@ const vfs::DeviceOps kFbOps = {fb_read, fb_write, fb_size, fb_close, nullptr, fb
 
 // ---------------------------------------------------------------- bootfb
 
-const Driver kBootFb = {"bootfb", nullptr, nullptr, nullptr, nullptr, nullptr};
+const Driver kBootFb = {"bootfb", nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+
+// Displays that need PRESENT show the console only when somebody pushes it: while nobody owns display 0,
+// a thread does that whenever the console has drawn something (at most 30 times a second).
+bool g_flusher = false;
+
+void console_flusher(uint64_t) {
+    uint64_t seen = ~0ull;
+    for (;;) {
+        sched::sleep_ms(33);
+        Slot& s = g_slots[0];
+        if (!(s.dev.flags & kNeedsPresent) || s.owner || !s.dev.driver->present) continue;
+        uint64_t now = console::changes();
+        if (now == seen) continue;
+        seen = now;
+        s.dev.driver->present(s.dev.context, 0, 0, 0, s.dev.width, s.dev.height);
+    }
+}
 
 void describe(Slot* s, const Device& d) {
     s->dev = d;
@@ -243,12 +274,22 @@ bool replace(uint32_t index, const Device& d) {
         describe(s, d);
         s->dev.flags |= primary;
     }
+    if (index == 0 && (d.flags & kNeedsPresent) && !g_flusher) {
+        g_flusher = true;
+        sched::spawn("display-flush", &console_flusher, 0, sched::Priority::Low);
+    }
     log::info((Line() << "display: " << s->path << " now driven by " << d.driver->name << ", " << uint64_t(s->dev.buffers)
                       << (s->dev.buffers > 1 ? " buffers (page flipping)" : " buffer")).text);
     return true;
 }
 
 const Device* get(uint32_t index) { return index < g_count ? &g_slots[index].dev : nullptr; }
+
+void emergency_present() {
+    if (g_count == 0) return;
+    Slot& s = g_slots[0];
+    if ((s.dev.flags & kNeedsPresent) && s.dev.driver->present) s.dev.driver->present(s.dev.context, 0, 0, 0, s.dev.width, s.dev.height);
+}
 
 void emergency_reset() {
     if (g_count == 0) return;

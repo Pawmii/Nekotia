@@ -41,7 +41,7 @@ public struct VblankInfo
 public unsafe struct Screen
 {
     public const ulong IoctlInfo = 0x4401, IoctlPresent = 0x4402, IoctlFlip = 0x4403, IoctlVblank = 0x4404,
-        IoctlWaitVblank = 0x4405;
+        IoctlWaitVblank = 0x4405, IoctlPresentBuffer = 0x4406;
 
     public int Fd;
     public ScreenInfo Info;
@@ -112,8 +112,20 @@ public unsafe struct Screen
         Damage all = Previous;
         for (int i = 0; i < changed->Count; i++)
             all.Add(changed->Get(i));
-        for (int i = 0; i < all.Count; i++)
-            Copy(all.Get(i), Hidden);
+        bool needsPresent = (Info.Flags & 1) != 0;   // a GPU with memory of its own: hand it the changes
+        int* args = stackalloc int[5];
+        for (int i = 0; i < all.Count; i++) {
+            Rect r = all.Get(i);
+            Copy(r, Hidden);
+            if (needsPresent) {
+                args[0] = Hidden;
+                args[1] = r.X;
+                args[2] = r.Y;
+                args[3] = r.W;
+                args[4] = r.H;
+                Device.Control(Fd, IoctlPresentBuffer, args);
+            }
+        }
         Device.Control(Fd, IoctlFlip, (void*)(ulong)Hidden);
         Hidden = 1 - Hidden;
         Previous = *changed;

@@ -29,6 +29,10 @@ void redraw();  // repaint everything (after something else drew on the framebuf
 // draws nothing; un-pausing repaints the whole screen. The stop screen un-pauses it first.
 void set_paused(bool paused);
 bool paused();
+// Bumped on every pixel the console draws (displays that need PRESENT flush when it moves).
+uint64_t changes();
+// Another framebuffer of the same size takes over (a display driver replaced the bootloader's): repaint there.
+void retarget(const Framebuffer& fb);
 
 // Draws ASCII/UTF-8 text `scale` times larger, top-left at cell (column, row), straight to the framebuffer.
 // The cells underneath are not updated — meant for screens that are drawn once (the stop screen).

@@ -480,6 +480,7 @@ NEKO_NORETURN void show(Report& r) {
     color(kMuted);
     text(" to reboot.  Report the STOP code and the call stack; addr2line -e build/nekotia.elf <address> gives the exact line.\n");
     serial::write("\n");
+    display::emergency_present();  // GPUs that show nothing until told (virtio-gpu)
 
 #if !NEKO_HOSTED
     // Interrupts are off: poll the PS/2 controller for the R key (make code 0x13).
