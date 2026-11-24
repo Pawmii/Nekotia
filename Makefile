@@ -35,10 +35,14 @@ ACCEL      ?= $(if $(wildcard /dev/kvm),-accel kvm -accel tcg,)
 # VGA=virtio: the virtio-gpu driver (present + flip) instead of the standard VGA (bochs driver).
 VGA        ?=
 # Sound: an HDA controller with an output codec (drivers/hda.cpp, /dev/audio) and the PC speaker, both to the
-# host's sound: pa (PulseAudio or PipeWire's pulse server) by default, AUDIO=pipewire / alsa / none to change.
-AUDIO      ?= pa
+# host's sound: pa (PulseAudio or PipeWire's pulse server) when one answers, else none (CI, headless machines:
+# QEMU refuses to start with a pa backend it cannot connect to); AUDIO=pipewire / alsa / none to choose.
+ifeq ($(origin AUDIO),undefined)
+AUDIO      := $(if $(shell pactl info >/dev/null 2>&1 && echo yes),pa,none)
+endif
 AUDIO_FLAGS = -audiodev $(AUDIO),id=snd0 -machine pcspk-audiodev=snd0 -device ich9-intel-hda -device hda-output,audiodev=snd0
-QEMU_FLAGS ?= -M q35 $(ACCEL) $(if $(VGA),-vga $(VGA)) -cpu qemu64,+smep,+smap -m 512M -smp 4 -serial stdio -no-reboot -no-shutdown -rtc base=localtime $(AUDIO_FLAGS)
+QEMU_BASE  ?= -M q35 $(ACCEL) $(if $(VGA),-vga $(VGA)) -cpu qemu64,+smep,+smap -m 512M -smp 4 -serial stdio -no-reboot -no-shutdown -rtc base=localtime
+QEMU_FLAGS ?= $(QEMU_BASE) $(AUDIO_FLAGS)
 # make debug builds an -O0 kernel in build/debug for faithful C# line stepping in gdb
 HEAP_SIZE  ?= 4194304  # initial kernel heap; it grows on demand
 
@@ -327,7 +331,8 @@ run-uefi: $(BUILD)/nekotia.iso $(DISK)
 	@test -n "$(OVMF)" || { echo "OVMF firmware not found (install edk2-ovmf)"; exit 1; }
 	$(QEMU) $(QEMU_FLAGS) $(DISK_FLAGS) -bios $(OVMF) -cdrom $<
 
-# Separate -O0 build in build/debug so breakpoints on C# lines map 1:1 to code.
+# Separate -O0 build in build/debug so breakpoints on C# lines map 1:1 to code. No sound devices (DEBUG_AUDIO=1 adds
+# them): the mixer thread wakes every 10 ms and would keep showing up while stepping.
 # GDB_PORT picks the gdb server port, QEMU_EXTRA adds QEMU options (the VS Code debugger uses both).
 GDB_PORT ?= 1234
 QEMU_EXTRA ?=
@@ -335,7 +340,7 @@ debug: $(DISK)
 	@$(MAKE) --no-print-directory BUILD=$(DEBUG_BUILD) OPT=-O0 $(DEBUG_BUILD)/nekotia.iso
 	@echo "nekotia: starting QEMU paused, gdb server on :$(GDB_PORT)"
 	@( sleep 1; echo "nekotia: QEMU is waiting for gdb on :$(GDB_PORT) (symbols: $(DEBUG_BUILD)/nekotia.elf)" ) &
-	$(QEMU) $(QEMU_FLAGS) $(DISK_FLAGS) $(QEMU_EXTRA) -cdrom $(DEBUG_BUILD)/nekotia.iso -gdb tcp::$(GDB_PORT) -S
+	$(QEMU) $(if $(DEBUG_AUDIO),$(QEMU_FLAGS),$(QEMU_BASE)) $(DISK_FLAGS) $(QEMU_EXTRA) -cdrom $(DEBUG_BUILD)/nekotia.iso -gdb tcp::$(GDB_PORT) -S
 
 # ---------------------------------------------------------------- misc
 
