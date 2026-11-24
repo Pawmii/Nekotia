@@ -2,11 +2,14 @@
 //
 //   BAR0 registers: CAP, CC (enable, queue entry sizes), CSTS (ready), AQA/ASQ/ACQ (admin queues),
 //   doorbells at 0x1000 (stride from CAP.DSTRD)
-//   admin queue (polled at start-up): IDENTIFY controller / namespace, create one I/O queue pair
+//   admin queue (polled at start-up): IDENTIFY controller / namespace, Set Features (number of queues),
+//   then one I/O queue pair per CPU (as many as the controller grants)
 //   I/O queue: 64-byte commands in, 16-byte completions out, a phase bit tells new entries apart
 //
-// Namespace 1 becomes nvme0n1. Slots as in the other block drivers: each owns a 64 KiB DMA buffer and
-// a PRP list for it; the command id is the slot number. Completions by MSI-X (entry 0) or polling.
+// Namespace 1 becomes nvme0n1. A request goes to the queue of the CPU it starts on, so CPUs do not
+// contend for one lock and the drive works on several requests at once. Each queue has its own slots
+// (a 64 KiB DMA buffer and a PRP list each; the command id is the slot number), its own lock and its
+// own MSI-X entry/vector; without MSI-X the waiting thread polls its queue.
 #include <neko/block.hpp>
 #include <neko/process.hpp>
 #include <neko/runtime.hpp>
@@ -17,7 +20,8 @@ namespace {
 using namespace proc;  // error codes
 
 constexpr uint32_t kCap = 0x00, kCc = 0x14, kCsts = 0x1C, kAqa = 0x24, kAsq = 0x28, kAcq = 0x30;
-constexpr uint8_t kAdminCreateSq = 0x01, kAdminCreateCq = 0x05, kAdminIdentify = 0x06;
+constexpr uint8_t kAdminCreateSq = 0x01, kAdminCreateCq = 0x05, kAdminIdentify = 0x06, kAdminSetFeatures = 0x09;
+constexpr uint32_t kMaxQueues = 16;
 constexpr uint8_t kIoFlush = 0x00, kIoWrite = 0x01, kIoRead = 0x02;
 constexpr uint16_t kQueue = 64;  // entries per queue (admin and I/O)
 constexpr uint32_t kSlots = 8;
@@ -52,11 +56,9 @@ struct Queue {
     volatile uint32_t* cq_doorbell;
 };
 
-struct Drive {
-    volatile uint8_t* regs;
-    Queue admin, io;
-    uint32_t nsid;
-    uint32_t sector;
+struct IoQueue {
+    Queue q;
+    uint16_t id;
     uint64_t* prp_lists[kSlots];  // one page each: PRP entries for the slot buffer
     uint8_t* buffers[kSlots];
     sync::Semaphore done[kSlots];
@@ -66,6 +68,16 @@ struct Drive {
     sync::SpinLock lock;
     sync::Semaphore free_slots;
     bool interrupts;
+    uint64_t requests;
+};
+
+struct Drive {
+    volatile uint8_t* regs;
+    Queue admin;
+    IoQueue* queues;
+    uint32_t queue_count;
+    uint32_t nsid;
+    uint32_t sector;
     char name[16];
 };
 
@@ -124,10 +136,11 @@ uint16_t admin(Drive* d, Command c, uint64_t timeout_ms = 2000) {
     return uint16_t(e.status >> 1);
 }
 
-void reap(Drive* d) {
+void reap(IoQueue* d) {
+    if (!__atomic_load_n(&d->q.cq, __ATOMIC_ACQUIRE)) return;  // interrupt before the queue exists (start-up)
     sync::ScopedLock guard(d->lock);
     Completion e;
-    while (next(d->io, e)) {
+    while (next(d->q, e)) {
         uint16_t s = e.id;
         if (s >= kSlots || !(d->outstanding & (1u << s))) continue;
         d->status[s] = uint16_t(e.status >> 1);
@@ -136,9 +149,9 @@ void reap(Drive* d) {
     }
 }
 
-void on_interrupt(void* context) { reap(static_cast<Drive*>(context)); }
+void on_interrupt(void* context) { reap(static_cast<IoQueue*>(context)); }
 
-uint32_t take_slot(Drive* d) {
+uint32_t take_slot(IoQueue* d) {
     d->free_slots.wait();
     sync::ScopedLock guard(d->lock);
     uint32_t s = uint32_t(__builtin_ctz(d->free_mask));
@@ -146,7 +159,7 @@ uint32_t take_slot(Drive* d) {
     return s;
 }
 
-void give_slot(Drive* d, uint32_t s) {
+void give_slot(IoQueue* d, uint32_t s) {
     {
         sync::ScopedLock guard(d->lock);
         d->free_mask |= 1u << s;
@@ -155,11 +168,11 @@ void give_slot(Drive* d, uint32_t s) {
 }
 
 // I/O command on slot `s` covering `bytes` of its buffer (PRP1 + PRP2/list).
-int64_t io(Drive* d, uint32_t s, uint8_t opcode, uint64_t lba, uint32_t count, uint32_t bytes) {
+int64_t io(Drive* drive, IoQueue* d, uint32_t s, uint8_t opcode, uint64_t lba, uint32_t count, uint32_t bytes) {
     Command c{};
     c.opcode = opcode;
     c.id = uint16_t(s);
-    c.nsid = d->nsid;
+    c.nsid = drive->nsid;
     if (bytes) {
         c.prp1 = pmm::virt_to_phys(d->buffers[s]);
         uint32_t pages = (bytes + 4095) / 4096;
@@ -172,7 +185,8 @@ int64_t io(Drive* d, uint32_t s, uint8_t opcode, uint64_t lba, uint32_t count, u
     {
         sync::ScopedLock guard(d->lock);
         d->outstanding |= 1u << s;
-        submit(d->io, c);
+        ++d->requests;
+        submit(d->q, c);
     }
     if (d->interrupts) {
         d->done[s].wait();
@@ -187,15 +201,19 @@ int64_t io(Drive* d, uint32_t s, uint8_t opcode, uint64_t lba, uint32_t count, u
     return d->status[s] == 0 ? 0 : kErrIo;
 }
 
-int64_t transfer(Drive* d, uint64_t lba, uint32_t count, uint8_t* buffer, bool write) {
+// The queue of the CPU we are on (the thread may move later; the queue stays the one it started with).
+IoQueue* my_queue(Drive* d) { return &d->queues[smp::cpu_index() % d->queue_count]; }
+
+int64_t transfer(Drive* drive, uint64_t lba, uint32_t count, uint8_t* buffer, bool write) {
+    IoQueue* d = my_queue(drive);
     uint32_t s = take_slot(d);
-    uint32_t per = kSlotBytes / d->sector;
+    uint32_t per = kSlotBytes / drive->sector;
     int64_t r = 0;
     while (count && r == 0) {
         uint32_t n = count < per ? count : per;
-        uint32_t bytes = n * d->sector;
+        uint32_t bytes = n * drive->sector;
         if (write) mem::copy(d->buffers[s], buffer, bytes);
-        r = io(d, s, write ? kIoWrite : kIoRead, lba, n, bytes);
+        r = io(drive, d, s, write ? kIoWrite : kIoRead, lba, n, bytes);
         if (r == 0 && !write) mem::copy(buffer, d->buffers[s], bytes);
         buffer += bytes;
         lba += n;
@@ -214,9 +232,10 @@ int64_t drive_write(void* context, uint64_t lba, uint32_t count, const void* buf
 }
 
 int64_t drive_flush(void* context) {
-    auto* d = static_cast<Drive*>(context);
+    auto* drive = static_cast<Drive*>(context);
+    IoQueue* d = my_queue(drive);
     uint32_t s = take_slot(d);
-    int64_t r = io(d, s, kIoFlush, 0, 0, 0);
+    int64_t r = io(drive, d, s, kIoFlush, 0, 0, 0);
     give_slot(d, s);
     return r;
 }
@@ -293,36 +312,67 @@ void probe_nvme(uint32_t pci) {
     pmm::free_page(identify);
     if (d->sector < 512 || d->sector > 4096) return fail("unsupported sector size");
 
-    // I/O queue pair 1, completion interrupt on MSI-X entry 0.
-    uint8_t vector = 0;
-    if (pci::msix_enable(pci) > 0) {
-        vector = irq::allocate_msi(&on_interrupt, d, "nvme");
-        if (vector && !pci::msix_route(pci, 0, vector)) vector = 0;
-    }
-    if (!make_queue(d->io, regs, stride, 1)) return fail("out of memory");
+    // How many I/O queues: one per CPU, as far as the controller grants (Set Features, Number of Queues).
+    uint32_t wanted = smp::online_count();
+    if (wanted > kMaxQueues) wanted = kMaxQueues;
+    uint32_t vectors = pci::msix_enable(pci);
+    if (vectors >= 1 && wanted > vectors) wanted = vectors;  // one MSI-X entry per queue
     c = Command{};
-    c.opcode = kAdminCreateCq;
-    c.prp1 = pmm::virt_to_phys(d->io.cq);
-    c.cdw10 = 1 | (uint32_t(kQueue - 1) << 16);
-    c.cdw11 = 1 | (vector ? 2u : 0u);  // physically contiguous, interrupts on (vector 0 of MSI-X)
-    if (admin(d, c) != 0) return fail("cannot create the completion queue");
-    c = Command{};
-    c.opcode = kAdminCreateSq;
-    c.prp1 = pmm::virt_to_phys(d->io.sq);
-    c.cdw10 = 1 | (uint32_t(kQueue - 1) << 16);
-    c.cdw11 = 1 | (1u << 16);  // physically contiguous, completions to queue 1
-    if (admin(d, c) != 0) return fail("cannot create the submission queue");
-    d->interrupts = vector != 0;
-
-    for (uint32_t s = 0; s < kSlots; ++s) {
-        d->buffers[s] = static_cast<uint8_t*>(pmm::alloc_contiguous(kSlotBytes / 4096));
-        d->prp_lists[s] = static_cast<uint64_t*>(pmm::alloc_page());
-        if (!d->buffers[s] || !d->prp_lists[s]) return fail("out of memory");
-        uint64_t base = pmm::virt_to_phys(d->buffers[s]);
-        for (uint32_t i = 1; i < kSlotBytes / 4096; ++i) d->prp_lists[s][i - 1] = base + uint64_t(i) * 4096;
-        d->free_mask |= 1u << s;
+    c.opcode = kAdminSetFeatures;
+    c.cdw10 = 0x07;
+    c.cdw11 = (wanted - 1) | ((wanted - 1) << 16);
+    Command probe = c;
+    submit(d->admin, probe);
+    uint32_t granted = 1;
+    {
+        uint64_t limit = time::uptime_ms() + 2000;
+        Completion e;
+        while (!next(d->admin, e) && time::uptime_ms() < limit) cpu::pause();
+        if ((e.status >> 1) == 0) {
+            uint32_t sq = (e.result & 0xFFFF) + 1, cq = (e.result >> 16) + 1;
+            granted = sq < cq ? sq : cq;
+        }
     }
-    d->free_slots.count = kSlots;
+    d->queue_count = wanted < granted ? wanted : granted;
+    if (d->queue_count == 0) d->queue_count = 1;
+    d->queues = static_cast<IoQueue*>(heap::alloc_zeroed(sizeof(IoQueue) * d->queue_count));
+    if (!d->queues) return fail("out of memory");
+    uint32_t live = 0;
+    for (uint32_t qi = 0; qi < d->queue_count; ++qi) {
+        IoQueue* q = &d->queues[qi];
+        q->id = uint16_t(qi + 1);
+        uint8_t vector = 0;
+        if (vectors > 0) {
+            vector = irq::allocate_msi(&on_interrupt, q, "nvme");
+            if (vector && !pci::msix_route(pci, qi, vector)) vector = 0;
+        }
+        if (!make_queue(q->q, regs, stride, q->id)) return fail("out of memory");
+        c = Command{};
+        c.opcode = kAdminCreateCq;
+        c.prp1 = pmm::virt_to_phys(q->q.cq);
+        c.cdw10 = q->id | (uint32_t(kQueue - 1) << 16);
+        c.cdw11 = 1 | (vector ? 2u : 0u) | (qi << 16);  // contiguous, interrupts on, MSI-X entry qi
+        if (admin(d, c) != 0) break;
+        c = Command{};
+        c.opcode = kAdminCreateSq;
+        c.prp1 = pmm::virt_to_phys(q->q.sq);
+        c.cdw10 = q->id | (uint32_t(kQueue - 1) << 16);
+        c.cdw11 = 1 | (uint32_t(q->id) << 16);  // contiguous, completions to its own queue
+        if (admin(d, c) != 0) break;
+        q->interrupts = vector != 0;
+        for (uint32_t s = 0; s < kSlots; ++s) {
+            q->buffers[s] = static_cast<uint8_t*>(pmm::alloc_contiguous(kSlotBytes / 4096));
+            q->prp_lists[s] = static_cast<uint64_t*>(pmm::alloc_page());
+            if (!q->buffers[s] || !q->prp_lists[s]) return fail("out of memory");
+            uint64_t base = pmm::virt_to_phys(q->buffers[s]);
+            for (uint32_t i = 1; i < kSlotBytes / 4096; ++i) q->prp_lists[s][i - 1] = base + uint64_t(i) * 4096;
+            q->free_mask |= 1u << s;
+        }
+        q->free_slots.count = kSlots;
+        ++live;
+    }
+    if (live == 0) return fail("cannot create an I/O queue pair");
+    d->queue_count = live;
 
     char name[16] = "nvme0n1";
     name[4] = char('0' + g_drives++);
@@ -336,8 +386,10 @@ void probe_nvme(uint32_t pci) {
     term::write_size(sectors * d->sector);
     term::write(", ");
     term::write_udec(d->sector);
-    term::write("-byte sectors");
-    term::write(d->interrupts ? ", MSI-X\n" : ", polling\n");
+    term::write("-byte sectors, ");
+    term::write_udec(d->queue_count);
+    term::write(d->queue_count == 1 ? " queue" : " queues");
+    term::write(d->queues[0].interrupts ? ", MSI-X\n" : ", polling\n");
 }
 
 }  // namespace neko::drivers

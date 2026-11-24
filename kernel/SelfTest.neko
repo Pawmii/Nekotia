@@ -844,6 +844,7 @@ public static unsafe class SelfTest
         DiskTest("vda");
         DiskTest("sda");
         DiskTest("nvme0n1");
+        ParallelDisk("nvme0n1");
         int cd = Block.Find("cd0");
         BlockInfo info = default;
         byte* sector = (byte*)Heap.Alloc(2048);
@@ -882,6 +883,54 @@ public static unsafe class SelfTest
             after += u.Reports;
         }
         Check(after > before, "usb: interrupt endpoints deliver reports");
+    }
+
+    const int ParallelWorkers = 4;
+    const int ParallelBytes = 256 * 1024;
+    static int _parallelDisk;
+    static long _parallelGood;
+    static Semaphore _parallelDone;
+    static Mutex _parallelLock;
+
+    /// One worker: its own 256 KiB region, written and read back in 16 KiB pieces, eight rounds.
+    static void ParallelWorker(ulong id)
+    {
+        byte* data = (byte*)Heap.Alloc(ParallelBytes);
+        byte* back = (byte*)Heap.Alloc(ParallelBytes);
+        bool ok = data != null && back != null;
+        ulong first = 4096 + id * (ParallelBytes / 512);
+        for (int round = 0; round < 8 && ok; round++) {
+            for (int i = 0; i < ParallelBytes; i++)
+                data[i] = (byte)(i * 7 + (int)id * 31 + round);
+            for (int at = 0; at < ParallelBytes && ok; at += 16384)
+                ok = Block.Write((uint)_parallelDisk, first + (ulong)(at / 512), 32, data + at) == 0;
+            for (int at = 0; at < ParallelBytes && ok; at += 16384)
+                ok = Block.Read((uint)_parallelDisk, first + (ulong)(at / 512), 32, back + at) == 0;
+            ok = ok && Memory.Compare(data, back, ParallelBytes) == 0;
+        }
+        Heap.Free(data);
+        Heap.Free(back);
+        if (ok) {
+            lock (_parallelLock) {
+                _parallelGood++;
+            }
+        }
+        _parallelDone.Signal();
+    }
+
+    /// Several threads at once on one disk (NVMe: one queue per CPU): every region must come back intact.
+    static void ParallelDisk(string name)
+    {
+        _parallelDisk = Block.Find(name);
+        if (_parallelDisk < 0)
+            return;
+        _parallelGood = 0;
+        for (ulong w = 0; w < ParallelWorkers; w++)
+            Thread.Start("selftest-io", &ParallelWorker, w);
+        for int w in 0..ParallelWorkers {
+            _parallelDone.Wait();
+        }
+        Check(_parallelGood == ParallelWorkers, "disk: 4 threads at once on NVMe (queue per CPU), every region intact");
     }
 
     /// Writes, reads back and byte-addresses a scratch disk (only ever under `make test` or a RAM disk).
