@@ -84,8 +84,11 @@ public static unsafe class Program
             fds[1].Fd = _shellOut;
             fds[1].Events = Poll.In;
             fds[1].Ready = 0;
-            if (Poll.Wait(fds, 2, -1) < 0)
+            // Messages that came in while Present waited are already ours: poll would not show them.
+            if (Poll.Wait(fds, 2, App.HasPending ? 0 : -1) < 0)
                 break;
+            if (App.HasPending)
+                fds[0].Ready = Poll.In;
             if (fds[1].Ready != 0) {
                 long n = File.ReadBytes(_shellOut, buffer, 4096);
                 if (n <= 0)

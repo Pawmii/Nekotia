@@ -60,8 +60,10 @@ public static unsafe class Desktop
 
     // dragging
     static int _drag, _dragWindow = -1, _dragOffsetX, _dragOffsetY;
-    public static bool Resizing;
-    public static Rect ResizeOutline;
+    // Live resizing: the size the pointer asks for, and the Configure the client has not answered yet.
+    static int _resizeWindow = -1, _wantWidth, _wantHeight;
+    static bool _configureOutstanding;
+    static ulong _configureSentMs;
     static ulong _lastTitleClick;
     static int _lastTitleWindow = -1;
 
@@ -325,6 +327,22 @@ public static unsafe class Desktop
         WindowServer.SendConfigure(i, Width - 2, Height - PanelHeight - TitleHeight - 2);
     }
 
+    /// Live resize: one Configure at a time — the next goes out when the client has answered (Resized) or has
+    /// not answered for 250 ms — so a slow client is never flooded and a fast one follows the pointer.
+    static void SendResize()
+    {
+        ServerWindow* w = WindowServer.Get(_resizeWindow);
+        if (w == null || !w->Used || w->Dying)
+            return;
+        if (_wantWidth == w->Width && _wantHeight == w->Height)
+            return;
+        if (_configureOutstanding && Time.UptimeMs() - _configureSentMs < 250)
+            return;
+        WindowServer.SendConfigure(_resizeWindow, _wantWidth, _wantHeight);
+        _configureOutstanding = true;
+        _configureSentMs = Time.UptimeMs();
+    }
+
     /// Where a new window goes: centred, a little lower and to the right for each one already open.
     static void Place(ServerWindow* w)
     {
@@ -373,11 +391,9 @@ public static unsafe class Desktop
                 if (_dragWindow == e->Window) {
                     _drag = DragNone;
                     _dragWindow = -1;
-                    if (Resizing) {
-                        Resizing = false;
-                        DamageRect(ResizeOutline.Inflate(2));
-                    }
                 }
+                if (_resizeWindow == e->Window)
+                    _resizeWindow = -1;
                 bool focused = Focus == e->Window;
                 WindowServer.Release(e->Window);
                 if (focused) {
@@ -402,6 +418,10 @@ public static unsafe class Desktop
                 before.Height = e->Rect.H;
                 DamageRect(Extent(&before));
                 DamageWindow(e->Window);
+                if (e->Window == _resizeWindow) {
+                    _configureOutstanding = false;
+                    SendResize();   // the pointer may have moved on meanwhile
+                }
                 break;
             }
             case ServerEvent.MoveRequest:
@@ -518,11 +538,9 @@ public static unsafe class Desktop
             DamageWindow(_dragWindow);
         } else if (_drag == DragResize) {
             ServerWindow* w = WindowServer.Get(_dragWindow);
-            DamageRect(ResizeOutline.Inflate(2));
-            int newW = Clamp(x - w->X + _dragOffsetX, 120, Width);
-            int newH = Clamp(y - w->Y + _dragOffsetY, 60, Height);
-            ResizeOutline = new Rect(w->X - 1, w->Y - TitleHeight - 1, newW + 2, newH + TitleHeight + 2);
-            DamageRect(ResizeOutline.Inflate(2));
+            _wantWidth = Clamp(x - w->X + _dragOffsetX, 120, Width);
+            _wantHeight = Clamp(y - w->Y + _dragOffsetY, 60, Height);
+            SendResize();
         } else if (_grab >= 0) {
             ServerWindow* w = WindowServer.Get(_grab);
             WindowServer.SendPointer(_grab, Protocol.PointerMove, x - w->X, y - w->Y, 0, _buttons, _mods);
@@ -586,10 +604,8 @@ public static unsafe class Desktop
             if (_drag != DragNone && button == 0) {
                 if (_drag == DragResize) {
                     ServerWindow* w = WindowServer.Get(_dragWindow);
-                    DamageRect(ResizeOutline.Inflate(2));
-                    Resizing = false;
                     w->Maximized = false;
-                    WindowServer.SendConfigure(_dragWindow, ResizeOutline.W - 2, ResizeOutline.H - TitleHeight - 2);
+                    SendResize();   // and once more when the outstanding one is answered (Resized)
                 }
                 _drag = DragNone;
                 _dragWindow = -1;
@@ -681,9 +697,10 @@ public static unsafe class Desktop
                 // keep the grab point where it is relative to the corner
                 _dragOffsetX = win->Width - (PointerX - win->X);
                 _dragOffsetY = win->Height - (PointerY - win->Y);
-                Resizing = true;
-                ResizeOutline = Frame(win);
-                DamageRect(ResizeOutline.Inflate(2));
+                _resizeWindow = index;
+                _wantWidth = win->Width;
+                _wantHeight = win->Height;
+                _configureOutstanding = false;
                 break;
         }
     }

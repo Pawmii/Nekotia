@@ -22,7 +22,10 @@ public unsafe struct ServerWindow
     public int Client;
     public uint Id;           // the client's number for it
     public int Width, Height; // of the buffer (= the content)
-    public uint* Pixels;      // the client's shared memory, mapped read-only
+    public uint* Pixels;      // the buffer on show (in the client's shared memory, mapped read-only)
+    public byte* Base;        // the whole mapping (both buffers when double buffered)
+    public int Current;       // buffer on show
+    public int OwedRelease;   // 1 + buffer whose Release could not be sent yet (the client's queue was full)
     public uint Flags;        // Protocol.Flag*
     public fixed byte Title[64];
     public bool WantsFrame;   // sent Damage since the last Frame
@@ -132,6 +135,10 @@ public static unsafe class WindowServer
     /// <summary>Accepts new clients and reads what the ready ones sent (after Poll.Wait on the array FillPoll made).</summary>
     public static void Dispatch(PollFd* fds, int count)
     {
+        for (int i = 0; i < MaxWindows; i++) {   // releases that did not fit last time
+            if (_windows[i].Used && _windows[i].OwedRelease != 0)
+                SendRelease(i);
+        }
         for (int k = 0; k < _pollCount && _pollBase + k < count; k++) {
             PollFd* p = &fds[_pollBase + k];
             if (p->Ready == 0)
@@ -203,12 +210,20 @@ public static unsafe class WindowServer
         return -1;
     }
 
-    static uint* MapBuffer(int fd, int width, int height)
+    static byte* MapBuffer(int fd, int width, int height, bool twice)
     {
         if (fd < 0 || width < 1 || height < 1 || width > 4096 || height > 4096)
             return null;
-        long at = Device.Map(fd, (ulong)width * (ulong)height * 4, 0);
-        return at < 0 ? null : (uint*)at;
+        long at = Device.Map(fd, (ulong)width * (ulong)height * 4 * (twice ? 2UL : 1UL), 0);
+        return at < 0 ? null : (byte*)at;
+    }
+
+    static bool Double(ServerWindow* w) => (w->Flags & Protocol.FlagDoubleBuffered) != 0;
+
+    static void Show(ServerWindow* w, int buffer)
+    {
+        w->Current = Double(w) ? buffer & 1 : 0;
+        w->Pixels = (uint*)(w->Base + (long)w->Current * w->Width * w->Height * 4);
     }
 
     static void Handle(int c, Message* m, int fd)
@@ -226,7 +241,7 @@ public static unsafe class WindowServer
         if (m->Type == Protocol.CreateWindow) {
             if (Find(c, m->Window) >= 0)
                 return;
-            uint* pixels = MapBuffer(fd, m->Width, m->Height);
+            byte* pixels = MapBuffer(fd, m->Width, m->Height, (m->Flags & Protocol.FlagDoubleBuffered) != 0);
             if (pixels == null)
                 return;
             int slot = -1;
@@ -245,8 +260,9 @@ public static unsafe class WindowServer
             w->Id = m->Window;
             w->Width = m->Width;
             w->Height = m->Height;
-            w->Pixels = pixels;
+            w->Base = pixels;
             w->Flags = m->Flags;
+            Show(w, 0);
             CopyTitle(w, m);
             Queue(ServerEvent.WindowNew, slot, new Rect(0, 0, m->Width, m->Height));
             return;
@@ -258,18 +274,25 @@ public static unsafe class WindowServer
         switch (m->Type)
         {
             case Protocol.Attach: {
-                uint* pixels = MapBuffer(fd, m->Width, m->Height);
+                byte* pixels = MapBuffer(fd, m->Width, m->Height, Double(sw));
                 if (pixels == null)
                     return;
-                Device.Unmap(sw->Pixels);
+                Device.Unmap(sw->Base);
                 Rect old = new Rect(0, 0, sw->Width, sw->Height);
-                sw->Pixels = pixels;
+                sw->Base = pixels;
                 sw->Width = m->Width;
                 sw->Height = m->Height;
+                Show(sw, 0);
                 Queue(ServerEvent.Resized, win, old);
                 break;
             }
             case Protocol.Damage:
+                if (Double(sw)) {
+                    // Switch to the finished buffer now (we are not composing), and give the other one back.
+                    Show(sw, (int)m->Value);
+                    sw->OwedRelease = 2 - sw->Current;   // 1 + (1 - Current)
+                    SendRelease(win);
+                }
                 sw->WantsFrame = true;
                 Queue(ServerEvent.Damage, win, new Rect(m->X, m->Y, m->Width, m->Height).Intersect(new Rect(0, 0, sw->Width, sw->Height)));
                 break;
@@ -307,8 +330,8 @@ public static unsafe class WindowServer
         ServerWindow* w = Get(index);
         if (w == null || !w->Used)
             return;
-        if (w->Pixels != null)
-            Device.Unmap(w->Pixels);
+        if (w->Base != null)
+            Device.Unmap(w->Base);
         *w = default;
     }
 
@@ -356,6 +379,22 @@ public static unsafe class WindowServer
             return;
         // Never wait for a client: when its queue is full the message is dropped (a stuck client only hurts itself).
         Channel.Send(_clients[client].Fd, m, (ulong)sizeof(Message), -1);
+    }
+
+    /// The client waits for this one, so it must not be lost: kept owed until it fits into the queue.
+    static void SendRelease(int index)
+    {
+        ServerWindow* w = &_windows[index];
+        if (w->Dying || !_clients[w->Client].Used) {
+            w->OwedRelease = 0;
+            return;
+        }
+        Message m = default;
+        m.Type = Protocol.Release;
+        m.Window = w->Id;
+        m.Value = (uint)(w->OwedRelease - 1);
+        if (Channel.Send(_clients[w->Client].Fd, &m, (ulong)sizeof(Message), -1) != Process.ErrBusy)
+            w->OwedRelease = 0;
     }
 
     static void SendWindow(int index, Message* m)

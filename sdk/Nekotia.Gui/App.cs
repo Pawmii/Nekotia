@@ -2,7 +2,11 @@ using Nekotia.User;
 
 namespace Nekotia.Gui;
 
-/// <summary>A window of this program: its pixels (shared with the display server) and its size.</summary>
+/// <summary>
+/// A window of this program. Its pixels live in shared memory with the display server — two buffers of
+/// Width × Height: the server shows one, <see cref="Canvas"/> is the other. App.Present hands the canvas over
+/// and gives back the other buffer with the same picture, so drawing simply continues where it was.
+/// </summary>
 public unsafe struct Window
 {
     public uint Id;
@@ -10,7 +14,10 @@ public unsafe struct Window
     public Canvas Canvas;     // draw here, then App.Present / App.Damage
     public bool Open;
     public bool Focused;
-    public ulong BufferBytes;
+    public ulong BufferBytes; // one buffer
+    public byte* Base;        // the mapping: buffer 0, then buffer 1
+    public int Back;          // the buffer Canvas draws into
+    public int PendingAttach; // fd of a new buffer pair to send with the next Present (after Resize), else -1
 }
 
 /// <summary>
@@ -24,15 +31,22 @@ public unsafe struct Window
 /// </summary>
 public static unsafe class App
 {
+    const int PendingMax = 64;
+
     static int _fd = -1;
     static int _screenWidth, _screenHeight;
     static uint _nextId = 1;
     static Font _font;
+    static Message* _pending;    // messages that arrived while Present waited for a Release
+    static int _pendingHead, _pendingCount;
 
-    /// <summary>The channel to the server (to poll it together with other fds).</summary>
+    /// <summary>The channel to the server (to poll it together with other fds — check HasPending too).</summary>
     public static int Fd => _fd;
     public static int ScreenWidth => _screenWidth;
     public static int ScreenHeight => _screenHeight;
+
+    /// <summary>Messages already received and waiting for Next (poll would not show them).</summary>
+    public static bool HasPending => _pendingCount > 0;
 
     /// <summary>The system font (Terminus 8×16), loaded by Connect.</summary>
     public static Font* SystemFont
@@ -52,20 +66,17 @@ public static unsafe class App
         if (fd < 0)
             return fd;
         _fd = (int)fd;
+        _pending = Memory.NewArray<Message>(PendingMax);
         Message m = default;
         m.Type = Protocol.Hello;
         m.Value = Protocol.Version;
         Send(&m);
         // Wait for Welcome (nothing else comes before it).
         while (true) {
-            int fdOut = -1;
-            long n = Channel.Receive(_fd, &m, (ulong)sizeof(Message), &fdOut);
-            if (fdOut >= 0)
-                File.Close(fdOut);
-            if (n <= 0) {
+            if (Receive(&m) <= 0) {
                 File.Close(_fd);
                 _fd = -1;
-                return n < 0 ? n : Process.ErrBrokenPipe;
+                return Process.ErrBrokenPipe;
             }
             if (m.Type == Protocol.Welcome)
                 break;
@@ -88,22 +99,45 @@ public static unsafe class App
         return Process.ErrBusy;
     }
 
-    /// <summary>A shared buffer of width × height pixels, mapped here: its fd (to attach) and address.</summary>
-    static long NewBuffer(int width, int height, out uint* pixels, out ulong bytes)
+    /// <summary>One message from the channel (waits); files that come along are not expected and closed.</summary>
+    static long Receive(Message* m)
+    {
+        int fdOut = -1;
+        long n = Channel.Receive(_fd, m, (ulong)sizeof(Message), &fdOut);
+        if (fdOut >= 0)
+            File.Close(fdOut);
+        return n;
+    }
+
+    static void Keep(Message* m)
+    {
+        if (_pendingCount == PendingMax) {   // full: the oldest goes
+            _pendingHead = (_pendingHead + 1) % PendingMax;
+            _pendingCount--;
+        }
+        _pending[(_pendingHead + _pendingCount) % PendingMax] = *m;
+        _pendingCount++;
+    }
+
+    /// <summary>Two buffers of width × height pixels, mapped here: the fd (to attach) and the address.</summary>
+    static long NewBuffers(int width, int height, out byte* pixels, out ulong bytes)
     {
         pixels = null;
         bytes = (ulong)width * (ulong)height * 4;
-        long shm = SharedMemory.Create(bytes);
+        long shm = SharedMemory.Create(bytes * 2);
         if (shm < 0)
             return shm;
-        long at = Device.Map((int)shm, bytes, Device.MapWrite);
+        long at = Device.Map((int)shm, bytes * 2, Device.MapWrite);
         if (at < 0) {
             File.Close((int)shm);
             return at;
         }
-        pixels = (uint*)at;
+        pixels = (byte*)at;
         return shm;
     }
+
+    static void PointCanvas(ref Window w) =>
+        w.Canvas = new Canvas((uint*)(w.Base + (long)w.Back * (long)w.BufferBytes), w.Width, w.Height, w.Width);
 
     /// <summary>
     /// Opens a window (title UTF-8, size of its content without decorations). Flags: Protocol.Flag*.
@@ -112,28 +146,31 @@ public static unsafe class App
     public static long CreateWindow(byte* title, int width, int height, uint flags, out Window window)
     {
         window = default;
+        window.PendingAttach = -1;
         if (_fd < 0)
             return Process.ErrBadFd;
         if (width < 1 || height < 1 || width > 4096 || height > 4096)
             return Process.ErrBadArgument;
-        uint* pixels = null;
+        byte* pixels = null;
         ulong bytes = 0;
-        long shm = NewBuffer(width, height, out pixels, out bytes);
+        long shm = NewBuffers(width, height, out pixels, out bytes);
         if (shm < 0)
             return shm;
         window.Id = _nextId++;
         window.Width = width;
         window.Height = height;
-        window.Canvas = new Canvas(pixels, width, height, width);
-        window.Open = true;
+        window.Base = pixels;
         window.BufferBytes = bytes;
+        window.Back = 0;
+        window.Open = true;
+        PointCanvas(ref window);
 
         Message m = default;
         m.Type = Protocol.CreateWindow;
         m.Window = window.Id;
         m.Width = width;
         m.Height = height;
-        m.Flags = flags;
+        m.Flags = flags | Protocol.FlagDoubleBuffered;
         m.SetText(title);
         long r = Send(&m, (int)shm);
         File.Close((int)shm);   // the mapping (and the server's copy) keep the memory
@@ -143,11 +180,28 @@ public static unsafe class App
     public static long CreateWindow(string title, int width, int height, uint flags, out Window window) =>
         CreateWindow(Str.Bytes(title), width, height, flags, out window);
 
-    /// <summary>Part of the window changed: the server shows it with the next frame.</summary>
+    /// <summary>
+    /// The canvas is finished for <paramref name="r"/>: the server shows this buffer from now on, and the canvas
+    /// becomes the other one with the same picture (waits briefly until the server lets go of it).
+    /// </summary>
     public static void Damage(ref Window w, Rect r)
     {
         Rect c = r.Intersect(new Rect(0, 0, w.Width, w.Height));
-        if (c.IsEmpty || !w.Open)
+        if (!w.Open)
+            return;
+        if (w.PendingAttach >= 0) {
+            // A new buffer pair after Resize goes out with its first picture: no frame of an empty buffer.
+            Message a = default;
+            a.Type = Protocol.Attach;
+            a.Window = w.Id;
+            a.Width = w.Width;
+            a.Height = w.Height;
+            Send(&a, w.PendingAttach);
+            File.Close(w.PendingAttach);
+            w.PendingAttach = -1;
+            c = new Rect(0, 0, w.Width, w.Height);
+        }
+        if (c.IsEmpty)
             return;
         Message m = default;
         m.Type = Protocol.Damage;
@@ -156,37 +210,57 @@ public static unsafe class App
         m.Y = c.Y;
         m.Width = c.W;
         m.Height = c.H;
-        Send(&m);
+        m.Value = (uint)w.Back;
+        if (Send(&m) < 0)
+            return;
+        // Wait until the server has switched to this buffer and released the other one.
+        while (true) {
+            Message got = default;
+            if (Receive(&got) <= 0)
+                return;   // the server is gone: Next will report it
+            if (got.Type == Protocol.Release && got.Window == w.Id) {
+                if (got.Value == (uint)(1 - w.Back))
+                    break;
+                continue;
+            }
+            Keep(&got);
+        }
+        // Bring the other buffer up to date (both differ only in what this frame changed), then draw there.
+        uint* from = w.Canvas.Pixels;
+        int other = 1 - w.Back;
+        uint* to = (uint*)(w.Base + (long)other * (long)w.BufferBytes);
+        for (int y = c.Y; y < c.Bottom; y++)
+            Memory.Copy(to + (long)y * w.Width + c.X, from + (long)y * w.Width + c.X, (ulong)c.W * 4);
+        w.Back = other;
+        PointCanvas(ref w);
     }
 
     public static void Present(ref Window w) => Damage(ref w, new Rect(0, 0, w.Width, w.Height));
 
     /// <summary>
-    /// New size (after Configure, or the program's own idea): a fresh buffer replaces the old one. The content
-    /// is undefined (black) — redraw and Present.
+    /// New size (after Configure, or the program's own idea): a fresh pair of buffers replaces the old one when
+    /// the next Present goes out. The content is undefined (black) — redraw everything, then Present.
     /// </summary>
     public static long Resize(ref Window w, int width, int height)
     {
         if (width < 1 || height < 1 || width > 4096 || height > 4096)
             return Process.ErrBadArgument;
-        uint* pixels = null;
+        byte* pixels = null;
         ulong bytes = 0;
-        long shm = NewBuffer(width, height, out pixels, out bytes);
+        long shm = NewBuffers(width, height, out pixels, out bytes);
         if (shm < 0)
             return shm;
-        Message m = default;
-        m.Type = Protocol.Attach;
-        m.Window = w.Id;
-        m.Width = width;
-        m.Height = height;
-        long r = Send(&m, (int)shm);
-        File.Close((int)shm);
-        Device.Unmap(w.Canvas.Pixels);
+        if (w.PendingAttach >= 0)
+            File.Close(w.PendingAttach);
+        Device.Unmap(w.Base);   // the server keeps its own mapping until it gets the new pair
+        w.PendingAttach = (int)shm;
         w.Width = width;
         w.Height = height;
-        w.Canvas = new Canvas(pixels, width, height, width);
+        w.Base = pixels;
         w.BufferBytes = bytes;
-        return r < 0 ? r : 0;
+        w.Back = 0;
+        PointCanvas(ref w);
+        return 0;
     }
 
     public static void SetTitle(ref Window w, byte* title)
@@ -208,8 +282,11 @@ public static unsafe class App
         m.Type = Protocol.Destroy;
         m.Window = w.Id;
         Send(&m);
-        Device.Unmap(w.Canvas.Pixels);
+        Device.Unmap(w.Base);
+        if (w.PendingAttach >= 0)
+            File.Close(w.PendingAttach);
         w.Open = false;
+        w.Base = null;
         w.Canvas = new Canvas(null, 0, 0, 0);
     }
 
@@ -220,25 +297,31 @@ public static unsafe class App
     public static int Next(out Message m, long timeoutMs)
     {
         m = default;
+        if (_pendingCount > 0) {
+            m = _pending[_pendingHead];
+            _pendingHead = (_pendingHead + 1) % PendingMax;
+            _pendingCount--;
+            return 1;
+        }
         if (_fd < 0)
             return -1;
-        PollFd p = default;
-        p.Fd = _fd;
-        p.Events = Poll.In;
-        long ready = Poll.Wait(&p, 1, timeoutMs);
-        if (ready < 0)
-            return -1;
-        if (ready == 0)
-            return 0;
-        int fdOut = -1;
-        Message got = default;
-        long n = Channel.Receive(_fd, &got, (ulong)sizeof(Message), &fdOut);
-        if (fdOut >= 0)
-            File.Close(fdOut);
-        if (n <= 0)
-            return -1;
-        m = got;
-        return 1;
+        while (true) {
+            PollFd p = default;
+            p.Fd = _fd;
+            p.Events = Poll.In;
+            long ready = Poll.Wait(&p, 1, timeoutMs);
+            if (ready < 0)
+                return -1;
+            if (ready == 0)
+                return 0;
+            Message got = default;
+            if (Receive(&got) <= 0)
+                return -1;
+            if (got.Type == Protocol.Release)
+                continue;   // a release nobody waits for any more
+            m = got;
+            return 1;
+        }
     }
 
     /// <summary>Applies the messages that change a window by themselves (Focus); call with each message.</summary>

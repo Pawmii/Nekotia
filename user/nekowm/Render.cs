@@ -122,12 +122,6 @@ public static unsafe class Render
             if (Desktop.Shown(w) && Desktop.Extent(w).Overlaps(r))
                 DrawWindow(b, i, w);
         }
-        if (Desktop.Resizing) {
-            Rect o = Desktop.ResizeOutline;
-            b->FillRectAlpha(o, Theme.Accent, 28);
-            b->DrawRect(o, Theme.Accent);
-            b->DrawRect(o.Inflate(-1), Theme.AccentDark);
-        }
         t0 = Time.Cycles();
         if (PanelRect().Overlaps(r))
             DrawPanel(b);
