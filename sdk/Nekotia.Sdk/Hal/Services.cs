@@ -29,21 +29,43 @@ public static unsafe class Irq
     public static extern bool GetMsi(uint index, out byte vector, out string name, out ulong count);
 }
 
+/// <summary>Reboot, power off, leave QEMU — the disks' cached writes are written back first.</summary>
 public static class Power
 {
     [Native("::neko::power::reboot")]
     [NoReturn]
-    public static extern void Reboot();
+    static extern void RebootNow();
 
-    /// <summary>Powers off in QEMU/Bochs/VirtualBox; on real hardware (no ACPI driver yet) it halts.</summary>
     [Native("::neko::power::shutdown")]
     [NoReturn]
-    public static extern void Shutdown();
+    static extern void ShutdownNow();
 
-    /// <summary>Leaves QEMU with an exit status for automated tests (`make test`): 0 → status 1 (pass), other → failure.</summary>
     [Native("::neko::power::test_exit")]
     [NoReturn]
-    public static extern void TestExit(byte code);
+    static extern void TestExitNow(byte code);
+
+    [NoReturn]
+    public static void Reboot()
+    {
+        Nekotia.IO.Block.SyncAll();
+        RebootNow();
+    }
+
+    /// <summary>Powers off in QEMU/Bochs/VirtualBox; on real hardware (no ACPI driver yet) it halts.</summary>
+    [NoReturn]
+    public static void Shutdown()
+    {
+        Nekotia.IO.Block.SyncAll();
+        ShutdownNow();
+    }
+
+    /// <summary>Leaves QEMU with an exit status for automated tests (`make test`): 0 → status 1 (pass), other → failure.</summary>
+    [NoReturn]
+    public static void TestExit(byte code)
+    {
+        Nekotia.IO.Block.SyncAll();
+        TestExitNow(code);
+    }
 }
 
 public static class SysInfo

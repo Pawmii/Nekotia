@@ -249,6 +249,7 @@ uint64_t g_kernel_stack_top = 0;
     neko::term::write(" of ");
     neko::term::write_udec(mp_request.response ? mp_request.response->cpu_count : 1);
     neko::term::write(" CPU(s) online\n");
+    neko::block::start_writeback();      // the block cache writes dirty lines back in the background
     neko::display::init(g_info.Screen);  // /dev/fb0: the bootloader's framebuffer (bootfb driver)
     neko::input::init();                 // /dev/input
     neko::drivers::init();  // needs interrupts (completion IRQs) and the VFS (/dev nodes)

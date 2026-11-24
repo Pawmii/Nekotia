@@ -802,8 +802,10 @@ void detach(Controller* c, Device* d) {
             d->ep[i].done.signal();
         }
     if (d->info.kind == kKindStorage) {
-        d->io.lock();  // the request in flight is over
+        // The block layer first (it waits for a cache request in flight, which fails fast now that the device is
+        // gone), then our own lock: the request that held it is over too.
         if (d->disk >= 0) block::remove(uint32_t(d->disk));
+        d->io.lock();
         d->io.unlock();
     }
     list_remove(d);

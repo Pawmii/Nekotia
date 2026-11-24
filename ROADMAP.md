@@ -159,7 +159,10 @@
       конвейеры `a | b | c` в `sh`; утилиты `grep`, `wc`, `head`
 - [x] `/proc` на C#: version, uptime, cmdline, cpuinfo, meminfo, processes, threads, mounts, disks, pci,
       net/{dev,arp,tcp,udp} — файлы-генераторы VFS (`Vfs.CreateGenerated`)
-- [ ] FAT12/16, ext2 (чтение); кэш блоков и отложенная запись
+- [x] Кэш блоков с отложенной записью: строки 4 КиБ (до 8 МиБ, LRU), чтение пропущенных строк сериями до 64 КиБ,
+      поток `block-writeback` (раз в секунду, соседние строки одним запросом), `flush`/`sync_all`, сброс перед
+      перезагрузкой/выключением, выброс строк извлечённой флешки; статистика в `/proc/meminfo`
+- [ ] FAT12/16, ext2 (чтение)
 - [x] virtio-net (общий virtio-транспорт с virtio-blk) и стек TCP/IP **на C#** (`kernel/Net`): ARP, IPv4, ICMP, UDP,
       DHCP, DNS, TCP (рукопожатие, окна, повторная передача, FIN/RST, TIME_WAIT); сокеты — файловые дескрипторы,
       системные вызовы 40–48 на C# (`@syscall`); `ifconfig`, `ping`, `arp`, `netstat`; программы `httpd`, `fetch`,

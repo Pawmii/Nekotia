@@ -15,6 +15,18 @@ public unsafe struct BlockInfo
     [Native("removed")] public bool Removed;
 }
 
+/// <summary>Mirrors <c>neko::block::CacheStats</c> (counts are 4 KiB lines).</summary>
+[Native("::neko::block::CacheStats")]
+public struct BlockCacheStats
+{
+    [Native("lines")] public ulong Lines;
+    [Native("dirty")] public ulong Dirty;
+    [Native("capacity")] public ulong Capacity;
+    [Native("hits")] public ulong Hits;
+    [Native("misses")] public ulong Misses;
+    [Native("written_back")] public ulong WrittenBack;
+}
+
 /// <summary>
 /// Block devices (runtime/src/core/block.cpp): virtio-blk disks (vda, vdb…) and RAM disks, addressed by index.
 /// Each is also /dev/NAME in the VFS. Results are 0 / byte counts, or negative errors.
@@ -23,6 +35,13 @@ public static unsafe class Block
 {
     [Native("::neko::block::count")]
     public static extern uint Count();
+
+    /// <summary>Writes every disk's cached changes back (then flushes the devices); 0 or an error.</summary>
+    [Native("::neko::block::sync_all")]
+    public static extern long SyncAll();
+
+    [Native("::neko::block::cache_stats")]
+    public static extern BlockCacheStats CacheStats();
 
     /// <summary>Called (from a driver thread) when a device is added or removed — USB sticks.</summary>
     [Native("::neko::block::set_hotplug")]

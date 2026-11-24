@@ -119,6 +119,11 @@ public static unsafe class Proc
         t.WriteLine($"{"HeapUsed:",-16}{(ulong)Heap.UsedBytes() / 1024,10} kB");
         t.WriteLine($"{"FilesInHeap:",-16}{v.HeapBytes / 1024,10} kB");
         t.WriteLine($"{"FilesInInitrd:",-16}{v.InitrdBytes / 1024,10} kB");
+        BlockCacheStats c = Block.CacheStats();
+        t.WriteLine($"{"BlockCache:",-16}{c.Lines * 4,10} kB");
+        t.WriteLine($"{"BlockDirty:",-16}{c.Dirty * 4,10} kB");
+        t.WriteLine($"{"BlockHits:",-16}{c.Hits,10}");
+        t.WriteLine($"{"BlockMisses:",-16}{c.Misses,10}");
         return t.Length;
     }
 

@@ -845,6 +845,7 @@ public static unsafe class SelfTest
         DiskTest("sda");
         DiskTest("nvme0n1");
         ParallelDisk("nvme0n1");
+        CacheTest("vda");
         int cd = Block.Find("cd0");
         BlockInfo info = default;
         byte* sector = (byte*)Heap.Alloc(2048);
@@ -883,6 +884,30 @@ public static unsafe class SelfTest
             after += u.Reports;
         }
         Check(after > before, "usb: interrupt endpoints deliver reports");
+    }
+
+    /// The write-back cache: a second read is a hit, a write waits in the cache until flush writes it back.
+    static void CacheTest(string name)
+    {
+        int d = Block.Find(name);
+        if (d < 0)
+            return;
+        byte* sector = stackalloc byte[512];
+        BlockCacheStats before = Block.CacheStats();
+        Block.Read((uint)d, 3000, 1, sector);
+        BlockCacheStats first = Block.CacheStats();
+        Block.Read((uint)d, 3001, 1, sector);   // same 4 KiB line
+        BlockCacheStats second = Block.CacheStats();
+        Check(first.Misses > before.Misses && second.Hits > first.Hits && second.Misses == first.Misses,
+              "cache: the first read of a line goes to the disk, the next ones come from memory");
+        sector[0] = 0x5A;
+        Block.Write((uint)d, 3002, 1, sector);
+        BlockCacheStats written = Block.CacheStats();
+        Check(written.Dirty > 0, "cache: a write stays in the cache (write-back)");
+        Check(Block.Flush((uint)d) == 0 && Block.CacheStats().WrittenBack > written.WrittenBack,
+              "cache: flush writes the dirty lines back");
+        Block.Read((uint)d, 3002, 1, sector);
+        Check(sector[0] == 0x5A, "cache: what was written reads back");
     }
 
     const int ParallelWorkers = 4;

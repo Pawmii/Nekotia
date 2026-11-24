@@ -1,6 +1,11 @@
 // Block devices (core/block.cpp): disks addressed in sectors, whatever the driver behind them
 // (virtio-blk in drivers/virtio_blk.cpp, RAM disks here). Every device also appears as /dev/NAME,
 // a seekable device node with byte offsets (partial sectors are read-modify-written).
+//
+// Cache: every disk but RAM disks goes through a write-back cache of 4 KiB lines (up to 8 MiB, least
+// recently used goes first). Missing lines are read in runs of up to 64 KiB; writes stay in the cache
+// and a thread writes back what has been dirty for a second, in runs of neighbouring lines. flush()
+// writes everything of a disk back (then flushes the device); sync_all() does it for every disk.
 // Errors are the negative neko::proc::Error values (kErrIo for a failed transfer).
 #pragma once
 
@@ -49,6 +54,14 @@ inline int32_t find(const uint8_t* name) { return find(reinterpret_cast<const ch
 int64_t read(uint32_t index, uint64_t lba, uint32_t count, void* buffer);
 int64_t write(uint32_t index, uint64_t lba, uint32_t count, const void* buffer);
 int64_t flush(uint32_t index);
+int64_t sync_all();                // every disk's dirty lines, then the devices' own caches
+
+struct CacheStats {
+    uint64_t lines, dirty, capacity;  // lines in use / dirty / the most there may be
+    uint64_t hits, misses, written_back;
+};
+CacheStats cache_stats();
+void start_writeback();            // the write-back thread (once the scheduler runs)
 // Byte-addressed access (what /dev/NAME uses): bytes transferred, short at the end of the disk.
 int64_t read_bytes(uint32_t index, uint64_t offset, void* buffer, uint64_t length);
 int64_t write_bytes(uint32_t index, uint64_t offset, const void* buffer, uint64_t length);
