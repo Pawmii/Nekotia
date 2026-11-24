@@ -1232,7 +1232,7 @@ public static unsafe class SelfTest
         long code = RunAndWait("usertest", _verbose ? "-v alpha beta" : "alpha beta");
         Check(code == 42, "user: usertest passes its own checks in ring 3 (syscalls, argv, heap, FPU, spawn/wait)");
 
-        ulong free = Pages.FreeCount();
+        ulong free = Pages.FreeCount() + Thread.CachedStackPages();   // exited threads' stacks are kept for reuse
         ulong heap = Heap.UsedBytes();
         Check(RunAndWait("usertest", "pf") == Process.KilledBase + 14, "user: a null dereference kills only that process (#PF → 142)");
         Check(RunAndWait("usertest", "kernel") == Process.KilledBase + 14, "user: kernel memory is out of reach of ring 3");
@@ -1268,7 +1268,9 @@ public static unsafe class SelfTest
             }
             Check(open == 0, "user: the programs' sockets are closed when they exit");
         }
-        Check(Pages.FreeCount() == free && Heap.UsedBytes() == heap, "user: address spaces and process records are freed completely");
+        if (Pages.FreeCount() != free || Heap.UsedBytes() != heap)
+            Serial.WriteLine($"leak: pages {(long)free - (long)Pages.FreeCount()}, heap {(long)Heap.UsedBytes() - (long)heap}");
+        Check(Pages.FreeCount() + Thread.CachedStackPages() == free && Heap.UsedBytes() == heap, "user: address spaces and process records are freed completely");
     }
 
     static bool Churn()

@@ -42,11 +42,17 @@ extern "C" char neko_user_copy_fault_start[], neko_user_copy_fault_end[], neko_u
 // isr.S pushes exactly the layout of crash::CpuState.
 extern "C" void neko_isr_dispatch(crash::CpuState* f) {
     if (f->vector == 2 && crash::in_progress()) cpu::halt_forever();  // another CPU is drawing the stop screen
+    // Demand paging: a page the program reserved but never touched appears now and the access runs again.
+    bool user_copy = f->rip >= reinterpret_cast<uint64_t>(neko_user_copy_fault_start) &&
+                     f->rip <= reinterpret_cast<uint64_t>(neko_user_copy_fault_end);
+    if (f->vector == 14 && !(f->error_code & 1) && ((f->cs & 3) || user_copy) && proc::demand_page(cpu::read_cr2())) {
+        if (f->cs & 3) proc::check_killed();
+        return;
+    }
     // A fault in a user program ends that process, not the kernel (NMI, #DF and #MC are machine events).
     if (f->vector < 32 && (f->cs & 3) && f->vector != 2 && f->vector != 8 && f->vector != 18) proc::user_exception(f);
     // A bad user pointer inside neko_user_copy: the copy fails instead of the kernel.
-    if (f->vector == 14 && f->rip >= reinterpret_cast<uint64_t>(neko_user_copy_fault_start) &&
-        f->rip <= reinterpret_cast<uint64_t>(neko_user_copy_fault_end) && cpu::read_cr2() < proc::kUserEnd) {
+    if (f->vector == 14 && user_copy && cpu::read_cr2() < proc::kUserEnd) {
         f->rip = reinterpret_cast<uint64_t>(neko_user_copy_fixup);
         return;
     }

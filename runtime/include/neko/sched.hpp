@@ -132,6 +132,7 @@ uint32_t thread_count();
 bool thread_info(uint32_t index, ThreadInfo& out);
 uint64_t context_switches();
 uint64_t idle_ms();
+uint64_t cached_stack_pages();  // stacks of exited threads kept for reuse (not free, not leaked)
 bool has_sleepers();  // host mode: "can anything still wake up?"
 
 }  // namespace neko::sched

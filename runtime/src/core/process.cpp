@@ -160,7 +160,8 @@ bool load_image(Process* p, const uint8_t* data, StartInfo& start) {
 bool build_stack(Process* p, const char* name, const char* args, StartInfo& start) {
     constexpr uint32_t kMaxArgs = 32;
     constexpr uint64_t kMaxArgBytes = 2048;
-    if (!map_pages(p, kUserStackTop - kUserStackSize, kUserStackTop, vmm::PageFlags::Write)) return false;
+    // The stack below these pages is reserved too: demand_page maps it as it grows.
+    if (!map_pages(p, kUserStackTop - kUserStackMapped, kUserStackTop, vmm::PageFlags::Write)) return false;
 
     char strings[kMaxArgBytes];
     uint64_t offsets[kMaxArgs];
@@ -571,14 +572,58 @@ bool register_syscall(uint32_t number, SyscallHandler handler) {
     return true;
 }
 
+namespace {
+uint64_t g_demand_faults = 0;
+
+// Reserved-but-untouched pages in [address, address + length) are mapped now (a system call is about to
+// use them, like the program would).
+void populate(Process* p, uint64_t address, uint64_t length) {
+    if (length == 0 || address + length < address || address + length > kUserEnd) return;
+    for (uint64_t v = address & ~(kPage - 1); v < address + length; v += kPage)
+        if (vmm::space_translate(p->pml4, v) == ~0ull) demand_page(v);
+}
+
+bool reserved(Process* p, uint64_t v) {
+    if (v >= kUserStackTop - kUserStackSize && v < kUserStackTop) return true;
+    if (v < kUserAllocBase || v >= p->alloc_next) return false;
+    for (uint32_t i = 0; i < p->hole_count; ++i)
+        if (v >= p->holes[i].start && v < p->holes[i].start + p->holes[i].size) return false;  // given back
+    return true;
+}
+}  // namespace
+
+bool demand_page(uint64_t address) {
+    Process* p = current();
+    if (!p || address >= kUserEnd) return false;
+    uint64_t v = address & ~(kPage - 1);
+    sync::ScopedLock guard(p->lock);  // two threads touching the same page: one maps it
+    if (!reserved(p, v)) return false;
+    if (vmm::space_translate(p->pml4, v) != ~0ull) return true;  // mapped meanwhile
+    void* frame = pmm::alloc_page();
+    if (!frame) return false;  // out of memory: the access faults (the process ends with 142)
+    if (!vmm::space_map(p->pml4, v, pmm::virt_to_phys(frame), vmm::PageFlags::Write)) {
+        pmm::free_page(frame);
+        return false;
+    }
+    ++p->user_pages;
+    __atomic_add_fetch(&g_demand_faults, 1, __ATOMIC_RELAXED);
+    return true;
+}
+
+uint64_t demand_faults() { return g_demand_faults; }
+
 bool check_read(const void* address, uint64_t length) {
     Process* p = current();
-    return p && vmm::space_check(p->pml4, reinterpret_cast<uint64_t>(address), length, false);
+    if (!p) return false;
+    populate(p, reinterpret_cast<uint64_t>(address), length);
+    return vmm::space_check(p->pml4, reinterpret_cast<uint64_t>(address), length, false);
 }
 
 bool check_write(const void* address, uint64_t length) {
     Process* p = current();
-    return p && vmm::space_check(p->pml4, reinterpret_cast<uint64_t>(address), length, true);
+    if (!p) return false;
+    populate(p, reinterpret_cast<uint64_t>(address), length);
+    return vmm::space_check(p->pml4, reinterpret_cast<uint64_t>(address), length, true);
 }
 
 namespace {
@@ -899,6 +944,7 @@ int64_t sys_protect(uint64_t address, uint64_t length, uint64_t flags) {
     vmm::PageFlags f = vmm::PageFlags::None;
     if (flags & 1) f = f | vmm::PageFlags::Write;
     if (flags & 2) f = f | vmm::PageFlags::Execute;
+    populate(p, address, length);  // reserved pages nobody touched yet exist from now on
     for (uint64_t v = address; v < address + mem::align_up(length, kPage); v += kPage)
         if (!vmm::space_protect(p->pml4, v, f)) return kErrBadAddress;
     return 0;
@@ -1183,7 +1229,7 @@ int64_t sys_alloc(uint64_t bytes) {
             p->alloc_next += size;
         }
     }
-    if (!map_pages(p, at, at + size, vmm::PageFlags::Write)) return kErrNoMemory;  // mapped pages are freed at exit
+    // Only reserved: every page appears zeroed on its first touch (demand_page); unmap gives them back.
     return int64_t(at);
 }
 

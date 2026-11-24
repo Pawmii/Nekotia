@@ -132,6 +132,7 @@ public static unsafe class Program
         Sockets();
         Exceptions();
         FutexAndPages();
+        DemandPaging();
         Ipc();
         Devices();
 
@@ -492,6 +493,40 @@ public static unsafe class Program
             if (info.Pid == Process.Id())
                 return info.MemoryKib;
         return 0;
+    }
+
+    static void DemandPaging()
+    {
+        ulong before = MemoryKib();
+        byte* big = (byte*)Memory.MapPages(32 * 1024 * 1024);
+        ulong reserved = MemoryKib();
+        Check(big != null && reserved - before < 64, "demand paging: 32 MiB reserved cost (almost) nothing");
+        bool zero = true;
+        for (int i = 0; i < 32 * 1024 * 1024; i += 4096) {
+            zero &= big[i] == 0;
+            big[i] = 1;
+        }
+        ulong touched = MemoryKib();
+        Check(zero && touched - before >= 32 * 1024 && touched - before < 33 * 1024, "demand paging: pages appear zeroed when first touched");
+        long fd = File.Open("/proc/version", File.Read);
+        byte* fresh = (byte*)Memory.MapPages(1 << 20);
+        Check(fd >= 0 && File.ReadBytes((int)fd, fresh + 512 * 1024, 64) > 0 && fresh[512 * 1024] == 'N',
+              "demand paging: the kernel can read() into pages nobody touched yet");
+        File.Close((int)fd);
+        Memory.UnmapPages(fresh, 1 << 20);
+        Memory.UnmapPages(big, 32 * 1024 * 1024);
+        Check(MemoryKib() - before < 64, "demand paging: unmap gives the touched pages back");
+        Check(Deep(1500) == 1500, "the stack grows on demand (deep recursion, ~800 KiB)");
+    }
+
+    /// About 550 bytes of stack per level.
+    static int Deep(int n)
+    {
+        byte* pad = stackalloc byte[512];
+        pad[0] = (byte)n;
+        if (n == 0)
+            return pad[0];
+        return Deep(n - 1) + 1 + pad[0] - (byte)n;
     }
 
     static void FutexAndPages()

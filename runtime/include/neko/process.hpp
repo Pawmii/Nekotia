@@ -133,7 +133,8 @@ constexpr uint64_t kUserMapBase = 0x0000200000000000ull;              // mmap()e
 constexpr uint64_t kUserMapLimit = kUserMapBase + (64ull << 30);
 constexpr uint32_t kMaxMappings = 32;      // per process
 constexpr uint64_t kUserStackTop = 0x00007fffffff0000ull;
-constexpr uint64_t kUserStackSize = 256 * 1024;
+constexpr uint64_t kUserStackSize = 1024 * 1024;   // reserved; pages appear when touched (demand paging)
+constexpr uint64_t kUserStackMapped = 16 * 1024;   // mapped at start (argv lives there)
 constexpr uint64_t kUserEnd = 0x0000800000000000ull;  // first non-canonical address
 
 enum class State : uint8_t { Running = 0, Exited = 1 };
@@ -184,6 +185,11 @@ bool interrupt_foreground();
 uint32_t foreground();  // pid, 0 = kernel
 // Called before returning to ring 3: ends the current thread if it was killed.
 void check_killed();
+// Demand paging: `address` lies in memory the current process reserved but never touched (the alloc area
+// below alloc_next and outside the holes, or its stack): a zeroed page is mapped there and true returned —
+// the faulting instruction simply runs again. False: a real fault.
+bool demand_page(uint64_t address);
+uint64_t demand_faults();  // pages mapped this way since boot
 
 struct ProcessInfo {
     uint32_t pid;

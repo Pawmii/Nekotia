@@ -513,6 +513,8 @@ bool thread_info(uint32_t index, ThreadInfo& out) {
 
 uint64_t context_switches() { return g_switches; }
 
+uint64_t cached_stack_pages() { return uint64_t(g_free_stack_count) * (kStackSize / 4096); }
+
 uint64_t idle_ms() {
     uint64_t sum = 0;
     for (uint32_t i = 0; i < smp::kMaxCpus; ++i) sum += smp::g_cpus[i].idle_ms;

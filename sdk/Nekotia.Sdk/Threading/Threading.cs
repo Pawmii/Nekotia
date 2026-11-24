@@ -80,6 +80,10 @@ public static unsafe class Thread
 
     [Native("::neko::sched::idle_ms")]
     public static extern ulong IdleMs();
+
+    /// <summary>Pages in kernel stacks of exited threads, kept for the next thread.</summary>
+    [Native("::neko::sched::cached_stack_pages")]
+    public static extern ulong CachedStackPages();
 }
 
 /// <summary>
