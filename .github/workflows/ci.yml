@@ -19,7 +19,7 @@ jobs:
       - name: Toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld llvm qemu-system-x86 xorriso ovmf python3 make gdb
+          sudo apt-get install -y clang lld llvm qemu-system-x86 xorriso ovmf python3 make gdb e2fsprogs
           scripts/fetch-limine.sh
 
       - name: nekoc

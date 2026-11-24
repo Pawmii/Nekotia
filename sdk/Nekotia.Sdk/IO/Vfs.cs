@@ -70,6 +70,17 @@ public static unsafe class Fat
     public static extern bool Probe(byte* device);
 }
 
+/// <summary>ext2 / ext3 / ext4 volumes, read-only (runtime/src/fs/ext2.cpp).</summary>
+public static unsafe class Ext2
+{
+    /// <summary>Mounts the volume on <paramref name="device"/> at the empty directory <paramref name="dir"/>.</summary>
+    [Native("::neko::ext2::mount")]
+    public static extern long Mount(byte* device, byte* dir);
+
+    [Native("::neko::ext2::probe")]
+    public static extern bool Probe(byte* device);
+}
+
 /// <summary>
 /// The virtual file system (runtime/src/core/vfs.cpp): ramfs at /, the initrd unpacked into it, devices in /dev.
 /// Paths are absolute or relative to the working directory (kernel threads share one). Results are 0 / counts,

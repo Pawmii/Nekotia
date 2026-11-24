@@ -284,11 +284,11 @@ public static unsafe class Files
             return;
         }
         Split(dir);
-        long e = Fat.Mount(args, dir);
+        long e = Ext2.Probe(args) ? Ext2.Mount(args, dir) : Fat.Mount(args, dir);   // ext2/3/4 read-only, or FAT32
         if (e == Process.ErrNotSupported) {
             Terminal.Write(AnsiColor.BrightRed, "mount: ");
             Terminal.Write(args);
-            Terminal.WriteLine(AnsiColor.BrightRed, ": not a FAT32 volume (format it with `mkfs`)");
+            Terminal.WriteLine(AnsiColor.BrightRed, ": neither FAT32 nor a readable ext2/3/4 (format FAT32 with `mkfs`)");
         } else if (e < 0) {
             Fail("mount", args, e);
         }

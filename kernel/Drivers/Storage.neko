@@ -37,12 +37,13 @@ public static unsafe class Storage
         t.Write("/media/");
         t.Write(info.Name);
         if (added) {
-            unless (Fat.Probe(info.Name)) {
-                Log.Info($"storage: {info.Name} ({info.Model}) has no FAT32 file system — /dev/{info.Name} only");
+            bool ext = Ext2.Probe(info.Name);
+            unless (ext || Fat.Probe(info.Name)) {
+                Log.Info($"storage: {info.Name} ({info.Model}) has no FAT32 or ext2/3/4 file system — /dev/{info.Name} only");
                 return;
             }
             Vfs.CreateDirectory(dir);
-            long r = Fat.Mount(info.Name, dir);
+            long r = ext ? Ext2.Mount(info.Name, dir) : Fat.Mount(info.Name, dir);
             if (r < 0) {
                 Log.Warn($"storage: mounting {info.Name} at {dir} failed: {Process.ErrorText(r)}");
                 return;

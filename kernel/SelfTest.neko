@@ -846,6 +846,8 @@ public static unsafe class SelfTest
         DiskTest("nvme0n1");
         ParallelDisk("nvme0n1");
         CacheTest("vda");
+        ExtTest("vdc", "ext2");
+        ExtTest("vdd", "ext4");
         int cd = Block.Find("cd0");
         BlockInfo info = default;
         byte* sector = (byte*)Heap.Alloc(2048);
@@ -884,6 +886,41 @@ public static unsafe class SelfTest
             after += u.Reports;
         }
         Check(after > before, "usb: interrupt endpoints deliver reports");
+    }
+
+    /// A read-only ext2 (1 KiB blocks: block map up to double-indirect) or ext4 (extents) volume made by
+    /// scripts/make-ext-images.sh: the same files on both.
+    static void ExtTest(string device, string kind)
+    {
+        int d = Block.Find(device);
+        if (d < 0 || !Ext2.Probe(Str.Bytes(device)))
+            return;
+        byte* dir = Str.Bytes("/tmp/ext");
+        Vfs.CreateDirectory(dir);
+        Check(Ext2.Mount(Str.Bytes(device), dir) == 0, Str.Equals(kind, "ext2") ? "ext2: mount (read-only)" : "ext4: mount (read-only)");
+        byte* buf = (byte*)Heap.Alloc(300000);
+        defer Heap.Free(buf);
+        OpenFile* f = null;
+        long n = Vfs.Open("/tmp/ext/hello.txt", Vfs.Read, out f) == 0 ? Vfs.ReadFile(f, buf, 64) : -1;
+        if (f != null)
+            Vfs.Close(f);
+        Check(n == 16 && buf[0] == 'h' && buf[14] == '2', "ext: a small file");
+        f = null;
+        n = Vfs.Open("/tmp/ext/big.bin", Vfs.Read, out f) == 0 ? Vfs.ReadFile(f, buf, 300000) : -1;
+        bool same = n == 300000;
+        for (int i = 0; same && i < 300000; i++)
+            same = buf[i] == (byte)((i * 7) + (i >> 12));
+        Check(same, Str.Equals(kind, "ext2") ? "ext2: a 300 KB file through indirect and double-indirect blocks" : "ext4: a 300 KB file through extents");
+        if (f != null) {
+            Check(Vfs.WriteFile(f, buf, 1) < 0, "ext: the volume is read-only");
+            Vfs.Close(f);
+        }
+        f = null;
+        n = Vfs.Open("/tmp/ext/docs/deep/deeper/note.txt", Vfs.Read, out f) == 0 ? Vfs.ReadFile(f, buf, 64) : -1;
+        if (f != null)
+            Vfs.Close(f);
+        Check(n == 23 && buf[0] == 0xD0, "ext: nested directories, a UTF-8 file");
+        Check(Vfs.Unmount(dir) == 0 && Vfs.Remove(dir) == 0, "ext: unmount");
     }
 
     /// The write-back cache: a second read is a hit, a write waits in the cache until flush writes it back.

@@ -13,6 +13,7 @@
 #include <neko/crash.hpp>
 #include <neko/exception.hpp>
 #include <neko/fat.hpp>
+#include <neko/ext2.hpp>
 #include <neko/fmt.hpp>
 #include <neko/log.hpp>
 #include <neko/cpu.hpp>

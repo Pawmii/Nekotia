@@ -286,6 +286,8 @@ TEST_TIMEOUT ?= 60
 # sda: a SATA disk on the q35 AHCI controller (the boot CD is cd0 on the same controller); nvme0n1: NVMe.
 TEST_DISK_FLAGS = -drive file=$(TEST_DISK),if=none,id=disk0,format=raw -device virtio-blk-pci,drive=disk0 \
                   -drive file=$(TEST_FAT),if=none,id=disk1,format=raw -device virtio-blk-pci,drive=disk1 \
+                  -drive file=$(BUILD)/test-ext2.img,if=none,id=disk2,format=raw,readonly=on -device virtio-blk-pci,drive=disk2 \
+                  -drive file=$(BUILD)/test-ext4.img,if=none,id=disk3,format=raw,readonly=on -device virtio-blk-pci,drive=disk3 \
                   -drive file=$(TEST_SATA),if=none,id=sata0,format=raw -device ide-hd,drive=sata0,bus=ide.0 \
                   -drive file=$(TEST_NVME),if=none,id=nvme0,format=raw -device nvme,serial=nekotia-test,drive=nvme0 \
                   -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
@@ -294,7 +296,7 @@ TEST_DISK_FLAGS = -drive file=$(TEST_DISK),if=none,id=disk0,format=raw -device v
                   -drive file=$(TEST_USB),if=none,id=stick0,format=raw -device usb-storage,bus=xhci.0,port=2.2,drive=stick0
 
 test: $(BUILD)/nekotia-test.iso
-	@rm -f $(TEST_DISK) $(TEST_FAT); truncate -s 8M $(TEST_DISK); truncate -s 64M $(TEST_FAT); rm -f $(TEST_SATA) $(TEST_NVME); truncate -s 8M $(TEST_SATA); truncate -s 8M $(TEST_NVME); rm -f $(TEST_USB); truncate -s 8M $(TEST_USB)
+	@rm -f $(TEST_DISK) $(TEST_FAT); truncate -s 8M $(TEST_DISK); truncate -s 64M $(TEST_FAT); rm -f $(TEST_SATA) $(TEST_NVME); truncate -s 8M $(TEST_SATA); truncate -s 8M $(TEST_NVME); rm -f $(TEST_USB); truncate -s 8M $(TEST_USB); scripts/make-ext-images.sh $(BUILD) >/dev/null
 	@echo "== QEMU (BIOS)"; timeout $(TEST_TIMEOUT) $(QEMU) $(TEST_FLAGS) $(TEST_DISK_FLAGS) -cdrom $< > $(BUILD)/test-bios.log 2>&1; \
 	  status=$$?; sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' $(BUILD)/test-bios.log | grep -aE '^(  (ok|FAIL)|selftest)'; \
 	  if [ $$status -ne 1 ]; then echo "test (BIOS): FAILED (status $$status, log: $(BUILD)/test-bios.log)"; exit 1; fi
