@@ -108,6 +108,10 @@ public static class Time
 {
     [Native("::neko::user::uptime_ms")]
     public static extern ulong UptimeMs();
+
+    /// <summary>The CPU's time stamp counter (cycles at the frequency /proc/cpuinfo reports) — for profiling.</summary>
+    [Native("::neko::user::rdtsc")]
+    public static extern ulong Cycles();
 }
 
 /// <summary>The program's heap: first fit over pages the kernel maps on demand (the alloc system call).</summary>
@@ -130,6 +134,10 @@ public static unsafe class Memory
 
     [Native("::neko::user::mem_copy")]
     public static extern void Copy(void* destination, void* source, ulong bytes);
+
+    /// <summary>Copy into write-combining memory such as a mapped framebuffer (non-temporal stores).</summary>
+    [Native("::neko::user::mem_copy_stream")]
+    public static extern void CopyStream(void* destination, void* source, ulong bytes);
 
     /// <summary>Like Copy, for overlapping ranges.</summary>
     [Native("::neko::user::mem_move")]

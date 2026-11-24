@@ -315,6 +315,7 @@ void stack(const Report& r) {
 // ---------------------------------------------------------------- screen
 
 void title(const Report& r) {
+    display::emergency_reset();  // buffer 0 on screen: a display server may have flipped to another
     console::set_paused(false);  // take the screen back from a display server
     bool screen = console::ready();
     color(kText);

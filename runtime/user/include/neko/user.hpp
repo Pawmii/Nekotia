@@ -173,11 +173,48 @@ void free(void* block);
 uint64_t heap_used();
 uint64_t heap_total();
 
+// ---- time stamp counter (profiling: cycles; /proc/cpuinfo has the frequency)
+inline uint64_t rdtsc() {
+    uint32_t lo, hi;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return (uint64_t(hi) << 32) | lo;
+}
+
 // ---- raw memory (rep movs / stos)
 inline void mem_copy(void* dst, const void* src, uint64_t n) { __builtin_memcpy(dst, src, n); }
 inline void mem_move(void* dst, const void* src, uint64_t n) { __builtin_memmove(dst, src, n); }
 inline void mem_set(void* dst, uint8_t value, uint64_t n) { __builtin_memset(dst, value, n); }
+// Copy into write-combining memory (a framebuffer): 16-byte non-temporal stores, then a fence.
+inline void mem_copy_stream(void* dst, const void* src, uint64_t n) {
+    auto* d = static_cast<uint8_t*>(dst);
+    auto* s = static_cast<const uint8_t*>(src);
+    while (n && (reinterpret_cast<uint64_t>(d) & 15)) {
+        *d++ = *s++;
+        --n;
+    }
+    typedef long long v2 __attribute__((vector_size(16), aligned(1)));
+    for (; n >= 64; n -= 64, d += 64, s += 64) {
+        v2 a = *reinterpret_cast<const v2*>(s), b = *reinterpret_cast<const v2*>(s + 16);
+        v2 c = *reinterpret_cast<const v2*>(s + 32), e = *reinterpret_cast<const v2*>(s + 48);
+        __builtin_nontemporal_store(a, reinterpret_cast<v2*>(d));
+        __builtin_nontemporal_store(b, reinterpret_cast<v2*>(d + 16));
+        __builtin_nontemporal_store(c, reinterpret_cast<v2*>(d + 32));
+        __builtin_nontemporal_store(e, reinterpret_cast<v2*>(d + 48));
+    }
+    __builtin_memcpy(d, s, n);
+    __asm__ volatile("sfence" : : : "memory");
+}
+
 inline void mem_fill32(uint32_t* dst, uint32_t value, uint64_t count) {
+    if (count >= 16) {  // 8 bytes per step (see memcpy in freestanding/libc.cpp)
+        if (reinterpret_cast<uint64_t>(dst) & 4) {
+            *dst++ = value;
+            --count;
+        }
+        uint64_t words = count / 2;
+        __asm__ volatile("rep stosq" : "+D"(dst), "+c"(words) : "a"((uint64_t(value) << 32) | value) : "memory");
+        count &= 1;
+    }
     __asm__ volatile("rep stosl" : "+D"(dst), "+c"(count) : "a"(value) : "memory");
 }
 

@@ -16,7 +16,9 @@ struct Slot {
     Device dev;
     bool used;
     uint32_t owner;    // pid of the process that opened it for writing (0 = none; kernel threads: ~0)
-    uint64_t size;     // bytes, page aligned
+    uint32_t shown;    // buffer on screen
+    uint64_t stride;   // bytes from one buffer to the next (page aligned)
+    uint64_t size;     // bytes to map: every buffer
     char path[12];
 };
 
@@ -65,6 +67,10 @@ void fb_close(void* context, uint32_t flags) {
     {
         sync::ScopedLock guard(g_lock);
         s->owner = 0;
+        if (s->shown && s->dev.driver->flip) {
+            s->shown = 0;  // the console lives in buffer 0
+            s->dev.driver->flip(s->dev.context, 0);
+        }
     }
     if (s->dev.driver->owner_changed) s->dev.driver->owner_changed(s->dev.context, 0);
     if (s->dev.flags & kPrimary) term::pause_console(false);  // the console repaints the whole screen
@@ -112,6 +118,24 @@ void fill_info(const Slot& s, Info& out) {
     str::copy(reinterpret_cast<char*>(out.driver), s.dev.driver->name, sizeof(out.driver));
     out.refresh_hz = s.dev.refresh_hz;
     out.owner = s.owner == ~0u ? 0 : s.owner;
+    out.buffers = s.dev.buffers ? s.dev.buffers : 1;
+    out.shown = s.shown;
+    out.buffer_offset = s.stride;
+}
+
+// The next vertical blank: from the driver, or a software clock at the refresh rate (60 Hz by default).
+Vblank next_vblank(const Slot& s) {
+    Vblank v{};
+    if (s.dev.driver->vblank && s.dev.driver->vblank(s.dev.context, v)) {
+        v.hardware = 1;
+        return v;
+    }
+    uint32_t hz = s.dev.refresh_hz ? s.dev.refresh_hz : 60;
+    v.period_us = 1000000 / hz;
+    uint64_t now_us = time::uptime_ms() * 1000;
+    v.sequence = now_us / v.period_us;
+    v.next_ms = ((v.sequence + 1) * v.period_us + 999) / 1000;
+    return v;
 }
 
 int64_t fb_control(void* context, uint32_t flags, uint64_t request, uint64_t arg) {
@@ -139,6 +163,27 @@ int64_t fb_control(void* context, uint32_t flags, uint64_t request, uint64_t arg
             return 0;
         }
     }
+    if (request == kIoctlFlip) {
+        if (!(flags & vfs::kWrite)) return kErrAccess;
+        uint32_t buffers = s->dev.buffers ? s->dev.buffers : 1;
+        if (arg >= buffers) return kErrBadArgument;
+        sync::ScopedLock guard(g_lock);
+        if (buffers > 1 && s->dev.driver->flip) s->dev.driver->flip(s->dev.context, uint32_t(arg));
+        s->shown = uint32_t(arg);
+        return 0;
+    }
+    if (request == kIoctlVblank) {
+        Vblank v = next_vblank(*s);
+        return copy_to_user(reinterpret_cast<void*>(arg), &v, sizeof(v)) ? 0 : kErrBadAddress;
+    }
+    if (request == kIoctlWaitVblank) {
+        Vblank v = next_vblank(*s);
+        while (time::uptime_ms() < v.next_ms) {
+            if (sched::killed()) return kErrInterrupted;
+            sched::sleep_ms(v.next_ms - time::uptime_ms());
+        }
+        return 0;
+    }
     if (request >= kIoctlDriverBase && s->dev.driver->control) return s->dev.driver->control(s->dev.context, flags, request, arg);
     return kErrNotSupported;
 }
@@ -147,7 +192,15 @@ const vfs::DeviceOps kFbOps = {fb_read, fb_write, fb_size, fb_close, nullptr, fb
 
 // ---------------------------------------------------------------- bootfb
 
-const Driver kBootFb = {"bootfb", nullptr, nullptr, nullptr};
+const Driver kBootFb = {"bootfb", nullptr, nullptr, nullptr, nullptr, nullptr};
+
+void describe(Slot* s, const Device& d) {
+    s->dev = d;
+    if (s->dev.buffers == 0) s->dev.buffers = 1;
+    s->stride = mem::align_up(uint64_t(d.pitch) * d.height, kPage);
+    s->size = s->stride * s->dev.buffers;
+    s->shown = 0;
+}
 
 }  // namespace
 
@@ -159,9 +212,8 @@ int32_t add(const Device& d) {
         if (g_count == kMaxDisplays) return -1;
         index = int32_t(g_count++);
         s = &g_slots[index];
-        s->dev = d;
+        describe(s, d);
         if (index == 0) s->dev.flags |= kPrimary;
-        s->size = mem::align_up(uint64_t(d.pitch) * d.height, kPage);
         s->used = true;
         str::copy(s->path, "/dev/fb0", sizeof(s->path));
         s->path[7] = char('0' + index);
@@ -179,6 +231,30 @@ bool info(uint32_t index, Info& out) {
     if (index >= g_count) return false;
     fill_info(g_slots[index], out);
     return true;
+}
+
+bool replace(uint32_t index, const Device& d) {
+    Slot* s;
+    {
+        sync::ScopedLock guard(g_lock);
+        if (index >= g_count || g_slots[index].owner) return false;
+        s = &g_slots[index];
+        uint32_t primary = s->dev.flags & kPrimary;
+        describe(s, d);
+        s->dev.flags |= primary;
+    }
+    log::info((Line() << "display: " << s->path << " now driven by " << d.driver->name << ", " << uint64_t(s->dev.buffers)
+                      << (s->dev.buffers > 1 ? " buffers (page flipping)" : " buffer")).text);
+    return true;
+}
+
+const Device* get(uint32_t index) { return index < g_count ? &g_slots[index].dev : nullptr; }
+
+void emergency_reset() {
+    if (g_count == 0) return;
+    Slot& s = g_slots[0];  // no lock: the machine is stopping, and other CPUs are halted
+    if (s.shown && s.dev.driver->flip) s.dev.driver->flip(s.dev.context, 0);
+    s.shown = 0;
 }
 
 bool owned(uint32_t index) {

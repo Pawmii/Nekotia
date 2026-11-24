@@ -4,14 +4,27 @@
 
 extern "C" {
 
+// Big copies move 8 bytes per step: as fast as `rep movsb` on hardware with ERMSB, and many times faster under
+// emulation (QEMU TCG runs string instructions element by element — a framebuffer copy went from ~50 ms to a few).
 void* memcpy(void* dst, const void* src, size_t n) {
     void* ret = dst;
+    if (n >= 64) {
+        size_t words = n / 8;
+        __asm__ volatile("rep movsq" : "+D"(dst), "+S"(src), "+c"(words) : : "memory");
+        n &= 7;
+    }
     __asm__ volatile("rep movsb" : "+D"(dst), "+S"(src), "+c"(n) : : "memory");
     return ret;
 }
 
 void* memset(void* dst, int value, size_t n) {
     void* ret = dst;
+    if (n >= 64) {
+        uint64_t pattern = 0x0101010101010101ull * uint8_t(value);
+        size_t words = n / 8;
+        __asm__ volatile("rep stosq" : "+D"(dst), "+c"(words) : "a"(pattern) : "memory");
+        n &= 7;
+    }
     __asm__ volatile("rep stosb" : "+D"(dst), "+c"(n) : "a"(value) : "memory");
     return ret;
 }

@@ -60,7 +60,7 @@ public static unsafe class Proc
         Text t = new Text(buffer, capacity);
         DisplayInfo d = default;
         for (uint i = 0; Displays.GetInfo(i, out d); i++) {
-            t.WriteLine($"fb{i} {d.Width}x{d.Height} {d.Bpp}bpp pitch {d.Pitch} driver {d.Driver} owner {d.Owner}");
+            t.WriteLine($"fb{i} {d.Width}x{d.Height} {d.Bpp}bpp pitch {d.Pitch} driver {d.Driver} buffers {d.Buffers} owner {d.Owner}");
         }
         InputStats s = Input.Stats();
         t.WriteLine($"input events {s.Events} dropped {s.Dropped} grabbed_by {s.GrabbedBy}");

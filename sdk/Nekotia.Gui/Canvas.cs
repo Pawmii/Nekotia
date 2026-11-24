@@ -230,8 +230,14 @@ public unsafe struct Canvas
     {
         Rect s = r.Offset(0, dy);
         Rect area = s.Inflate(size).Intersect(Clip);
-        if (area.IsEmpty || size <= 0)
+        if (area.IsEmpty || size <= 0 || size > 64)
             return;
+        // Alpha for every squared distance: (1 - d/size)^2 × strength, so the loop below needs no square roots.
+        uint* alphaOf = stackalloc uint[size * size];
+        for (int d2 = 0; d2 < size * size; d2++) {
+            double t = 1 - Maths.Sqrt(d2) / size;
+            alphaOf[d2] = (uint)(strength * t * t);
+        }
         for (int y = area.Y; y < area.Bottom; y++) {
             int ddy = y < s.Y ? s.Y - y : y >= s.Bottom ? y - s.Bottom + 1 : 0;
             uint* row = Row(y);
@@ -248,9 +254,7 @@ public unsafe struct Canvas
                 int d2 = ddx * ddx + ddy * ddy;
                 if (d2 >= size * size)
                     continue;
-                // Quadratic fall-off: (1 - d/size)^2, computed without a square root.
-                double t = 1 - Maths.Sqrt(d2) / size;
-                uint a = (uint)(strength * t * t);
+                uint a = alphaOf[d2];
                 if (a != 0)
                     row[x] = Color.Blend(row[x], 0, a);
             }

@@ -81,20 +81,41 @@ public static unsafe class Render
 
     // ---------------------------------------------------------------- composing
 
+    // Profiling (nekowm -v): cycles per phase, summed until Report.
+    public static ulong Frames, Pixels, CyWall, CyShadow, CyDecor, CyContent, CyPanel, CyPresent;
+
     public static void Compose()
     {
         Canvas* b = Desktop.Back;
-        for (int i = 0; i < Desktop.Dirty.Count; i++)
-            ComposeRect(b, Desktop.Dirty.Get(i));
-        for (int i = 0; i < Desktop.Dirty.Count; i++)
-            Desktop.Output->Present(Desktop.Dirty.Get(i));
+        Frames++;
+        for (int i = 0; i < Desktop.Dirty.Count; i++) {
+            Rect r = Desktop.Dirty.Get(i);
+            Pixels += (ulong)r.Area;
+            ComposeRect(b, r);
+        }
+        ulong t = Time.Cycles();
+        fixed (Damage* d = &Desktop.Dirty) {
+            Desktop.Output->PresentFrame(d);   // flip to the new frame, or copy it to the screen
+        }
+        CyPresent += Time.Cycles() - t;
         Desktop.Dirty.Clear();
+    }
+
+    public static void Report(ulong mhz, ulong ms)
+    {
+        if (Frames == 0)
+            return;
+        ulong k = mhz * 1000;   // cycles per ms
+        Console.WriteLine($"nekowm: {Frames * 1000 / ms} fps, {Pixels / Frames} px/frame; ms per frame: wallpaper {CyWall / Frames * 100 / k / 100.0:F2} shadow {CyShadow * 100 / Frames / k / 100.0:F2} decor {CyDecor * 100 / Frames / k / 100.0:F2} content {CyContent * 100 / Frames / k / 100.0:F2} panel {CyPanel * 100 / Frames / k / 100.0:F2} present {CyPresent * 100 / Frames / k / 100.0:F2}");
+        Frames = Pixels = CyWall = CyShadow = CyDecor = CyContent = CyPanel = CyPresent = 0;
     }
 
     static void ComposeRect(Canvas* b, Rect r)
     {
         b->SetClip(r);
+        ulong t0 = Time.Cycles();
         b->Blit(Desktop.Wallpaper, r, r.X, r.Y);
+        CyWall += Time.Cycles() - t0;
         for (int k = 0; k < Desktop.StackCount; k++) {
             int i = Desktop.Stack[k];
             ServerWindow* w = WindowServer.Get(i);
@@ -107,11 +128,13 @@ public static unsafe class Render
             b->DrawRect(o, Theme.Accent);
             b->DrawRect(o.Inflate(-1), Theme.AccentDark);
         }
+        t0 = Time.Cycles();
         if (PanelRect().Overlaps(r))
             DrawPanel(b);
         if (Desktop.MenuOpen && MenuRect().Inflate(Desktop.ShadowSize).Overlaps(r))
             DrawMenu(b);
         Cursor.Draw(b, Desktop.CursorShape, Desktop.PointerX, Desktop.PointerY);
+        CyPanel += Time.Cycles() - t0;
         b->ResetClip();
     }
 
@@ -119,7 +142,10 @@ public static unsafe class Render
     {
         bool focused = index == Desktop.Focus;
         Rect f = Desktop.Frame(w);
+        ulong t0 = Time.Cycles();
         b->Shadow(f, Desktop.ShadowSize, focused ? 120u : 70u, Desktop.ShadowOffset);
+        ulong t1 = Time.Cycles();
+        CyShadow += t1 - t0;
         if (Desktop.Decorated(w)) {
             b->FillRoundRect(f, 9, focused ? FrameColor : FrameIdle, 3);
             Rect title = new Rect(f.X + 1, f.Y + 1, f.W - 2, Desktop.TitleHeight);
@@ -140,8 +166,11 @@ public static unsafe class Render
                 DrawButtons(b, index, w, focused);
             }
         }
+        ulong t2 = Time.Cycles();
+        CyDecor += t2 - t1;
         Canvas content = new Canvas(w->Pixels, w->Width, w->Height, w->Width);
         b->Blit(&content, content.Bounds, w->X, w->Y);
+        CyContent += Time.Cycles() - t2;
     }
 
     static void DrawButtons(Canvas* b, int index, ServerWindow* w, bool focused)

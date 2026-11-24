@@ -25,6 +25,10 @@ public unsafe struct DisplayInfo
     [Native("refresh_hz")] public uint RefreshHz;
     /// <summary>pid of the display server drawing on it, 0 = the console.</summary>
     [Native("owner")] public uint Owner;
+    /// <summary>2 when the driver can flip between two buffers.</summary>
+    [Native("buffers")] public uint Buffers;
+    [Native("shown")] public uint Shown;
+    [Native("buffer_offset")] public ulong BufferOffset;
 }
 
 /// <summary>

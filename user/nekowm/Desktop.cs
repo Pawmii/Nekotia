@@ -73,9 +73,13 @@ public static unsafe class Desktop
     static bool _quit;
 
     static InputDevice _input;
+    static bool _stats;    // nekowm -v: frame timings on stdout every 2 s
+    static ulong _mhz;
 
     public static int Main()
     {
+        _stats = Process.ArgCount() > 1 && Str.Equals(Process.Arg(1), "-v");
+        _mhz = CpuMhz();
         Output = Memory.New<Screen>();
         long r = Screen.Open(0, out *Output);
         if (r < 0) {
@@ -127,12 +131,18 @@ public static unsafe class Desktop
         PollFd* fds = stackalloc PollFd[WindowServer.MaxClients + 4];
         InputEvent* events = stackalloc InputEvent[64];
         long lastMinute = -1;
+        ulong lastReport = Time.UptimeMs();
+        ulong nextFrame = 0;   // uptime of the vertical blank the next frame waits for
         while (!_quit) {
             fds[0].Fd = _input.Fd;
             fds[0].Events = Poll.In;
             fds[0].Ready = 0;
             int n = WindowServer.FillPoll(fds, 1);
-            Poll.Wait(fds, (uint)n, Dirty.IsEmpty ? 1000 : 0);
+            // Pacing (vsync): with something to draw, wait at most until the next vertical blank and keep
+            // gathering input meanwhile — one frame per refresh, however fast the mouse moves.
+            ulong now = Time.UptimeMs();
+            long timeout = Dirty.IsEmpty ? 1000 : (now >= nextFrame ? 0 : (long)(nextFrame - now));
+            Poll.Wait(fds, (uint)n, timeout);
 
             if (fds[0].Ready != 0) {
                 int got = _input.Read(events, 64);
@@ -151,11 +161,40 @@ public static unsafe class Desktop
                 lastMinute = minute;
                 DamageRect(Render.ClockRect());
             }
-            if (!Dirty.IsEmpty) {
+            if (!Dirty.IsEmpty && Time.UptimeMs() >= nextFrame) {
                 Render.Compose();
                 WindowServer.SendFrames();
+                nextFrame = Output->NextVblankMs();
+            }
+            if (_stats && Time.UptimeMs() - lastReport >= 2000) {
+                Render.Report(_mhz, Time.UptimeMs() - lastReport);
+                lastReport = Time.UptimeMs();
             }
         }
+    }
+
+    /// "cpu MHz:" from /proc/cpuinfo (for the profiling numbers).
+    static ulong CpuMhz()
+    {
+        byte* text = stackalloc byte[512];
+        long fd = File.Open("/proc/cpuinfo", File.Read);
+        if (fd < 0)
+            return 1000;
+        long n = File.ReadBytes((int)fd, text, 511);
+        File.Close((int)fd);
+        text[n < 0 ? 0 : n] = 0;
+        for (byte* p = text; *p != 0; p++) {
+            if (Str.StartsWith(p, "cpu MHz:")) {
+                p += 8;
+                while (*p == ' ')
+                    p++;
+                ulong v = 0;
+                while (*p >= '0' && *p <= '9')
+                    v = v * 10 + (ulong)(*p++ - '0');
+                return v > 0 ? v : 1000;
+            }
+        }
+        return 1000;
     }
 
     // ---------------------------------------------------------------- damage helpers
