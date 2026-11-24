@@ -67,7 +67,7 @@
 - [ ] HPET, TSC-deadline, tickless-режим
 - [x] IRQ API в C#: `[Irq(n)]`, `Irq.Register(line, &Handler)`, счётчики прерываний
 - [x] PS/2 клавиатура на C# (scancode set 1, раскладки EN/RU по Alt+Shift, Caps Lock, Ctrl-коды, стрелки, F1–F12)
-- [x] USB HID клавиатура и мышь (фаза 6); [ ] PS/2 мышь
+- [x] USB HID клавиатура и мышь (фаза 6); PS/2 мышь (фаза 8)
 - [x] Текстовая консоль во фреймбуфере: PSF1/PSF2 (Terminus 8×16, кириллица), UTF-8, ANSI-цвета, прокрутка, курсор; `Terminal` в SDK
 - [x] Командная строка ядра на C#: история, Tab-дополнение, `info/mem/uptime/sleep/irq/colors/neko/selftest/reboot/shutdown…`
 - [ ] Двойная буферизация консоли и быстрая прокрутка (memmove по видеопамяти → теневой буфер)
@@ -165,7 +165,10 @@
 - [ ] IPv6, TCP timestamps, delayed ACK
 - [x] USB: xHCI (передача от BIOS, сброс, кольца команд/событий, scratchpad, MSI-X), перечисление устройств на
       корневых портах, HID boot-клавиатура (→ скан-коды PS/2 для драйвера на C#, автоповтор через SET_IDLE) и мышь; `lsusb`
-- [ ] USB: хабы, горячее подключение, накопители (mass storage)
+- [x] USB: хабы USB 2/3 любой глубины (route string, TT, SET_HUB_DEPTH), горячее подключение и извлечение (поток
+      `usb-hub`), флешки (Bulk-Only Transport + SCSI, сбросы при stall) → блочные `usbN`, FAT32 монтируется в
+      `/media/usbN` и отмонтируется при извлечении; `lsusb` деревом; самотест с хабом и флешкой за ним
+- [ ] USB: изохронные устройства (звук), UAS, несколько LUN
 
 ## Фаза 7 — Инструменты разработчика
 

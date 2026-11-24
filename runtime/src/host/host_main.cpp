@@ -164,6 +164,7 @@ uint32_t count() { return 0; }
 bool info(uint32_t, Info&) { return false; }
 void set_keyboard_sink(ScancodeSink) {}
 Mouse mouse() { return Mouse{}; }
+Stats stats() { return Stats{}; }
 }  // namespace neko::usb
 
 namespace neko::arch {

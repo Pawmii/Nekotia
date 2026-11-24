@@ -8,7 +8,7 @@ public unsafe struct UsbDevice
     [Native("port")] public byte Port;
     /// <summary>1 full (12 Mbit/s), 2 low (1.5), 3 high (480), 4 super (5 Gbit/s).</summary>
     [Native("speed")] public byte Speed;
-    /// <summary>0 other, 1 keyboard, 2 mouse.</summary>
+    /// <summary>0 other, 1 keyboard, 2 mouse, 3 hub, 4 storage.</summary>
     [Native("kind")] public byte Kind;
     [Native("vendor_id")] public ushort VendorId;
     [Native("product_id")] public ushort ProductId;
@@ -17,6 +17,20 @@ public unsafe struct UsbDevice
     [Native("protocol")] public byte Protocol;
     [Native("product")] public fixed byte Product[40];
     [Native("reports")] public ulong Reports;
+    /// <summary>Slot of the hub it hangs on, 0 = a root port (then Port is the root port).</summary>
+    [Native("parent")] public byte Parent;
+    [Native("depth")] public byte Depth;
+    [Native("hub_ports")] public byte HubPorts;
+    /// <summary>Storage: its block device ("usb0").</summary>
+    [Native("disk")] public fixed byte Disk[8];
+}
+
+/// <summary>Mirrors <c>neko::usb::Stats</c>.</summary>
+[Native("::neko::usb::Stats")]
+public struct UsbStats
+{
+    [Native("attached")] public ulong Attached;
+    [Native("detached")] public ulong Detached;
 }
 
 /// <summary>Mirrors <c>neko::usb::Mouse</c>: movement summed since boot.</summary>
@@ -45,4 +59,7 @@ public static unsafe class Usb
 
     [Native("::neko::usb::mouse")]
     public static extern UsbMouse Mouse();
+
+    [Native("::neko::usb::stats")]
+    public static extern UsbStats Stats();
 }

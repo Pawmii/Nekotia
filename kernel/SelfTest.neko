@@ -860,6 +860,18 @@ public static unsafe class SelfTest
             mouse |= u.Kind == 2;
         }
         Check(keyboard && mouse, "usb: xHCI enumerated the HID keyboard and mouse");
+        bool hub = false, behind = false, stick = false;
+        for (uint i = 0; Usb.GetInfo(i, out u); i++) {
+            hub |= u.Kind == 3 && u.HubPorts > 0;
+            behind |= u.Parent != 0;
+            stick |= u.Kind == 4 && u.Disk[0] != 0;
+        }
+        if (hub)
+            Check(behind, "usb: a hub, and devices behind it (route string)");
+        if (stick) {
+            Check(Block.Find("usb0") >= 0, "usb: a mass-storage stick is block device usb0 (BOT + SCSI)");
+            DiskTest("usb0");
+        }
         ulong before = 0;
         for (uint i = 0; Usb.GetInfo(i, out u); i++) {
             before += u.Reports;

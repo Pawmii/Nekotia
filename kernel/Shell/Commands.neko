@@ -167,7 +167,7 @@ public static unsafe class Commands
         Section("System:");
         Line("info", "system information");
         Line("lspci [-v]", "PCI devices (-v: BARs, IRQ, capabilities)");
-        Line("lsusb", "USB devices (xHCI root ports), keyboard and mouse activity");
+        Line("lsusb", "USB devices: hubs and what hangs on them, sticks and their disks, keyboard and mouse activity");
         Line("dmesg", "the kernel log: the boot transcript, then leveled messages (also /proc/log)");
         Line("loglevel [L]", "show or set which messages reach the screen: debug info warn error");
         Line("mem", "memory, heap and page allocator statistics");
@@ -327,25 +327,38 @@ public static unsafe class Commands
     {
         uint n = Usb.Count();
         if (n == 0) {
-            Terminal.WriteLine("no USB devices (QEMU: -device qemu-xhci -device usb-kbd -device usb-mouse)");
+            Terminal.WriteLine("no USB devices (QEMU: -device qemu-xhci -device usb-kbd -device usb-hub -device usb-storage…)");
             return;
         }
         UsbDevice d = default;
         for (uint i = 0; Usb.GetInfo(i, out d); i++) {
-            Terminal.Write($"port {d.Port}  slot {d.Slot}  ");
+            for int k in 0..d.Depth { Terminal.Write("  "); }
+            if (d.Parent != 0)
+                Terminal.Write($"└ hub {d.Parent} port {d.Port}  slot {d.Slot}  ");
+            else
+                Terminal.Write($"port {d.Port}  slot {d.Slot}  ");
             Terminal.SetColor(AnsiColor.BrightCyan);
             Hex(d.VendorId, 4);
             Terminal.Write(":");
             Hex(d.ProductId, 4);
             Terminal.ResetColor();
             Terminal.Write(d.Speed == 4 ? "  5 Gbit/s  " : d.Speed == 3 ? "  480 Mbit/s  " : d.Speed == 2 ? "  1.5 Mbit/s  " : "  12 Mbit/s  ");
-            Terminal.Write(d.Kind == 1 ? "keyboard" : d.Kind == 2 ? "mouse" : "device");
+            Terminal.Write(d.Kind switch { 1 => "keyboard", 2 => "mouse", 3 => "hub", 4 => "storage", _ => "device" });
             if (d.Product[0] != 0) {
                 Terminal.Write(" — ");
                 Terminal.Write(d.Product);
             }
-            Terminal.WriteLine($", {d.Reports} report(s)");
+            if (d.Kind == 3)
+                Terminal.WriteLine($", {d.HubPorts} ports");
+            else if (d.Kind == 4 && d.Disk[0] != 0) {
+                Terminal.Write(" → /dev/");
+                Terminal.Write(d.Disk);
+                Terminal.WriteLine();
+            } else
+                Terminal.WriteLine($", {d.Reports} report(s)");
         }
+        UsbStats s = Usb.Stats();
+        Terminal.WriteLine($"{s.Attached} attached, {s.Detached} removed since boot (hot plug)");
         UsbMouse m = Usb.Mouse();
         if (m.Reports > 0)
             Terminal.WriteLine($"mouse: moved to ({m.X}, {m.Y}), wheel {m.Wheel}, buttons {m.Buttons}");

@@ -24,6 +24,7 @@ struct Info {
     bool read_only;
     uint64_t read_sectors;   // statistics
     uint64_t written_sectors;
+    bool removed;            // unplugged: every access fails, the name may come back with a new device
 };
 
 constexpr uint32_t kMaxDevices = 16;
@@ -33,6 +34,12 @@ int32_t add(const char* name, const char* model, uint64_t sectors, uint32_t sect
             const Ops* ops, void* context);
 // A disk in the kernel heap (zeroed), e.g. for tests and host mode. Index or Error.
 int32_t add_ramdisk(const char* name, uint64_t bytes);
+// The device is gone (USB stick pulled out): /dev/NAME disappears, reads and writes fail with kErrIo from now on.
+// Must not be called while the driver's ops are still running for it (the driver waits for its own I/O first).
+void remove(uint32_t index);
+// Hot plug: called (from the thread that added or removed the device) after add / remove. One handler.
+using Hotplug = void (*)(uint32_t index, bool added);
+void set_hotplug(Hotplug handler);
 
 uint32_t count();
 bool info(uint32_t index, Info& out);

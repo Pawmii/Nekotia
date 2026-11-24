@@ -1,0 +1,63 @@
+// Removable storage: USB sticks appear as block devices usb0, usb1 … (runtime/src/drivers/xhci.cpp). A FAT32
+// stick is mounted at /media/usbN as soon as it is plugged in and unmounted when it is pulled out (if nothing
+// there is open — otherwise its files simply fail from then on).
+using Nekotia;
+using Nekotia.Hal;
+using Nekotia.IO;
+using Nekotia.Processes;
+
+namespace Nekotia.OS.Drivers;
+
+public static unsafe class Storage
+{
+    public static ulong Mounted, Unmounted;
+
+    /// Mounts what was plugged in before the kernel got here, then follows hot plug.
+    public static void Init()
+    {
+        Vfs.CreateDirectory("/media");
+        BlockInfo info = default;
+        for (uint i = 0; Block.GetInfo(i, out info); i++) {
+            if (!info.Removed)
+                OnHotplug(i, true);
+        }
+        Block.SetHotplug(&OnHotplug);
+    }
+
+    static bool IsRemovable(byte* name) => name[0] == 'u' && name[1] == 's' && name[2] == 'b';
+
+    /// Runs on the USB hub thread (a kernel thread: it may block).
+    static void OnHotplug(uint index, bool added)
+    {
+        BlockInfo info = default;
+        if (!Block.GetInfo(index, out info) || !IsRemovable(info.Name))
+            return;
+        byte* dir = stackalloc byte[32];
+        Text t = new Text(dir, 32);
+        t.Write("/media/");
+        t.Write(info.Name);
+        if (added) {
+            unless (Fat.Probe(info.Name)) {
+                Log.Info($"storage: {info.Name} ({info.Model}) has no FAT32 file system — /dev/{info.Name} only");
+                return;
+            }
+            Vfs.CreateDirectory(dir);
+            long r = Fat.Mount(info.Name, dir);
+            if (r < 0) {
+                Log.Warn($"storage: mounting {info.Name} at {dir} failed: {Process.ErrorText(r)}");
+                return;
+            }
+            Mounted++;
+            Log.Info($"storage: {info.Name} ({info.Model}, {info.Sectors * info.SectorSize:size}) mounted at {dir}");
+        } else {
+            long r = Vfs.Unmount(dir);
+            if (r == 0) {
+                Vfs.Remove(dir);
+                Unmounted++;
+                Log.Info($"storage: {info.Name} removed, {dir} unmounted");
+            } else if (r != Process.ErrNotFound && r != Process.ErrBadArgument) {
+                Log.Warn($"storage: {info.Name} pulled out while {dir} is in use: its files fail from now on");
+            }
+        }
+    }
+}

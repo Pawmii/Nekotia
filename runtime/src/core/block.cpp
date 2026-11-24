@@ -64,7 +64,30 @@ int64_t ram_write(void* context, uint64_t lba, uint32_t count, const void* buffe
 
 const Ops kRamOps = {ram_read, ram_write, nullptr};
 
+int64_t gone_read(void*, uint64_t, uint32_t, void*) { return kErrIo; }
+int64_t gone_write(void*, uint64_t, uint32_t, const void*) { return kErrIo; }
+const Ops kGoneOps = {gone_read, gone_write, nullptr};
+
+Hotplug g_hotplug = nullptr;
+
 }  // namespace
+
+void set_hotplug(Hotplug handler) { __atomic_store_n(&g_hotplug, handler, __ATOMIC_RELEASE); }
+
+void remove(uint32_t index) {
+    char path[32] = "/dev/";
+    {
+        sync::ScopedLock guard(g_lock);
+        Device* d = get(index);
+        if (!d || d->info.removed) return;
+        d->info.removed = true;
+        d->ops = &kGoneOps;
+        d->context = nullptr;
+        str::copy(path + 5, reinterpret_cast<const char*>(d->info.name), sizeof(path) - 5);
+    }
+    vfs::remove(path);
+    if (Hotplug h = __atomic_load_n(&g_hotplug, __ATOMIC_ACQUIRE)) h(index, false);
+}
 
 int32_t add(const char* name, const char* model, uint64_t sectors, uint32_t sector_size, bool read_only,
             const Ops* ops, void* context) {
@@ -73,8 +96,14 @@ int32_t add(const char* name, const char* model, uint64_t sectors, uint32_t sect
     uint32_t index;
     {
         sync::ScopedLock guard(g_lock);
-        if (g_count == kMaxDevices) return kErrLimit;
+        // a removed device's slot with the same name is reused (the stick came back), else a new one
         index = g_count;
+        for (uint32_t i = 0; i < g_count; ++i)
+            if (g_devices[i].info.removed && str::equals(reinterpret_cast<const char*>(g_devices[i].info.name), name)) index = i;
+        for (uint32_t i = 0; i < g_count; ++i)
+            if (str::equals(reinterpret_cast<const char*>(g_devices[i].info.name), name) && !g_devices[i].info.removed)
+                return kErrExists;
+        if (index == kMaxDevices) return kErrLimit;
         Device& d = g_devices[index];
         mem::set(&d, 0, sizeof(d));
         str::copy(reinterpret_cast<char*>(d.info.name), name, sizeof(d.info.name));
@@ -84,11 +113,12 @@ int32_t add(const char* name, const char* model, uint64_t sectors, uint32_t sect
         d.info.read_only = read_only || !ops->write;
         d.ops = ops;
         d.context = context;
-        __atomic_store_n(&g_count, index + 1, __ATOMIC_RELEASE);
+        if (index == g_count) __atomic_store_n(&g_count, index + 1, __ATOMIC_RELEASE);
     }
     char path[32] = "/dev/";
     str::copy(path + 5, name, sizeof(path) - 5);
     vfs::create_device(path, &kDevOps, reinterpret_cast<void*>(uintptr_t(index)));
+    if (Hotplug h = __atomic_load_n(&g_hotplug, __ATOMIC_ACQUIRE)) h(index, true);
     return int32_t(index);
 }
 
@@ -123,7 +153,8 @@ bool info(uint32_t index, Info& out) {
 
 int32_t find(const char* name) {
     for (uint32_t i = 0; i < count(); ++i)
-        if (str::equals(reinterpret_cast<const char*>(g_devices[i].info.name), name)) return int32_t(i);
+        if (!g_devices[i].info.removed && str::equals(reinterpret_cast<const char*>(g_devices[i].info.name), name))
+            return int32_t(i);
     return -1;
 }
 

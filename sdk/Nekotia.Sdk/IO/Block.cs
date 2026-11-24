@@ -11,6 +11,8 @@ public unsafe struct BlockInfo
     [Native("read_only")] public bool ReadOnly;
     [Native("read_sectors")] public ulong ReadSectors;
     [Native("written_sectors")] public ulong WrittenSectors;
+    /// <summary>Unplugged: every access fails.</summary>
+    [Native("removed")] public bool Removed;
 }
 
 /// <summary>
@@ -21,6 +23,10 @@ public static unsafe class Block
 {
     [Native("::neko::block::count")]
     public static extern uint Count();
+
+    /// <summary>Called (from a driver thread) when a device is added or removed — USB sticks.</summary>
+    [Native("::neko::block::set_hotplug")]
+    public static extern void SetHotplug(delegate*<uint, bool, void> handler);
 
     [Native("::neko::block::info")]
     public static extern bool GetInfo(uint index, out BlockInfo info);

@@ -170,6 +170,12 @@ struct Mutex {
     bool is_locked() const { return owner != nullptr; }
 };
 
+struct MutexGuard {
+    Mutex& m;
+    explicit MutexGuard(Mutex& mutex) : m(mutex) { m.lock(); }
+    ~MutexGuard() { m.unlock(); }
+};
+
 // Counting semaphore. signal() may be called from interrupt handlers.
 struct Semaphore {
     RawLock guard;

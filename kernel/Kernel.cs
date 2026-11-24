@@ -29,6 +29,7 @@ public static unsafe class Kernel
         }
         SelfTest.Run(false);
         MountDisk();
+        Storage.Init();
         Motd();
         Rtc.Init();
         Keyboard.Init();
