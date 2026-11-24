@@ -62,7 +62,10 @@ extern "C" void neko_isr_dispatch(crash::CpuState* f) {
     ++s->irq_depth;
     irq_dispatch(static_cast<uint8_t>(f->vector));
     --s->irq_depth;
-    if (f->cs & 3) proc::check_killed();  // killed while it ran in ring 3 (timer tick or a kick IPI)
+    if (f->cs & 3) {
+        proc::check_killed();  // killed while it ran in ring 3 (timer tick or a kick IPI)
+        proc::deliver_signals(f);
+    }
 }
 
 void idt_init() {

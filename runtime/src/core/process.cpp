@@ -453,8 +453,95 @@ int64_t kill(uint32_t pid, int64_t code) {
 
 bool interrupt_foreground() {
     uint32_t fg = __atomic_load_n(&g_foreground, __ATOMIC_ACQUIRE);
-    return fg != 0 && kill(fg, kExitInterrupted) == 0;
+    return fg != 0 && signal(fg, kSigInt) == 0;   // default action: exit code 130, as before
 }
+
+int64_t signal(uint32_t pid, uint32_t sig) {
+    if (sig == 0 || sig > kMaxSignal) return kErrBadArgument;
+    if (sig == kSigKill) return kill(pid, kExitKilled);
+    sync::ScopedLock guard(g_lock);
+    Process* p = find_locked(pid);
+    if (!p || p->state == State::Exited || p->exiting) return kErrNotFound;
+    uint64_t handler = p->sig_handlers[sig];
+    if (handler == 1 || (handler == 0 && sig == kSigChld)) return 0;  // ignored
+    if (handler == 0) {   // default: the process ends with 128 + sig (no need to reach ring 3 first)
+        terminate_locked(p, kKilledBase + sig);
+        if (p == current()) __atomic_store_n(&sched::current()->kill_pending, true, __ATOMIC_SEQ_CST);
+        return 0;
+    }
+    __atomic_or_fetch(&p->sig_pending, 1u << sig, __ATOMIC_ACQ_REL);
+    // Wake its threads out of blocking calls (they return kErrInterrupted) so one of them runs the handler.
+    sched::Thread* list[kMaxThreads + 1];
+    struct Ctx {
+        sched::Thread** list;
+        uint32_t n;
+    } ctx{list, 0};
+    sched::for_each_thread(p, [](sched::Thread* t, void* c) {
+        auto* x = static_cast<Ctx*>(c);
+        if (x->n < kMaxThreads + 1) x->list[x->n++] = t;
+    }, &ctx);
+    for (uint32_t i = 0; i < ctx.n; ++i) sched::poke(list[i]);
+    return 0;
+}
+
+namespace {
+
+// Rewrites the frame of the thread about to return to ring 3 so that it enters the runtime's signal
+// trampoline with (sig, handler), the interrupted context saved on its stack. True when it did.
+template <typename Frame>
+bool deliver(Frame* f) {
+    Process* p = current();
+    sched::Thread* t = sched::current();
+    if (!p || !t) return false;
+    for (;;) {
+        uint32_t pending = __atomic_load_n(&p->sig_pending, __ATOMIC_ACQUIRE) & ~t->sig_blocked;
+        if (!pending) return false;
+        uint32_t sig = uint32_t(__builtin_ctz(pending));
+        if (!(__atomic_fetch_and(&p->sig_pending, ~(1u << sig), __ATOMIC_ACQ_REL) & (1u << sig))) continue;  // another thread took it
+        uint64_t handler = p->sig_handlers[sig];
+        if (handler == 1 || (handler == 0 && sig == kSigChld)) continue;
+        if (handler == 0 || !p->sig_entry) exit_current(kKilledBase + sig);
+        SigContext ctx{f->r15, f->r14, f->r13, f->r12, f->r11, f->r10, f->r9, f->r8,
+                       f->rbp, f->rdi, f->rsi, f->rdx, f->rcx, f->rbx, f->rax,
+                       f->rip, f->rflags, f->rsp, sig, t->sig_blocked};
+        uint64_t at = ((f->rsp - 128 - sizeof(SigContext)) & ~15ull);  // below the red zone, 16-aligned
+        if (!copy_to_user(reinterpret_cast<void*>(at), &ctx, sizeof(ctx))) exit_current(kKilledBase + kSigSegv);
+        t->sig_blocked |= 1u << sig;  // not again until this handler returns
+        f->rip = p->sig_entry;
+        f->rsp = at;
+        f->rdi = sig;
+        f->rsi = handler;
+        return true;
+    }
+}
+
+int64_t sys_sigaction(uint64_t sig, uint64_t handler, uint64_t entry) {
+    Process* p = current();
+    if (sig == 0 || sig > kMaxSignal || sig == kSigKill || handler >= kUserEnd || entry >= kUserEnd) return kErrBadArgument;
+    sync::ScopedLock guard(g_lock);
+    uint64_t old = p->sig_handlers[sig];
+    p->sig_handlers[sig] = handler;
+    if (entry) p->sig_entry = entry;
+    return int64_t(old);
+}
+
+// Restores what deliver saved; returns false (the process is ended) when the context is unreadable.
+bool sys_sigreturn(SyscallFrame* f) {
+    SigContext ctx;
+    if (!copy_from_user(&ctx, reinterpret_cast<void*>(f->rsp), sizeof(ctx)) || ctx.rip >= kUserEnd || ctx.rsp >= kUserEnd)
+        exit_current(kKilledBase + kSigSegv);
+    f->r15 = ctx.r15, f->r14 = ctx.r14, f->r13 = ctx.r13, f->r12 = ctx.r12, f->r11 = ctx.r11, f->r10 = ctx.r10;
+    f->r9 = ctx.r9, f->r8 = ctx.r8, f->rbp = ctx.rbp, f->rdi = ctx.rdi, f->rsi = ctx.rsi, f->rdx = ctx.rdx;
+    f->rcx = ctx.rcx, f->rbx = ctx.rbx, f->rax = ctx.rax, f->rip = ctx.rip, f->rsp = ctx.rsp;
+    // Only flags a program may change (arithmetic, direction, trap…), interrupts always on.
+    f->rflags = (ctx.rflags & 0xDD5) | 0x202;
+    sched::current()->sig_blocked = uint32_t(ctx.blocked);
+    return true;
+}
+
+}  // namespace
+
+void deliver_signals(crash::CpuState* f) { deliver(f); }
 
 uint32_t foreground() { return g_foreground; }
 
@@ -1262,16 +1349,24 @@ int64_t sys_thread_create(uint64_t rip, uint64_t stack_top, uint64_t arg) {
 
 }  // namespace neko::proc
 
-extern "C" void neko_syscall_dispatch(neko::proc::SyscallFrame* f) {
+// Returns 1 when the frame must go back with iretq (every register restored: sigreturn, a signal handler
+// started), 0 for the fast sysret (which loses rcx and r11, as the syscall instruction allows).
+extern "C" uint64_t neko_syscall_dispatch(neko::proc::SyscallFrame* f) {
     using namespace neko;
     using namespace neko::proc;
     int64_t r = kErrNoSyscall;
+    if (f->rax == uint64_t(Syscall::SigReturn)) {
+        sys_sigreturn(f);
+        check_killed();
+        deliver(f);   // another signal may be waiting
+        return 1;
+    }
     if (f->rip >= kUserEnd) exit_current(kErrBadAddress);  // sysret to a non-canonical rip would fault in ring 0
     switch (Syscall(f->rax)) {
         case Syscall::Exit: exit_current(int64_t(f->rdi));
         case Syscall::Write:
             r = sys_write(f->rdi, f->rsi, f->rdx);
-            if (r == kErrBrokenPipe) exit_current(kExitBrokenPipe);  // the reader is gone: like SIGPIPE
+            if (r == kErrBrokenPipe) signal(current()->pid, kSigPipe);  // default: exit 141; a handler may catch it
             break;
         case Syscall::Read: r = sys_read(f->rdi, f->rsi, f->rdx); break;
         case Syscall::GetPid: r = current()->pid; break;
@@ -1314,6 +1409,8 @@ extern "C" void neko_syscall_dispatch(neko::proc::SyscallFrame* f) {
         case Syscall::IpcAccept: r = sys_ipc_accept(f->rdi); break;
         case Syscall::IpcSend: r = sys_ipc_send(f->rdi, f->rsi, f->rdx, f->r10); break;
         case Syscall::IpcRecv: r = sys_ipc_recv(f->rdi, f->rsi, f->rdx, f->r10); break;
+        case Syscall::SigAction: r = sys_sigaction(f->rdi, f->rsi, f->rdx); break;
+        case Syscall::SigSend: r = f->rdi > 0xFFFFFFFFu ? kErrNotFound : signal(uint32_t(f->rdi), uint32_t(f->rsi)); break;
         case Syscall::SetTls:
             if (f->rdi >= kUserEnd) {
                 r = kErrBadAddress;
@@ -1331,4 +1428,5 @@ extern "C" void neko_syscall_dispatch(neko::proc::SyscallFrame* f) {
     }
     f->rax = uint64_t(r);
     check_killed();
+    return deliver(f) ? 1 : 0;
 }

@@ -12,6 +12,8 @@
 //   usertest churn                   maps fresh memory in a loop, for many copies at once (allocator stress)
 //   usertest piperead                waits on a pipe nobody writes to (kill check)
 //   usertest ipcchild                the other side of the IPC check: connects, writes into shared memory it is sent
+//   usertest sigterm                 waits for SIGTERM with a handler, then exits 5
+//   usertest sigspin                 computes for a while (integers and doubles) while signals rain on it; 0 = intact
 using Nekotia;
 using Nekotia.User;
 
@@ -111,6 +113,15 @@ public static unsafe class Program
             }
             if (Str.Equals(mode, "ipcchild"))
                 return IpcChild();
+            if (Str.Equals(mode, "sigterm"))
+            {
+                Signal.Handle(Signal.Term, &OnTerm);
+                while (_signals == 0)
+                    Process.Sleep(1000);
+                return 5;
+            }
+            if (Str.Equals(mode, "sigspin"))
+                return SigSpin();
             if (Str.Equals(mode, "cwd"))
             {
                 byte* cwd = stackalloc byte[File.MaxPath];
@@ -133,6 +144,7 @@ public static unsafe class Program
         Exceptions();
         FutexAndPages();
         DemandPaging();
+        Signals();
         Ipc();
         Devices();
 
@@ -436,6 +448,101 @@ public static unsafe class Program
         File.Close((int)listener);
         File.Close((int)shm);
         Check(Channel.Connect("usertest-ipc") == Process.ErrNotFound, "closing the listener frees the name");
+    }
+
+    // ---------------------------------------------------------------- signals
+
+    static volatile int _signals;
+
+    static void OnSignal(int sig) => _signals += sig;
+
+    static void OnTerm(int sig) => _signals = 1;
+
+    static void SendLater(ulong pid)
+    {
+        Process.Sleep(50);
+        Signal.Send((uint)pid, Signal.Usr2);
+    }
+
+    static void Signals()
+    {
+        _signals = 0;
+        Check(Signal.Handle(Signal.Usr1, &OnSignal) == 0 && Signal.Send(Process.Id(), Signal.Usr1) == 0 && _signals == Signal.Usr1,
+              "signals: a handler runs (on our way back from the kernel)");
+        Signal.Handle(Signal.Usr2, &OnSignal);
+        ulong t = Thread.Start(&SendLater, Process.Id());
+        ulong start = Time.UptimeMs();
+        Process.Sleep(5000);
+        ulong slept = Time.UptimeMs() - start;
+        Thread.Join(t);
+        Check(slept < 2000 && _signals == Signal.Usr1 + Signal.Usr2, "signals: a signal cuts a sleep short");
+        Signal.Ignore(Signal.Int);
+        Check(Signal.Send(Process.Id(), Signal.Int) == 0, "signals: an ignored signal does nothing");
+        Signal.Handle(Signal.Int, null);
+
+        long child = Process.Start("usertest", "sleep");
+        Process.Sleep(20);
+        Check(Signal.Send((uint)child, Signal.Term) == 0 && Process.Wait((uint)child) == 128 + Signal.Term,
+              "signals: the default action ends the program with 128 + the number");
+        child = Process.Start("usertest", "sigterm");
+        Process.Sleep(30);
+        Signal.Send((uint)child, Signal.Term);
+        Check(Process.Wait((uint)child) == 5, "signals: a program catches SIGTERM and finishes on its own terms");
+
+        Signal.Handle(Signal.Pipe, &OnSignal);
+        _signals = 0;
+        int r = 0, w = 0;
+        File.Pipe(out r, out w);
+        File.Close(r);
+        byte b = 1;
+        Check(File.WriteBytes(w, &b, 1) == Process.ErrBrokenPipe && _signals == Signal.Pipe,
+              "signals: SIGPIPE can be caught (the write fails, the program lives)");
+        File.Close(w);
+        Signal.Handle(Signal.Pipe, null);
+
+        child = Process.Start("usertest", "sigspin");
+        for (int i = 0; i < 50; i++) {
+            Process.Sleep(2);
+            Signal.Send((uint)child, Signal.Usr1);
+        }
+        Check(Process.Wait((uint)child) == 0, "signals: registers and FPU state survive 50 handlers in the middle of a computation");
+    }
+
+    static int SigSpin()
+    {
+        Signal.Handle(Signal.Usr1, &Clobber);
+        ulong until = Time.UptimeMs() + 300;
+        while (Time.UptimeMs() < until) {
+            long a = 0, b = 1;
+            double x = 0, y = 1.5;
+            for (int i = 0; i < 100000; i++) {
+                a += i ^ (int)b;
+                b = b * 3 + 1;
+                x += y * i;
+                y = y * 0.999 + 0.001;
+            }
+            // The same computation again must give the same answer, whatever ran in between.
+            long a2 = 0, b2 = 1;
+            double x2 = 0, y2 = 1.5;
+            for (int i = 0; i < 100000; i++) {
+                a2 += i ^ (int)b2;
+                b2 = b2 * 3 + 1;
+                x2 += y2 * i;
+                y2 = y2 * 0.999 + 0.001;
+            }
+            if (a != a2 || b != b2 || x != x2 || y != y2)
+                return 1;
+        }
+        return _signals > 0 ? 0 : 2;
+    }
+
+    /// Uses integer and floating-point registers heavily, so a lost save would show.
+    static void Clobber(int sig)
+    {
+        double d = sig;
+        for (int i = 0; i < 64; i++)
+            d = d * 1.7 + i;
+        _signals += d > 0 ? 1 : 0;
     }
 
     static int IpcChild()

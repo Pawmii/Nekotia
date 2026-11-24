@@ -220,6 +220,13 @@ int64_t ipc_recv(int32_t fd, void* buffer, uint64_t capacity, int32_t* fd_out) {
     return sys::call(68, uint64_t(fd), ptr(buffer), capacity, ptr(fd_out));
 }
 
+extern "C" void neko_user_signal_entry();  // crt0.S
+int64_t signal_handle(int32_t sig, SignalHandler handler) {
+    return sys::call(69, uint64_t(sig), ptr(reinterpret_cast<const void*>(handler)), ptr(reinterpret_cast<const void*>(&neko_user_signal_entry)));
+}
+int64_t signal_ignore(int32_t sig) { return sys::call(69, uint64_t(sig), 1, 0); }
+int64_t signal_send(uint32_t pid, int32_t sig) { return sys::call(71, pid, uint64_t(sig)); }
+
 int64_t pipe(int32_t& read_fd, int32_t& write_fd) {
     int32_t fds[2] = {-1, -1};
     int64_t r = sys::call(kPipe, ptr(fds));

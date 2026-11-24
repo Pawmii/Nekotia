@@ -30,4 +30,21 @@ neko_user_thread_entry:
     ud2
 .size neko_user_thread_entry, . - neko_user_thread_entry
 
+/* Signal trampoline (registered with sigaction): rdi = signal, rsi = handler, rsp = the SigContext the
+   kernel saved (16-byte aligned). The FPU/SSE state of the interrupted code is saved here, the handler
+   runs as an ordinary function, and sigreturn puts the interrupted context back. */
+.global neko_user_signal_entry
+.type neko_user_signal_entry, @function
+neko_user_signal_entry:
+    movq %rsp, %r12            /* the SigContext (callee-saved: the handler keeps it) */
+    subq $512, %rsp
+    fxsave (%rsp)
+    call *%rsi                 /* handler(sig) — rsp is 16-byte aligned here */
+    fxrstor (%rsp)
+    movq %r12, %rsp
+    movl $70, %eax             /* sigreturn */
+    syscall
+    ud2
+.size neko_user_signal_entry, . - neko_user_signal_entry
+
 .section .note.GNU-stack, "", @progbits

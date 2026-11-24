@@ -64,6 +64,7 @@ struct Thread {
     Thread* timed_next;
     bool timed;           // on the timed list
     bool timed_out;       // the last block_until ended by its deadline
+    uint32_t sig_blocked; // signals not delivered to this thread now (the one whose handler runs)
 };
 
 using Entry = void (*)(uint64_t arg);
@@ -102,6 +103,8 @@ void set_priority(Thread* t, Priority priority);
 // notices at once. Callable from interrupt handlers.
 void interrupt(Thread* t);
 bool killed();  // the current thread has kill_pending set
+// A signal arrived: cuts short an interruptible wait or a sleep (they return "interrupted") without killing.
+void poke(Thread* t);
 
 // Calls fn(t, ctx) for every thread of `process` (scheduler lock held: fn must not block).
 void for_each_thread(proc::Process* process, void (*fn)(Thread*, void*), void* ctx);

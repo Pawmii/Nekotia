@@ -49,6 +49,8 @@ neko_syscall_entry:
     cli
     fxrstor (%rsp)
     addq $512, %rsp
+    testq %rax, %rax
+    jnz .Lsyscall_iret         /* sigreturn / a signal handler: every register comes back, by iretq */
     popq %r15
     popq %r14
     popq %r13
@@ -70,6 +72,24 @@ neko_syscall_entry:
     popq %rsp                  /* user rsp (interrupts are off until sysret) */
     swapgs
     sysretq
+.Lsyscall_iret:
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rbp
+    popq %rdi
+    popq %rsi
+    popq %rdx
+    popq %rcx
+    popq %rbx
+    popq %rax
+    swapgs                     /* rip, cs, rflags, rsp, ss: already an iretq frame */
+    iretq
 .size neko_syscall_entry, . - neko_syscall_entry
 
 .global neko_enter_user

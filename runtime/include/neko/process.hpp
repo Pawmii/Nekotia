@@ -80,6 +80,24 @@ enum class Syscall : uint32_t {
     IpcSend = 67,      // ipc_send(fd, data, length, attach_fd; -1 = none) → length; kErrBusy when the queue is full
     IpcRecv = 68,      // ipc_recv(fd, buffer, capacity, int32_t* fd_out) → length, 0 at the end; *fd_out = the
                        //                                    file that came along as a new fd, or -1
+    SigAction = 69,    // sigaction(sig, handler, entry)     → the previous handler; handler 0 = default, 1 = ignore,
+                       //                                    else an address; entry = the runtime's trampoline
+    SigReturn = 70,    // sigreturn()                        never returns: the interrupted context comes back
+    SigSend = 71,      // sigsend(pid, sig)                  → 0; SIGKILL cannot be caught
+};
+
+// Signals: default action ends the process with 128 + the number (SIGCHLD: ignored). A handler runs on the
+// thread's own stack the next time it returns to ring 3; a blocking call it was in returns kErrInterrupted.
+constexpr uint32_t kSigInt = 2, kSigKill = 9, kSigUsr1 = 10, kSigSegv = 11, kSigUsr2 = 12, kSigPipe = 13,
+                   kSigTerm = 15, kSigChld = 17, kMaxSignal = 31;
+
+// What the kernel puts on the user stack for a handler (sigreturn reads it back). Same layout in the
+// user runtime (crt0.S knows only its size).
+struct SigContext {
+    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
+    uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
+    uint64_t rip, rflags, rsp;
+    uint64_t sig, blocked;  // the signal, and the thread's mask before the handler
 };
 constexpr uint32_t kMaxSyscalls = 64;       // size of the C# handler table
 constexpr uint32_t kFirstFreeSyscall = 40;  // numbers below (and from 64) are the runtime's (C# [Syscall]: 40–63)
@@ -159,6 +177,9 @@ struct Process {
     struct { uint64_t start, size; } holes[32];  // unmapped ranges below alloc_next, reused by alloc
     uint32_t hole_count;
     vfs::File* files[kMaxFiles];  // file descriptors
+    uint64_t sig_handlers[kMaxSignal + 1];  // 0 default, 1 ignore, else the handler's address
+    uint64_t sig_entry;                     // the runtime's trampoline (set with the first sigaction)
+    volatile uint32_t sig_pending;          // raised, not delivered yet (bit = signal)
     struct { uint64_t start, size; vfs::File* file; } maps[kMaxMappings];  // mmap()s, sorted by start; each holds its file
     uint32_t map_count;
     vfs::Node* cwd;      // working directory
@@ -185,6 +206,10 @@ bool interrupt_foreground();
 uint32_t foreground();  // pid, 0 = kernel
 // Called before returning to ring 3: ends the current thread if it was killed.
 void check_killed();
+// Signals: raise `sig` for process `pid` (0 or kErrNotFound); callable from IRQ handlers (Ctrl+C).
+int64_t signal(uint32_t pid, uint32_t sig);
+// Before returning to ring 3 from an interrupt: runs a pending handler by rewriting the frame.
+void deliver_signals(crash::CpuState* f);
 // Demand paging: `address` lies in memory the current process reserved but never touched (the alloc area
 // below alloc_next and outside the holes, or its stack): a zeroed page is mapped there and true returned —
 // the faulting instruction simply runs again. False: a real fault.

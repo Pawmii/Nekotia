@@ -139,6 +139,14 @@ int64_t ipc_accept(int32_t fd);                                  // → fd of a 
 int64_t ipc_send(int32_t fd, const void* data, uint64_t length, int32_t attach_fd);  // attach_fd -1: none
 int64_t ipc_recv(int32_t fd, void* buffer, uint64_t capacity, int32_t* fd_out);     // → length, 0 at the end
 
+// ---- signals (neko/process.hpp): default action ends the program with 128 + the number
+constexpr int32_t kSigInt = 2, kSigKill = 9, kSigUsr1 = 10, kSigUsr2 = 12, kSigPipe = 13, kSigTerm = 15, kSigChld = 17;
+using SignalHandler = void (*)(int32_t sig);
+// handler: a function, or nullptr = default; returns the previous handler (0 default, 1 ignore, else an address)
+int64_t signal_handle(int32_t sig, SignalHandler handler);
+int64_t signal_ignore(int32_t sig);
+int64_t signal_send(uint32_t pid, int32_t sig);
+
 // ---- network (system calls 40–48, implemented in C# in kernel/Net/Sockets.neko). Sockets are fds.
 int64_t tcp_connect(uint32_t ip, uint16_t port);              // → fd
 int64_t tcp_listen(uint16_t port);                            // → fd

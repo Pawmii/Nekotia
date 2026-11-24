@@ -264,7 +264,7 @@ public static unsafe class Program
         ProcessInfo p = default;
         for (uint i = 0; Process.GetInfo(i, out p); i++) {
             if (p.Parent == _shell && p.State == 0)
-                Process.Kill(p.Pid);
+                Signal.Send(p.Pid, Signal.Int);   // like Ctrl+C on the console: the program may catch it
         }
     }
 

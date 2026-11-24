@@ -414,6 +414,24 @@ bool killed() {
     return t && __atomic_load_n(&t->kill_pending, __ATOMIC_SEQ_CST);
 }
 
+void poke(Thread* t) {
+    if (sync::Semaphore* s = __atomic_load_n(&t->waiting_sem, __ATOMIC_SEQ_CST)) s->cancel(t);
+    cpu::InterruptGuard g;
+    g_lock.acquire();
+    if (t->state == State::Sleeping) {
+        for (Thread** p = &g_sleepers; *p; p = &(*p)->next) {
+            if (*p == t) {
+                *p = t->next;
+                make_ready(t);
+                break;
+            }
+        }
+    }
+    uint32_t cpu = (t->state == State::Running && t->cpu != smp::cpu_index()) ? t->cpu : ~0u;
+    g_lock.release();
+    if (cpu != ~0u) smp::kick(cpu);  // a thread in ring 3 takes the signal on its way back from the IPI
+}
+
 void interrupt(Thread* t) {
     __atomic_store_n(&t->kill_pending, true, __ATOMIC_SEQ_CST);
     if (sync::Semaphore* s = __atomic_load_n(&t->waiting_sem, __ATOMIC_SEQ_CST)) s->cancel(t);
