@@ -1,5 +1,6 @@
 # Launcher menu of nekowm: name;program;arguments (one per line, # starts a comment)
 Terminal;/bin/term;
+Files;/bin/files;
 System Monitor;/bin/sysmon;
 Clock;/bin/clock;
 Paint;/bin/paint;

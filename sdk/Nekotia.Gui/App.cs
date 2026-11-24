@@ -263,6 +263,58 @@ public static unsafe class App
         return 0;
     }
 
+    /// <summary>Puts <paramref name="length"/> bytes of UTF-8 text on the clipboard (the desktop keeps it).</summary>
+    public static void SetClipboard(byte* text, long length)
+    {
+        if (_fd < 0 || length < 0)
+            return;
+        long shm = SharedMemory.Create(length > 0 ? (ulong)length : 1);
+        if (shm < 0)
+            return;
+        File.WriteBytes((int)shm, text, (ulong)length);
+        Message m = default;
+        m.Type = Protocol.ClipboardSet;
+        m.Width = (int)length;
+        Send(&m, (int)shm);
+        File.Close((int)shm);
+    }
+
+    /// <summary>The clipboard's text into <paramref name="buffer"/> (NUL-terminated); its length, 0 when empty.</summary>
+    public static long GetClipboard(byte* buffer, long capacity)
+    {
+        if (_fd < 0 || capacity < 1)
+            return 0;
+        Message m = default;
+        m.Type = Protocol.ClipboardGet;
+        if (Send(&m) < 0)
+            return 0;
+        while (true) {
+            Message got = default;
+            int fdOut = -1;
+            long n = Channel.Receive(_fd, &got, (ulong)sizeof(Message), &fdOut);
+            if (n <= 0)
+                return 0;
+            if (got.Type != Protocol.ClipboardData) {
+                if (fdOut >= 0)
+                    File.Close(fdOut);
+                if (got.Type != Protocol.Release)
+                    Keep(&got);
+                continue;
+            }
+            long length = 0;
+            if (fdOut >= 0) {
+                long want = got.Width < capacity - 1 ? got.Width : capacity - 1;
+                File.Seek(fdOut, 0, File.SeekSet);
+                length = File.ReadBytes(fdOut, buffer, (ulong)want);
+                File.Close(fdOut);
+                if (length < 0)
+                    length = 0;
+            }
+            buffer[length] = 0;
+            return length;
+        }
+    }
+
     public static void SetTitle(ref Window w, byte* title)
     {
         Message m = default;

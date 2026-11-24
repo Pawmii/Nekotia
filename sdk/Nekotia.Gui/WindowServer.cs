@@ -76,6 +76,9 @@ public static unsafe class WindowServer
     static bool _overflow;
     static int _screenWidth, _screenHeight;
     static int _pollBase;            // where the server's fds start in the caller's poll array
+    static byte* _clipboard;         // the clipboard's text (UTF-8), _clipboardLength bytes
+    static long _clipboardLength;
+    public const int MaxClipboard = 1 << 20;
     static int* _pollClient;         // poll slot → client
     static int _pollCount;
 
@@ -238,6 +241,14 @@ public static unsafe class WindowServer
             SendTo(c, &w);
             return;
         }
+        if (m->Type == Protocol.ClipboardSet) {
+            SetClipboard(fd, m->Width);
+            return;
+        }
+        if (m->Type == Protocol.ClipboardGet) {
+            SendClipboard(c);
+            return;
+        }
         if (m->Type == Protocol.CreateWindow) {
             if (Find(c, m->Window) >= 0)
                 return;
@@ -307,6 +318,47 @@ public static unsafe class WindowServer
                 Queue(ServerEvent.MoveRequest, win, new Rect(m->X, m->Y, 0, 0));
                 break;
         }
+    }
+
+    static void SetClipboard(int fd, int length)
+    {
+        if (fd < 0 || length < 0 || length > MaxClipboard)
+            return;
+        if (_clipboard == null)
+            _clipboard = (byte*)Memory.Alloc(MaxClipboard);
+        if (_clipboard == null)
+            return;
+        File.Seek(fd, 0, File.SeekSet);   // the same open file as the sender's: its offset is at the end
+        long n = File.ReadBytes(fd, _clipboard, (ulong)length);
+        _clipboardLength = n < 0 ? 0 : n;
+    }
+
+    static void SendClipboard(int client)
+    {
+        Message m = default;
+        m.Type = Protocol.ClipboardData;
+        m.Width = (int)_clipboardLength;
+        int fd = -1;
+        if (_clipboardLength > 0) {
+            long shm = SharedMemory.Create((ulong)_clipboardLength);
+            if (shm >= 0) {
+                File.WriteBytes((int)shm, _clipboard, (ulong)_clipboardLength);
+                fd = (int)shm;
+            }
+        }
+        if (fd < 0)
+            m.Width = 0;
+        if (client >= 0 && client < MaxClients && _clients[client].Used)
+            Channel.Send(_clients[client].Fd, &m, (ulong)sizeof(Message), fd);
+        if (fd >= 0)
+            File.Close(fd);
+    }
+
+    /// The clipboard's text (the desktop may use it too, e.g. a clipboard menu); its length.
+    public static long Clipboard(byte** text)
+    {
+        *text = _clipboard;
+        return _clipboardLength;
     }
 
     static void CopyTitle(ServerWindow* w, Message* m)

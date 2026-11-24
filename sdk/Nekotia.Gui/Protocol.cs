@@ -13,9 +13,10 @@ namespace Nekotia.Gui;
 /// for the other — from then on the client may draw there. The server never reads a buffer being drawn into.
 /// After composing, the server sends Frame, so animations can pace themselves.
 ///
-/// Client → server: Hello, CreateWindow (+ shm), Attach (+ shm, new size), Damage, SetTitle, Destroy, Move.
+/// Client → server: Hello, CreateWindow (+ shm), Attach (+ shm, new size), Damage, SetTitle, Destroy, Move,
+/// ClipboardSet (+ shm), ClipboardGet.
 /// Server → client: Welcome, Configure (please use this size), Close (the user asked), Focus, Key, Pointer, Frame,
-/// Release.
+/// Release, ClipboardData (+ shm). The clipboard lives in the server: text survives the program that copied it.
 /// </summary>
 public static class Protocol
 {
@@ -30,6 +31,8 @@ public static class Protocol
     public const uint SetTitle = 5;       // Window, Text
     public const uint Destroy = 6;        // Window
     public const uint Move = 7;           // Window, X/Y — a request; the server decides
+    public const uint ClipboardSet = 8;   // Width = bytes of UTF-8 text; attached: shared memory holding it
+    public const uint ClipboardGet = 9;   // → ClipboardData
 
     // server → client
     public const uint Welcome = 101;      // Width/Height = screen size, Value = version
@@ -40,6 +43,7 @@ public static class Protocol
     public const uint Pointer = 106;      // Window, Code = PointerMove/Button/Wheel/Enter/Leave, X/Y, Value, Mods
     public const uint Frame = 107;        // Window: the last Damage is on screen
     public const uint Release = 108;      // Window, Value = buffer the server no longer reads (double buffering)
+    public const uint ClipboardData = 109;  // Width = bytes; attached: shared memory with the text (nothing when empty)
 
     // Pointer kinds (Message.Code of Pointer)
     public const uint PointerMove = 0, PointerButton = 1, PointerWheel = 2, PointerEnter = 3, PointerLeave = 4;

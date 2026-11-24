@@ -2,6 +2,7 @@
 // what comes out (UTF-8, ANSI colours, clear screen, cursor moves, erase to end of line) and edits the line
 // being typed itself (the shell reads whole lines, like from the console): Backspace, ←/→, Home/End,
 // ↑/↓ for the history, Ctrl+C ends what the shell is running, Ctrl+D ends the shell, Ctrl+L clears.
+// The mouse selects text; Ctrl+Shift+C copies it, Ctrl+Shift+V or the middle button pastes.
 using Nekotia;
 using Nekotia.Gui;
 using Nekotia.User;
@@ -162,14 +163,117 @@ public static unsafe class Program
                 if (m->Value != 0)
                     OnKey(m->Codepoint, m->Mods);
                 break;
+            case Protocol.Pointer:
+                OnPointer(m);
+                break;
         }
         return true;
+    }
+
+    // ---------------------------------------------------------------- selection and the clipboard
+
+    static bool _selecting, _selected;
+    static int _selStart, _selEnd;   // cell indices (y * cols + x), in either order
+
+    static int CellAt(int px, int py)
+    {
+        int x = (px - Pad) / _font->Width, y = (py - Pad) / _font->Height;
+        x = Clamp(x, 0, _cols - 1);
+        y = Clamp(y, 0, _rows - 1);
+        return y * _cols + x;
+    }
+
+    static bool InSelection(int index)
+    {
+        if (!_selected)
+            return false;
+        int a = _selStart < _selEnd ? _selStart : _selEnd, b = _selStart < _selEnd ? _selEnd : _selStart;
+        return index >= a && index <= b;
+    }
+
+    static void OnPointer(Message* m)
+    {
+        if (m->Code == Protocol.PointerButton && m->Codepoint == 0) {   // left: select
+            if (m->Value != 0) {
+                if (_selected)
+                    DamageAll();
+                _selecting = true;
+                _selected = true;
+                _selStart = _selEnd = CellAt(m->X, m->Y);
+            } else {
+                _selecting = false;
+                if (_selStart == _selEnd)
+                    _selected = false;   // a click, not a selection
+            }
+            DamageAll();
+        } else if (m->Code == Protocol.PointerButton && m->Codepoint == 2 && m->Value != 0) {   // middle: paste
+            Paste();
+        } else if (m->Code == Protocol.PointerMove && _selecting) {
+            int at = CellAt(m->X, m->Y);
+            if (at != _selEnd) {
+                _selEnd = at;
+                DamageAll();
+            }
+        }
+    }
+
+    /// The selected cells as UTF-8 lines (trailing spaces dropped) on the clipboard.
+    static void Copy()
+    {
+        if (!_selected)
+            return;
+        int a = _selStart < _selEnd ? _selStart : _selEnd, b = _selStart < _selEnd ? _selEnd : _selStart;
+        byte* text = (byte*)Memory.Alloc((ulong)((b - a + 1) * 4 + _rows + 1));
+        int n = 0;
+        int rowEnd = -1;
+        for (int i = a; i <= b; i++) {
+            int x = i % _cols;
+            if (x == 0 && i != a)
+                text[n++] = (byte)'\n';
+            if (rowEnd < i) {   // last non-space of this row within the selection
+                int y = i / _cols;
+                int last = (y + 1) * _cols - 1 < b ? (y + 1) * _cols - 1 : b;
+                rowEnd = last;
+                while (rowEnd >= i && _cells[rowEnd].Cp == ' ')
+                    rowEnd--;
+                if (rowEnd < i) {
+                    i = last;   // nothing on this row: skip it
+                    rowEnd = last;
+                    continue;
+                }
+            }
+            if (i <= rowEnd)
+                n += Encode(_cells[i].Cp, text + n);
+        }
+        App.SetClipboard(text, n);
+        Memory.Free(text);
+    }
+
+    /// The clipboard's text typed into the line being edited (a newline sends the line).
+    static void Paste()
+    {
+        byte* text = (byte*)Memory.Alloc(16384);
+        long n = App.GetClipboard(text, 16384);
+        byte* s = text;
+        uint cp;
+        while ((cp = Font.NextCodepoint(ref s)) != 0)
+            OnKey(cp == '\r' ? 0u : cp, 0);
+        Memory.Free(text);
     }
 
     static void OnKey(uint cp, uint mods)
     {
         if (cp == 0)
             return;
+        bool shift = (mods & Keys.ModShift) != 0;
+        if (cp == 3 && shift) {   // Ctrl+Shift+C: copy the selection
+            Copy();
+            return;
+        }
+        if (cp == 22 && shift) {  // Ctrl+Shift+V: paste
+            Paste();
+            return;
+        }
         if (cp == 3) {   // Ctrl+C: end what the shell runs (its children)
             InterruptChildren();
             Put("^C\n");
@@ -623,6 +727,10 @@ public static unsafe class Program
         Canvas* c = &_win->Canvas;
         bool cursor = x == (_x < _cols ? _x : _cols - 1) && y == _y;
         uint bg = cell->Bg, fg = cell->Fg;
+        if (InSelection(y * _cols + x)) {
+            bg = 0x4A3760;
+            fg = 0xFFFFFF;
+        }
         if (cursor && _focused) {
             bg = Theme.Accent;
             fg = 0x15131E;
