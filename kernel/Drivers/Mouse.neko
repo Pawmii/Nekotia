@@ -1,0 +1,225 @@
+// PS/2 mouse driver: the i8042's second (auxiliary) port, IRQ 12. Packets of 3 bytes, or 4 with a wheel
+// (IntelliMouse: switched on by the magic sample-rate sequence 200, 100, 80). Each packet becomes input
+// events (runtime/include/neko/input.hpp) for whatever display server reads /dev/input.
+using Nekotia;
+using Nekotia.Hal;
+using Nekotia.Threading;
+
+namespace Nekotia.OS.Drivers;
+
+public unsafe struct MousePacket
+{
+    public fixed byte Bytes[4];
+}
+
+public static unsafe class Mouse
+{
+    const ushort DataPort = 0x60;
+    const ushort StatusPort = 0x64;   // read: status; write: controller command
+
+    static MousePacket _packet;
+    static int _index;
+    static int _size = 3;
+    static bool _present;
+    static ulong _packets;
+    static ulong _lastByteMs;
+    static ulong _bytes;
+    static byte _buttons;   // last state reported
+
+    public static bool Present => _present;
+    public static bool HasWheel => _size == 4;
+    public static ulong Packets => _packets;
+    public static ulong Bytes => _bytes;
+
+    /// Enables the auxiliary port and its interrupt, resets the mouse to defaults and turns streaming on.
+    /// Quietly does nothing without an i8042 or without a mouse on it (a few attempts: the controller
+    /// sometimes still has bytes in flight from the firmware).
+    public static void Init()
+    {
+        string why = null;
+        for int attempt in 0..3 {
+            why = TryInit();
+            if (why == null)
+                break;
+        }
+        if (why != null) {
+            Log.Debug($"ps2: no mouse ({why})");
+            return;
+        }
+        _present = true;
+        I8042.StartWatchdog();
+        Log.Info($"ps2: mouse on the auxiliary port{(_size == 4 ? ", with a wheel" : "")}");
+    }
+
+    /// null when the mouse streams, else what went wrong. Holds the controller lock: the interrupt handlers
+    /// must not eat the replies this reads by polling.
+    static string TryInit()
+    {
+        I8042.Lock();
+        defer I8042.Unlock();
+        for int i in 0..32 {
+            if ((Port.In8(StatusPort) & 1) == 0)
+                break;
+            Port.In8(DataPort);   // stale bytes
+        }
+        unless (WriteCommand(0xA8))   // enable the auxiliary port
+            return "controller does not answer";
+        unless (WriteCommand(0x20))   // read the controller configuration byte
+            return "no configuration byte";
+        int config = ReadData();
+        if (config < 0)
+            return "no configuration byte";
+        // Auxiliary clock on, IRQ 12 still off: the replies below are read by polling.
+        config &= ~0x22;
+        unless (WriteCommand(0x60) && WriteData((byte)config))
+            return "cannot write the configuration";
+        unless (Send(0xF6))   // set defaults (also: is anyone there?)
+            return "no reply to SET DEFAULTS";
+        // IntelliMouse: sample rates 200, 100, 80, then the device id says 3 when the wheel is on.
+        if (Send(0xF3) && Send(200) && Send(0xF3) && Send(100) && Send(0xF3) && Send(80) && Send(0xF2)) {
+            int id = ReadData();
+            if (id == 3)
+                _size = 4;
+        }
+        unless (Send(0xF4))   // start streaming
+            return "no reply to ENABLE";
+        unless (WriteCommand(0x60) && WriteData((byte)(config | 0x02)))   // now IRQ 12 on
+            return "cannot enable IRQ 12";
+        return null;
+    }
+
+    @irq(12)
+    static void OnInterrupt() => I8042.Drain();
+
+    /// One byte from the auxiliary port (I8042.Drain, interrupt context).
+    public static void Byte(byte b)
+    {
+        _bytes++;
+        unless (_present)
+            return;
+        ulong now = Time.UptimeMs();
+        if (now - _lastByteMs > 40)
+            _index = 0;   // a packet arrives in one burst: a long gap means we lost bytes — start over
+        _lastByteMs = now;
+        if (_index == 0 && (b & 0x08) == 0)
+            return;   // lost sync: the first byte always has bit 3 set
+        _packet.Bytes[_index++] = b;
+        if (_index < _size)
+            return;
+        _index = 0;
+        _packets++;
+
+        byte flags = _packet.Bytes[0];
+        if ((flags & 0xC0) != 0)
+            return;   // overflow: drop the packet
+        int dx = _packet.Bytes[1] - ((flags << 4) & 0x100);
+        int dy = _packet.Bytes[2] - ((flags << 3) & 0x100);
+        Input.Motion(dx, -dy);   // PS/2: up is positive
+        Input.Buttons(ref _buttons, (byte)(flags & 7));
+        if (_size == 4)
+            Input.Wheel((sbyte)_packet.Bytes[3]);
+    }
+
+    // ---------------------------------------------------------------- controller I/O (polling, at init)
+
+    static bool WaitWrite()
+    {
+        for int i in 0..100000 {
+            if ((Port.In8(StatusPort) & 0x02) == 0)
+                return true;
+        }
+        return false;
+    }
+
+    static int ReadData()
+    {
+        for int i in 0..200000 {
+            if ((Port.In8(StatusPort) & 0x01) != 0)
+                return Port.In8(DataPort);
+        }
+        return -1;
+    }
+
+    static bool WriteCommand(byte command)
+    {
+        unless (WaitWrite())
+            return false;
+        Port.Out8(StatusPort, command);
+        return true;
+    }
+
+    static bool WriteData(byte value)
+    {
+        unless (WaitWrite())
+            return false;
+        Port.Out8(DataPort, value);
+        return true;
+    }
+
+    /// A byte for the mouse (0xD4 routes the next data byte to the auxiliary port); true when it ACKs.
+    static bool Send(byte value)
+    {
+        unless (WriteCommand(0xD4) && WriteData(value))
+            return false;
+        for int tries in 0..4 {
+            int r = ReadData();
+            if (r == 0xFA)
+                return true;
+            if (r < 0 || r == 0xFE || r == 0xFC)
+                return false;
+        }
+        return false;
+    }
+}
+
+/// The PS/2 controller has one output buffer for both ports: whichever interrupt comes, read everything that
+/// is waiting and hand each byte to the driver of the port it came from (status bit 5 = auxiliary).
+///
+/// Its interrupt lines are edge-triggered at the I/O APIC but held high by the controller while a byte waits:
+/// a byte left unread (or one that arrived while the line was already high) means no new edge and silence for
+/// ever. So the drain runs until the buffer is empty, and a watchdog thread looks every 20 ms for a byte nobody
+/// was told about.
+public static unsafe class I8042
+{
+    public static ulong Interrupts, Rescued;
+    static SpinLock _lock;
+
+    public static void Drain()
+    {
+        Interrupts++;
+        DrainLocked();
+    }
+
+    public static void Lock() => _lock.Lock();
+
+    public static void Unlock() => _lock.Unlock();
+
+    static void DrainLocked()
+    {
+        _lock.Lock();
+        for int i in 0..1024 {
+            byte status = Port.In8(0x64);
+            if ((status & 0x01) == 0)
+                break;
+            byte b = Port.In8(0x60);
+            if ((status & 0x20) != 0)
+                Mouse.Byte(b);
+            else
+                Keyboard.Scancode(b);
+        }
+        _lock.Unlock();
+    }
+
+    public static void StartWatchdog() => Thread.Start("ps2-watchdog", &Watch, 0, ThreadPriority.High);
+
+    static void Watch(ulong unused)
+    {
+        loop {
+            Time.Sleep(20);
+            if ((Port.In8(0x64) & 0x01) != 0) {
+                Rescued++;
+                DrainLocked();
+            }
+        }
+    }
+}

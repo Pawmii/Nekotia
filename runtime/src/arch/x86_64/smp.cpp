@@ -20,8 +20,12 @@ Cpu g_cpus[kMaxCpus];
 bool g_percpu_ready = false;
 
 uint32_t g_started = 1;
-volatile uint64_t g_tlb_address = 0;
+// The current TLB shootdown request (valid while g_tlb_pending > 0; one at a time under g_tlb_lock).
+volatile uint64_t g_tlb_seq = 0;
+volatile uint64_t g_tlb_start = 0;
+volatile uint64_t g_tlb_pages = 0;
 volatile uint32_t g_tlb_pending = 0;
+volatile uint32_t g_tlb_lock = 0;
 
 void set_gs_base(Cpu* c) {
     uint64_t v = reinterpret_cast<uint64_t>(c);
@@ -36,15 +40,57 @@ uint32_t online_count() {
 
 uint32_t cpu_count() { return g_started; }
 
-void tlb_shootdown(uint64_t virt) {
+void tlb_flush_local(uint64_t virt, uint64_t pages) {
+    if (pages <= 64) {
+        for (uint64_t i = 0; i < pages; ++i) __asm__ volatile("invlpg (%0)" : : "r"(virt + i * 4096) : "memory");
+        return;
+    }
+    uint64_t cr4;
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    if (virt >= 0xffff800000000000ull && (cr4 & (1ull << 7))) {
+        // kernel pages are global: only toggling CR4.PGE drops them
+        __asm__ volatile("mov %0, %%cr4" : : "r"(cr4 & ~(1ull << 7)) : "memory");
+        __asm__ volatile("mov %0, %%cr4" : : "r"(cr4) : "memory");
+        return;
+    }
+    uint64_t cr3;
+    __asm__ volatile("mov %%cr3, %0; mov %0, %%cr3" : "=r"(cr3) : : "memory");
+}
+
+void tlb_service_slow() {
+    Cpu* c = this_cpu();
+    uint64_t seq = __atomic_load_n(&g_tlb_seq, __ATOMIC_ACQUIRE);
+    uint64_t flags = cpu::save_and_disable_interrupts();  // not twice for one request (IPI on top of a spin loop)
+    if (c->tlb_seen != seq) {
+        tlb_flush_local(g_tlb_start, g_tlb_pages);
+        c->tlb_seen = seq;
+        __atomic_sub_fetch(&g_tlb_pending, 1, __ATOMIC_ACQ_REL);
+    }
+    cpu::restore_interrupts(flags);
+}
+
+void tlb_shootdown_range(uint64_t virt, uint64_t pages) {
+    if (!g_percpu_ready || pages == 0) return;
     uint32_t others = online_count() - 1;
     if (others == 0) return;
-    g_tlb_address = virt;
+    // One request at a time; while waiting for our turn, carry out the request of whoever has it.
+    while (__atomic_exchange_n(&g_tlb_lock, 1u, __ATOMIC_ACQUIRE)) {
+        tlb_service();
+        cpu::pause();
+    }
+    tlb_service();  // a request may have completed just as we got the lock: nothing pending for us now
+    g_tlb_start = virt;
+    g_tlb_pages = pages;
     __atomic_store_n(&g_tlb_pending, others, __ATOMIC_SEQ_CST);
+    uint64_t seq = __atomic_add_fetch(&g_tlb_seq, 1, __ATOMIC_SEQ_CST);
+    this_cpu()->tlb_seen = seq;  // the caller has flushed its own TLB
     arch::send_ipi_all_others(arch::kVectorTlb, false);
-    // Bounded wait: a CPU spinning with interrupts off must not hang us forever.
+    // Bounded wait: a CPU stuck with interrupts off outside any spin loop must not hang us for ever.
     for (uint64_t i = 0; i < 50000000 && __atomic_load_n(&g_tlb_pending, __ATOMIC_ACQUIRE); ++i) cpu::pause();
+    __atomic_store_n(&g_tlb_lock, 0u, __ATOMIC_RELEASE);
 }
+
+void tlb_shootdown(uint64_t virt) { tlb_shootdown_range(virt, 1); }
 
 void halt_others() {
     if (g_started > 1) arch::send_ipi_all_others(0, true);
@@ -62,16 +108,14 @@ namespace neko::arch {
 [[noreturn]] void ap_on_kernel_stack() {
     smp::Cpu* c = smp::this_cpu();
     sched::cpu_online();
+    c->tlb_seen = __atomic_load_n(&smp::g_tlb_seq, __ATOMIC_ACQUIRE);  // earlier requests did not count this CPU
     __atomic_store_n(&c->online, true, __ATOMIC_RELEASE);
     sched::run_idle();
 }
 
 uint32_t smp_started() { return smp::g_started ? smp::g_started : 1; }
 
-void smp_tlb_ipi() {
-    __asm__ volatile("invlpg (%0)" : : "r"(smp::g_tlb_address) : "memory");
-    __atomic_sub_fetch(&smp::g_tlb_pending, 1, __ATOMIC_ACQ_REL);
-}
+void smp_tlb_ipi() { smp::tlb_service(); }
 
 void percpu_init_bsp() {
     smp::Cpu& c = smp::g_cpus[0];

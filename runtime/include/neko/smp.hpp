@@ -29,6 +29,7 @@ struct Cpu {
     uint64_t slice_left;
     uint64_t idle_ms;
     uint64_t stack_top;  // kernel stack the CPU runs its boot flow / idle thread on
+    volatile uint64_t tlb_seen;  // last TLB shootdown request this CPU has carried out
 };
 
 extern Cpu g_cpus[kMaxCpus];
@@ -51,7 +52,22 @@ uint32_t online_count();
 uint32_t cpu_count();  // CPUs reported by the bootloader (online or not)
 
 // IPIs (no-ops with a single CPU and in host mode).
-void tlb_shootdown(uint64_t virt);  // invlpg on every other CPU
+//
+// TLB shootdown: one request at a time (the initiator holds a lock while the others acknowledge). A CPU
+// that spins for a lock with interrupts off cannot take the IPI, so every spin loop calls tlb_service()
+// to carry out a pending request — two CPUs unmapping at once, or one waiting for the lock the other
+// holds while it shoots down, would otherwise wait for each other.
+void tlb_shootdown(uint64_t virt);                     // invlpg on every other CPU
+void tlb_shootdown_range(uint64_t virt, uint64_t pages);  // a range (a full flush when it is large)
+void tlb_flush_local(uint64_t virt, uint64_t pages);   // this CPU only
+extern volatile uint64_t g_tlb_seq;
+void tlb_service_slow();
+inline void tlb_service() {
+#if !NEKO_HOSTED
+    if (g_percpu_ready && __atomic_load_n(&this_cpu()->tlb_seen, __ATOMIC_RELAXED) != __atomic_load_n(&g_tlb_seq, __ATOMIC_ACQUIRE))
+        tlb_service_slow();
+#endif
+}
 void halt_others();                 // NMI everyone else into a halt (used by the stop screen)
 void kick(uint32_t index);          // wake an idle CPU so it picks up new work
 

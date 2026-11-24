@@ -335,9 +335,9 @@ int64_t zero_read(void*, uint64_t, void* buffer, uint64_t length) {
     return int64_t(length);
 }
 
-const DeviceOps kConsoleOps = {console_read, console_write, nullptr, nullptr, nullptr};
-const DeviceOps kNullOps = {null_read, null_write, nullptr, nullptr, nullptr};
-const DeviceOps kZeroOps = {zero_read, null_write, nullptr, nullptr, nullptr};
+const DeviceOps kConsoleOps = {console_read, console_write, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+const DeviceOps kNullOps = {null_read, null_write, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+const DeviceOps kZeroOps = {zero_read, null_write, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
 
 // ---------------------------------------------------------------- pipes
 
@@ -374,6 +374,7 @@ int64_t pipe_read(void* context, uint64_t, void* buffer, uint64_t length) {
             p->count -= uint32_t(n);
             wake(p->writable, p->waiting_writers);
             p->lock.unlock();
+            notify();  // writers polling for space
             return int64_t(n);
         }
         if (p->writers == 0) {
@@ -405,6 +406,7 @@ int64_t pipe_write(void* context, uint64_t, const void* buffer, uint64_t length)
             done += n;
             wake(p->readable, p->waiting_readers);
             p->lock.unlock();
+            notify();
             continue;
         }
         ++p->waiting_writers;
@@ -422,6 +424,17 @@ void pipe_close(void* context, uint32_t flags) {
     wake(p->readable, p->waiting_readers);  // readers see the end, writers see the broken pipe
     wake(p->writable, p->waiting_writers);
     p->lock.unlock();
+    notify();
+}
+
+uint32_t pipe_poll(void* context, uint32_t) {
+    auto* p = static_cast<Pipe*>(context);
+    sync::ScopedLock guard(p->lock);
+    uint32_t r = 0;
+    if (p->count > 0 || p->writers == 0) r |= kPollIn;   // data, or the end of input
+    if (p->count < kPipeSize) r |= kPollOut;
+    if (p->writers == 0 || p->readers == 0) r |= kPollHup;
+    return r;
 }
 
 void pipe_release(void* context) {
@@ -430,7 +443,7 @@ void pipe_release(void* context) {
     heap::free(p);
 }
 
-const DeviceOps kPipeOps = {pipe_read, pipe_write, nullptr, pipe_close, pipe_release};
+const DeviceOps kPipeOps = {pipe_read, pipe_write, nullptr, pipe_close, pipe_release, nullptr, pipe_poll, nullptr, nullptr};
 
 Node* make_dir_locked(Node* dir, const char* name) {
     Node* existing = child(dir, name, uint32_t(str::length(name)));
@@ -652,7 +665,13 @@ int64_t open(const char* path, uint32_t flags, File*& out) {
         break;
     }
     int64_t e = 0;
-    if (n->type == Type::Directory && (flags & kWrite)) e = kErrIsDirectory;
+    bool device_opened = false;
+    if (n->type == Type::Device && n->ops->open) {  // may refuse (an exclusive device that is taken)
+        e = n->ops->open(n->context, flags);
+        device_opened = e == 0;
+    }
+    if (e < 0) {
+    } else if (n->type == Type::Directory && (flags & kWrite)) e = kErrIsDirectory;
     else if (n->type == Type::File && (flags & kTruncate)) {
         if (n->fs_ops) e = n->fs_ops->truncate(n->fs, n, 0);
         else {
@@ -665,6 +684,7 @@ int64_t open(const char* path, uint32_t flags, File*& out) {
         out = new_file(n, flags);
         if (!out) e = kErrNoMemory;
     }
+    if (e < 0 && device_opened && n->ops->close) n->ops->close(n->context, flags);
     node_release(n);
     return e;
 }
@@ -802,6 +822,8 @@ uint32_t flags(File* f) { return f ? f->flags : 0; }
 
 namespace {
 
+const DeviceOps kNoOps = {};
+
 SocketIo g_socket_read = nullptr, g_socket_write = nullptr;
 SocketClose g_socket_close = nullptr;
 
@@ -815,7 +837,7 @@ void socket_close(void* context, uint32_t) {
     if (g_socket_close) g_socket_close(context);
 }
 
-const DeviceOps kSocketOps = {socket_read, socket_write, nullptr, socket_close, nullptr};
+const DeviceOps kSocketOps = {socket_read, socket_write, nullptr, socket_close, nullptr, nullptr, nullptr, nullptr, nullptr};
 
 }  // namespace
 
@@ -839,6 +861,117 @@ File* open_socket(void* context) {
 void* socket_context(File* f) {
     if (!f || f->node->type != Type::Device || f->node->ops != &kSocketOps) return nullptr;
     return f->node->context;
+}
+
+File* open_object(const char* name, const DeviceOps* ops, void* context, uint32_t flags) {
+    Locked guard;
+    Node* n = new_node(name, uint32_t(str::length(name)), Type::Device);  // anonymous: never linked into the tree
+    if (!n) return nullptr;
+    n->ops = ops;
+    n->context = context;
+    File* f = new_file(n, flags);
+    if (!f) n->ops = &kNoOps;  // the context stays the caller's: its release must not run
+    release(n);                // the open file keeps the node
+    return f;
+}
+
+void* object_context(File* f, const DeviceOps* ops) {
+    if (!f || f->node->type != Type::Device || f->node->ops != ops) return nullptr;
+    return f->node->context;
+}
+
+// ---------------------------------------------------------------- poll
+//
+// One wake-up for everybody: notify() bumps nothing per file, it just signals every poller, which looks
+// at its files again. Cheap enough for a handful of waiting programs, and nothing can be missed: a poller
+// is queued before it looks, so a notify() that comes after the look always reaches its semaphore.
+
+namespace {
+
+struct PollWaiter {
+    sync::Semaphore wake;
+    PollWaiter* next;
+};
+sync::SpinLock g_poll_lock;
+PollWaiter* g_pollers = nullptr;
+
+}  // namespace
+
+uint32_t poll(File* f, uint32_t wanted) {
+    if (!f) return 0;
+    Node* n = f->node;
+    uint32_t r;
+    if (n->type == Type::Device && n->ops->poll) r = n->ops->poll(n->context, f->flags);
+    else r = kPollIn | kPollOut;  // files and directories never block
+    if (!(f->flags & kRead)) r &= ~kPollIn;
+    if (!(f->flags & kWrite)) r &= ~kPollOut;
+    return r & (wanted | kPollHup);
+}
+
+void notify() {
+    sync::ScopedLock guard(g_poll_lock);
+    for (PollWaiter* w = g_pollers; w; w = w->next) w->wake.signal();
+}
+
+int64_t poll_wait(File* const* files, const uint32_t* wanted, uint32_t* ready, uint32_t count, uint64_t timeout_ms) {
+    PollWaiter w{};
+    {
+        sync::ScopedLock guard(g_poll_lock);
+        w.next = g_pollers;
+        g_pollers = &w;
+    }
+    uint64_t until = timeout_ms == ~0ull ? ~0ull : time::uptime_ms() + timeout_ms;
+    int64_t result = 0;
+    for (;;) {
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            ready[i] = poll(files[i], wanted[i]);
+            if (ready[i]) ++n;
+        }
+        if (n || timeout_ms == 0) {
+            result = n;
+            break;
+        }
+        if (sched::killed()) {
+            result = kErrInterrupted;
+            break;
+        }
+        if (until == ~0ull) {
+            if (!w.wake.wait_interruptible()) {
+                result = kErrInterrupted;
+                break;
+            }
+            continue;
+        }
+        // A deadline: semaphores cannot time out, so look every millisecond until a signal or the deadline.
+        while (!w.wake.try_wait() && !sched::killed() && time::uptime_ms() < until) sched::sleep_ms(1);
+        if (time::uptime_ms() >= until && !w.wake.try_wait()) {
+            for (uint32_t i = 0; i < count; ++i) {  // one last look
+                ready[i] = poll(files[i], wanted[i]);
+                if (ready[i]) ++result;
+            }
+            break;
+        }
+    }
+    sync::ScopedLock guard(g_poll_lock);
+    for (PollWaiter** pp = &g_pollers; *pp; pp = &(*pp)->next) {
+        if (*pp == &w) {
+            *pp = w.next;
+            break;
+        }
+    }
+    return result;
+}
+
+int64_t map(File* f, uint64_t offset, uint64_t& phys, bool& write_combining) {
+    write_combining = false;
+    if (!f || f->node->type != Type::Device || !f->node->ops->map) return kErrNotSupported;
+    return f->node->ops->map(f->node->context, offset, phys, write_combining);
+}
+
+int64_t control(File* f, uint64_t request, uint64_t arg) {
+    if (!f || f->node->type != Type::Device || !f->node->ops->control) return kErrNotSupported;
+    return f->node->ops->control(f->node->context, f->flags, request, arg);
 }
 
 int64_t pipe(File*& read_end, File*& write_end) {
@@ -1024,7 +1157,7 @@ uint64_t generated_size(void* context) {
     return n > 0 ? uint64_t(n) : 0;
 }
 
-const DeviceOps kGeneratedOps = {generated_read, nullptr, generated_size, nullptr, nullptr};
+const DeviceOps kGeneratedOps = {generated_read, nullptr, generated_size, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
 
 }  // namespace
 

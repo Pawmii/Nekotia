@@ -68,9 +68,29 @@ enum class Syscall : uint32_t {
     Rename = 28,       // rename(from, to)                   → 0
     Truncate = 29,     // truncate(fd, size)                 → 0
     Pipe = 30,         // pipe(int32_t fds[2])               → 0; fds[0] reads what fds[1] writes
+    Poll = 36,         // poll(PollFd*, count, timeout_ms)   → fds ready (0 after the timeout; ~0 = no timeout)
+    Mmap = 37,         // mmap(fd, length, flags)            → address; flags: 1 write. Shared memory, /dev/fb0…
+                       //                                    (unmap(address, length) removes the whole mapping)
+    Ioctl = 38,        // ioctl(fd, request, arg)            → device-specific (neko/display.hpp, neko/input.hpp)
+    ShmCreate = 39,    // shm_create(bytes)                  → fd of fresh zeroed shared memory (neko/ipc.hpp)
+    // 40–63: C# [Syscall] handlers (kernel/…)
+    IpcListen = 64,    // ipc_listen(name)                   → fd that accepts connections to `name`
+    IpcConnect = 65,   // ipc_connect(name)                  → fd of a new channel to that listener
+    IpcAccept = 66,    // ipc_accept(listen_fd)              → fd of the server end of the next connection (blocks)
+    IpcSend = 67,      // ipc_send(fd, data, length, attach_fd; -1 = none) → length; kErrBusy when the queue is full
+    IpcRecv = 68,      // ipc_recv(fd, buffer, capacity, int32_t* fd_out) → length, 0 at the end; *fd_out = the
+                       //                                    file that came along as a new fd, or -1
 };
-constexpr uint32_t kMaxSyscalls = 64;
-constexpr uint32_t kFirstFreeSyscall = 40;  // numbers below are reserved for the runtime (C# [Syscall]: 40–63)
+constexpr uint32_t kMaxSyscalls = 64;       // size of the C# handler table
+constexpr uint32_t kFirstFreeSyscall = 40;  // numbers below (and from 64) are the runtime's (C# [Syscall]: 40–63)
+
+// poll() entry (same layout in neko/user.hpp).
+struct PollFd {
+    int32_t fd;
+    uint16_t events;   // vfs::kPollIn | kPollOut
+    uint16_t revents;  // what is ready, plus kPollHup; 0x8000 = bad fd
+};
+constexpr uint32_t kMaxPollFds = 64;
 
 // Errors are negative results.
 enum Error : int64_t {
@@ -109,6 +129,9 @@ constexpr uint32_t kMaxFiles = 32;         // open file descriptors per process
 constexpr uint64_t kUserImageBase = 0x400000;
 constexpr uint64_t kUserAllocBase = 0x0000100000000000ull;
 constexpr uint64_t kUserAllocLimit = 0x0000100000000000ull + (256ull << 20);  // 256 MiB per process
+constexpr uint64_t kUserMapBase = 0x0000200000000000ull;              // mmap()ed objects
+constexpr uint64_t kUserMapLimit = kUserMapBase + (64ull << 30);
+constexpr uint32_t kMaxMappings = 32;      // per process
 constexpr uint64_t kUserStackTop = 0x00007fffffff0000ull;
 constexpr uint64_t kUserStackSize = 256 * 1024;
 constexpr uint64_t kUserEnd = 0x0000800000000000ull;  // first non-canonical address
@@ -135,6 +158,8 @@ struct Process {
     struct { uint64_t start, size; } holes[32];  // unmapped ranges below alloc_next, reused by alloc
     uint32_t hole_count;
     vfs::File* files[kMaxFiles];  // file descriptors
+    struct { uint64_t start, size; vfs::File* file; } maps[kMaxMappings];  // mmap()s, sorted by start; each holds its file
+    uint32_t map_count;
     vfs::Node* cwd;      // working directory
     sync::Semaphore exited;  // signalled once the address space is gone
     Process* next;
@@ -226,6 +251,10 @@ void space_destroy(uint64_t* pml4);             // frees every user page and tab
 bool space_map(uint64_t* pml4, uint64_t virt, uint64_t phys, PageFlags flags);  // user page; false if taken / OOM
 void space_add_flags(uint64_t* pml4, uint64_t virt, PageFlags flags);  // widen a mapped page (segments sharing a page)
 uint64_t space_unmap(uint64_t* pml4, uint64_t virt);          // the frame it had (not freed), or ~0
+// Unmaps `pages` pages from `virt` with one TLB shootdown for all of them, then calls each(frame, ctx)
+// for every page that was mapped (frames are not freed; Shared pages report frame | 1 so the caller can
+// tell them apart). Returns how many were mapped.
+uint64_t space_unmap_range(uint64_t* pml4, uint64_t virt, uint64_t pages, void (*each)(uint64_t frame, void* ctx), void* ctx);
 bool space_protect(uint64_t* pml4, uint64_t virt, PageFlags flags);  // replace the permissions of a mapped user page
 uint64_t space_translate(uint64_t* pml4, uint64_t virt);  // physical address or ~0
 bool space_check(uint64_t* pml4, uint64_t virt, uint64_t length, bool write);  // user-accessible?

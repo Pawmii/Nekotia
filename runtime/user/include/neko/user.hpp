@@ -119,6 +119,26 @@ void* map_pages(uint64_t bytes);                         // fresh zeroed pages f
 int64_t unmap_pages(void* address, uint64_t bytes);      // give them back (also reused by later map_pages)
 int64_t protect_pages(void* address, uint64_t bytes, uint32_t flags);  // 1 write, 2 execute; 0 = read-only
 
+// ---- readiness, devices, shared memory and channels (neko/process.hpp, neko/ipc.hpp)
+constexpr uint16_t kPollIn = 1, kPollOut = 2, kPollHup = 4, kPollBad = 0x8000;
+struct PollFd {  // same layout as neko::proc::PollFd
+    int32_t fd;        // < 0: ignored
+    uint16_t events;   // kPollIn | kPollOut
+    uint16_t revents;  // filled in: what is ready (+ kPollHup, kPollBad)
+};
+int64_t poll(PollFd* fds, uint32_t count, int64_t timeout_ms);  // → how many are ready; timeout -1 = for ever
+int64_t mmap(int32_t fd, uint64_t length, uint32_t flags);      // → address (flags: 1 write) or an error
+int64_t munmap(void* address);                                   // a whole mapping, by its start
+int64_t ioctl(int32_t fd, uint64_t request, void* arg);
+int64_t shm_create(uint64_t bytes);                              // → fd
+int64_t ipc_listen(const uint8_t* name);                         // → fd for ipc_accept
+int64_t ipc_listen(const char* name);
+int64_t ipc_connect(const uint8_t* name);                        // → fd of a channel
+int64_t ipc_connect(const char* name);
+int64_t ipc_accept(int32_t fd);                                  // → fd of a channel (blocks)
+int64_t ipc_send(int32_t fd, const void* data, uint64_t length, int32_t attach_fd);  // attach_fd -1: none
+int64_t ipc_recv(int32_t fd, void* buffer, uint64_t capacity, int32_t* fd_out);     // → length, 0 at the end
+
 // ---- network (system calls 40–48, implemented in C# in kernel/Net/Sockets.neko). Sockets are fds.
 int64_t tcp_connect(uint32_t ip, uint16_t port);              // → fd
 int64_t tcp_listen(uint16_t port);                            // → fd
@@ -152,6 +172,14 @@ void* alloc_zeroed(uint64_t size);
 void free(void* block);
 uint64_t heap_used();
 uint64_t heap_total();
+
+// ---- raw memory (rep movs / stos)
+inline void mem_copy(void* dst, const void* src, uint64_t n) { __builtin_memcpy(dst, src, n); }
+inline void mem_move(void* dst, const void* src, uint64_t n) { __builtin_memmove(dst, src, n); }
+inline void mem_set(void* dst, uint8_t value, uint64_t n) { __builtin_memset(dst, value, n); }
+inline void mem_fill32(uint32_t* dst, uint32_t value, uint64_t count) {
+    __asm__ volatile("rep stosl" : "+D"(dst), "+c"(count) : "a"(value) : "memory");
+}
 
 // ---- atomics (sequentially consistent)
 inline int64_t atomic_add(int64_t* p, int64_t v) { return __atomic_add_fetch(p, v, __ATOMIC_SEQ_CST); }

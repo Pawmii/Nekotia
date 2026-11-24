@@ -315,6 +315,7 @@ void stack(const Report& r) {
 // ---------------------------------------------------------------- screen
 
 void title(const Report& r) {
+    console::set_paused(false);  // take the screen back from a display server
     bool screen = console::ready();
     color(kText);
     console::clear();

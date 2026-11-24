@@ -133,6 +133,7 @@ void write_hex(uint64_t value) { NEKO_TERM_LOCKED; put_hex(term_put, value); }
 void write_dec(int64_t value) { NEKO_TERM_LOCKED; put_dec(term_put, value); }
 void write_udec(uint64_t value) { NEKO_TERM_LOCKED; put_udec(term_put, value); }
 void write_size(uint64_t bytes) { NEKO_TERM_LOCKED; put_size(term_put, bytes); }
+void pause_console(bool paused) { NEKO_TERM_LOCKED; console::set_paused(paused); }
 void write_float(double value, int32_t decimals) { NEKO_TERM_LOCKED; put_float(term_put, value, decimals); }
 #undef NEKO_TERM_LOCKED
 }  // namespace term

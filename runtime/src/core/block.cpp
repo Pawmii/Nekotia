@@ -41,7 +41,7 @@ uint64_t dev_size(void* context) {
     return d ? d->info.sectors * d->info.sector_size : 0;
 }
 
-const vfs::DeviceOps kDevOps = {dev_read, dev_write, dev_size, nullptr, nullptr};
+const vfs::DeviceOps kDevOps = {dev_read, dev_write, dev_size, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
 
 // ---- RAM disks
 

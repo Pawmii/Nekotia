@@ -8,6 +8,8 @@
 #include "arch.hpp"
 
 #include <neko/block.hpp>
+#include <neko/display.hpp>
+#include <neko/input.hpp>
 #include <neko/pci.hpp>
 #include <neko/process.hpp>
 #include <neko/sched.hpp>
@@ -247,6 +249,8 @@ uint64_t g_kernel_stack_top = 0;
     neko::term::write(" of ");
     neko::term::write_udec(mp_request.response ? mp_request.response->cpu_count : 1);
     neko::term::write(" CPU(s) online\n");
+    neko::display::init(g_info.Screen);  // /dev/fb0: the bootloader's framebuffer (bootfb driver)
+    neko::input::init();                 // /dev/input
     neko::drivers::init();  // needs interrupts (completion IRQs) and the VFS (/dev nodes)
     uint64_t reclaimed = reclaim_bootloader_memory();
     neko::term::write("[neko] reclaimed ");

@@ -11,6 +11,7 @@
 //   usertest uncaught                throws without a try (exit code 134)
 //   usertest churn                   maps fresh memory in a loop, for many copies at once (allocator stress)
 //   usertest piperead                waits on a pipe nobody writes to (kill check)
+//   usertest ipcchild                the other side of the IPC check: connects, writes into shared memory it is sent
 using Nekotia;
 using Nekotia.User;
 
@@ -108,6 +109,8 @@ public static unsafe class Program
                 byte* b = stackalloc byte[4];
                 return (int)File.ReadBytes(r, b, 4);
             }
+            if (Str.Equals(mode, "ipcchild"))
+                return IpcChild();
             if (Str.Equals(mode, "cwd"))
             {
                 byte* cwd = stackalloc byte[File.MaxPath];
@@ -129,6 +132,8 @@ public static unsafe class Program
         Sockets();
         Exceptions();
         FutexAndPages();
+        Ipc();
+        Devices();
 
         if (_verbose || _failed > 0)
             Console.WriteLine($"usertest: {_passed} passed, {_failed} failed");
@@ -379,6 +384,94 @@ public static unsafe class Program
         File.Close((int)saved);
         File.Close(w);
         Check(child > 0 && Process.Wait((uint)child) == Process.ExitBrokenPipe, "writing to a pipe without readers ends the writer (141)");
+    }
+
+    // ---------------------------------------------------------------- shared memory, channels, poll
+
+    static void Ipc()
+    {
+        byte* buf = stackalloc byte[64];
+        // shared memory as a file and as memory
+        long shm = SharedMemory.Create(5000);
+        FileStat st = default;
+        Check(shm >= 3 && File.Stat((int)shm, out st) == 0 && st.Size == 8192, "shm_create: a zeroed object of whole pages");
+        File.WriteBytes((int)shm, Str.Bytes("neko"), 4);
+        long at = Device.Map((int)shm, 8192, Device.MapWrite);
+        byte* m = (byte*)at;
+        Check(at > 0 && m[0] == 'n' && m[3] == 'o' && m[4] == 0 && m[8191] == 0, "mmap of shared memory sees what write() put there");
+        m[4100] = 42;
+        File.Seek((int)shm, 4100, File.SeekSet);
+        Check(File.ReadBytes((int)shm, buf, 1) == 1 && buf[0] == 42, "…and read() sees what the mapping wrote");
+        Check(Memory.ProtectPages(m, 4096, Memory.ReadOnly) < 0, "shared pages keep the rights they were mapped with (protect refused)");
+        Check(Device.Map(0, 4096, 0) < 0, "mmap of something that is not mappable fails");
+
+        // channels: a child gets the shared memory through a message and writes into it
+        long listener = Channel.Listen("usertest-ipc");
+        Check(listener >= 0 && Channel.Listen("usertest-ipc") == Process.ErrExists, "ipc_listen: a name has one owner");
+        Check(Channel.Connect("usertest-nobody") == Process.ErrNotFound, "ipc_connect to a name nobody listens on fails");
+        PollFd p = default;
+        p.Fd = (int)listener;
+        p.Events = Poll.In;
+        Check(Poll.Wait(&p, 1, 0) == 0 && p.Ready == 0, "poll: a listener without connections is not ready");
+        long child = Process.Start("usertest", "ipcchild");
+        p.Ready = 0;
+        Check(Poll.Wait(&p, 1, 3000) == 1 && (p.Ready & Poll.In) != 0, "poll: wakes when a connection arrives");
+        long conn = Channel.Accept((int)listener);
+        Check(conn >= 0, "ipc_accept gives the server end");
+        Check(Channel.Send((int)conn, Str.Bytes("map this"), 8, (int)shm) == 8, "ipc_send with an fd attached");
+        p.Fd = (int)conn;
+        p.Ready = 0;
+        int fdOut = -1;
+        long n = Poll.Wait(&p, 1, 3000) == 1 ? Channel.Receive((int)conn, buf, 64, &fdOut) : -1;
+        Check(n == 4 && buf[0] == 'd' && fdOut == -1, "the reply arrives as one message, without a file");
+        Check(m[0] == 'p' && m[1] == 'o' && m[2] == 'n' && m[3] == 'g', "the child wrote into the same pages (shared across address spaces)");
+        Check(child > 0 && Process.Wait((uint)child) == 0, "the child exits cleanly");
+        p.Ready = 0;
+        Check(Poll.Wait(&p, 1, 1000) == 1 && (p.Ready & Poll.Hup) != 0 && Channel.Receive((int)conn, buf, 64, &fdOut) == 0,
+              "after the peer exits: poll says hang-up, receive says end");
+        Check(Channel.Send((int)conn, buf, 1, -1) == Process.ErrBrokenPipe, "sending to a gone peer fails (without killing the sender)");
+        Check(Device.Unmap(m) == 0 && Device.Unmap(m) < 0, "munmap removes the mapping once");
+        File.Close((int)conn);
+        File.Close((int)listener);
+        File.Close((int)shm);
+        Check(Channel.Connect("usertest-ipc") == Process.ErrNotFound, "closing the listener frees the name");
+    }
+
+    static int IpcChild()
+    {
+        long fd = Channel.Connect("usertest-ipc");
+        if (fd < 0)
+            return 1;
+        byte* buf = stackalloc byte[64];
+        int shm = -1;
+        if (Channel.Receive((int)fd, buf, 64, &shm) != 8 || shm < 0)
+            return 2;
+        long at = Device.Map(shm, 4096, Device.MapWrite);
+        if (at < 0)
+            return 3;
+        byte* m = (byte*)at;
+        m[0] = (byte)'p';
+        m[1] = (byte)'o';
+        m[2] = (byte)'n';
+        m[3] = (byte)'g';
+        Channel.Send((int)fd, Str.Bytes("done"), 4, -1);
+        return 0;
+    }
+
+    static void Devices()
+    {
+        long fb = File.Open("/dev/fb0", File.Read);
+        if (fb < 0)
+            return;   // no framebuffer (host mode, serial-only machines)
+        byte* info = stackalloc byte[64];
+        Check(Device.Control((int)fb, 0x4401, info) == 0 && *(uint*)info > 0 && *(uint*)(info + 12) == 32,
+              "ioctl(/dev/fb0, INFO): size and 32 bpp");
+        Check(Device.Control((int)fb, 0x4402, info) == Process.ErrAccess, "presenting needs the display opened for writing");
+        Check(Device.Control((int)fb, 0x7777, info) == Process.ErrNotSupported, "unknown ioctl requests are refused");
+        File.Close((int)fb);
+        long input = File.Open("/dev/input", File.Read);
+        Check(input >= 0 && File.Open("/dev/input", File.Read) == Process.ErrBusy, "/dev/input has one reader at a time");
+        File.Close((int)input);
     }
 
     // ---------------------------------------------------------------- futex and pages

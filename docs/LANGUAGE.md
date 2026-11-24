@@ -180,8 +180,11 @@ C#-обёртка в `sdk/Nekotia.Sdk/`.
 | `Nekotia.User.Path` / `Tool` | `BaseName`, `Join`; `Tool.Fail` — сообщение об ошибке утилиты, `Tool.CopyFile` |
 | `Nekotia.User.Thread` | `Start(&Entry, arg)` → handle, `Join`, `CurrentId`, `Exit`, `Yield` |
 | `Nekotia.User.SpinLock` / `Atomic` / `Futex` | мьютекс `Lock`/`Unlock` (спин, затем сон на futex); `Add`, `Load`, `Store`, `CompareExchange` над `long*`; `Futex.Wait/Wake` |
-| `Nekotia.User.Memory` | `Alloc`, `AllocZeroed`, `Free`, `New<T>`, `NewArray<T>`, `Delete<T>`, `UsedBytes`, `TotalBytes`; страницы: `MapPages`, `UnmapPages`, `ProtectPages` |
-| `Nekotia.User.Time` | `UptimeMs` |
+| `Nekotia.User.Memory` | `Alloc`, `AllocZeroed`, `Free`, `New<T>`, `NewArray<T>`, `Delete<T>`, `Copy`, `Move`, `Set`, `Fill32`, `UsedBytes`, `TotalBytes`; страницы: `MapPages`, `UnmapPages`, `ProtectPages` |
+| `Nekotia.User.Time` / `Clock` | `UptimeMs`; `Clock.Now()` (RTC, секунды с 1970), `ToDate`, `Today`, `MonthName`, `DayName` |
+| `Nekotia.User.Poll` / `Device` | `Poll.Wait(PollFd*, n, timeout)` — готовность нескольких fd; `Device.Map/Unmap` (mmap), `Device.Control` (ioctl) |
+| `Nekotia.User.SharedMemory` / `Channel` | `SharedMemory.Create(bytes)`; `Channel.Listen/Connect/Accept/Send/Receive` — сообщения с передачей fd |
+| `Nekotia.Gui.*` (`sdk/Nekotia.Gui`) | `Canvas`, `Font`, `Theme`, `App`/`Window` (клиент), `WindowServer`/`Screen`/`InputDevice` (свой рабочий стол) — см. [GRAPHICS.md](GRAPHICS.md) |
 
 ## SDK (кратко)
 

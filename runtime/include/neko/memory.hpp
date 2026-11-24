@@ -89,6 +89,8 @@ enum class PageFlags : uint32_t {
     User = 4,
     Uncached = 8,        // MMIO
     WriteCombining = 16, // framebuffers
+    Shared = 32,         // user pages whose frame belongs to someone else (shared memory, a framebuffer):
+                         // space_destroy / unmap leave the frame alone
 };
 NEKO_ENUM_OPERATORS(PageFlags)
 

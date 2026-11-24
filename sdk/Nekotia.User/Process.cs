@@ -128,6 +128,20 @@ public static unsafe class Memory
     [Native("::neko::user::heap_total")]
     public static extern ulong TotalBytes();
 
+    [Native("::neko::user::mem_copy")]
+    public static extern void Copy(void* destination, void* source, ulong bytes);
+
+    /// <summary>Like Copy, for overlapping ranges.</summary>
+    [Native("::neko::user::mem_move")]
+    public static extern void Move(void* destination, void* source, ulong bytes);
+
+    [Native("::neko::user::mem_set")]
+    public static extern void Set(void* destination, byte value, ulong bytes);
+
+    /// <summary><paramref name="count"/> 32-bit words of <paramref name="value"/> (pixels).</summary>
+    [Native("::neko::user::mem_fill32")]
+    public static extern void Fill32(uint* destination, uint value, ulong count);
+
     public static T* New<T>() where T : unmanaged => (T*)AllocZeroed((ulong)sizeof(T));
 
     public static T* NewArray<T>(ulong count) where T : unmanaged => (T*)AllocZeroed(count * (ulong)sizeof(T));

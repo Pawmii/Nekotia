@@ -4,6 +4,7 @@
 #   make run-host   run the kernel as a Linux process (no QEMU needed)
 #   make iso        bootable hybrid BIOS/UEFI ISO (needs limine + xorriso)
 #   make run        boot the ISO in QEMU (BIOS), serial on this terminal
+#   make run-desktop  the same, straight into the nekowm desktop
 #   make run-uefi   same with OVMF firmware
 #   make debug      QEMU paused with a gdb stub on :1234
 #   make test       boot in QEMU (BIOS + UEFI), run the self tests, fail on any failure
@@ -29,7 +30,7 @@ XORRISO    ?= xorriso
 LIMINE     ?= limine
 LIMINE_DIR ?= $(firstword $(wildcard /usr/share/limine third_party/limine-bin))
 OVMF       ?= $(firstword $(wildcard /usr/share/edk2/x64/OVMF.4m.fd /usr/share/edk2-ovmf/x64/OVMF.fd /usr/share/ovmf/x64/OVMF.fd /usr/share/OVMF/OVMF_CODE.fd))
-QEMU_FLAGS ?= -M q35 -cpu qemu64,+smep,+smap -m 256M -smp 4 -serial stdio -no-reboot -no-shutdown
+QEMU_FLAGS ?= -M q35 -cpu qemu64,+smep,+smap -m 512M -smp 4 -serial stdio -no-reboot -no-shutdown -rtc base=localtime
 # make debug builds an -O0 kernel in build/debug for faithful C# line stepping in gdb
 HEAP_SIZE  ?= 4194304  # initial kernel heap; it grows on demand
 
@@ -70,7 +71,7 @@ HOST_FLAGS := $(COMMON_FLAGS) -O1 -DNEKO_HOSTED=1 $(HOST_SAN)
 KERNEL_OBJS := $(patsubst %,$(BUILD)/kernel/%.o,$(KERNEL_SRCS) $(KERNEL_ASM)) $(BUILD)/kernel/gen.o
 HOST_OBJS   := $(patsubst %,$(BUILD)/host/%.o,$(HOST_SRCS) $(CORE_ASM)) $(BUILD)/host/gen.o
 
-.PHONY: all kernel gen check test-nekoc test-lsp test-debug host run-host iso run run-uefi debug test doctor tools clean vscode-ext user initrd
+.PHONY: all kernel gen check test-nekoc test-lsp test-debug host run-host iso run run-uefi run-desktop debug test doctor tools clean vscode-ext user initrd
 
 all: kernel
 
@@ -138,7 +139,7 @@ $(BUILD)/kernel/gen.o: $(GEN_CPP)
 # 0x400000. They go into /bin of the initrd (below).
 
 USER_PROGRAMS := $(sort $(patsubst user/%/nekotia.json,%,$(wildcard user/*/nekotia.json)))
-USER_SDK      := $(shell find sdk/Nekotia.User -name '*.cs') $(wildcard sdk/Nekotia.Sdk/*.cs)
+USER_SDK      := $(shell find sdk/Nekotia.User sdk/Nekotia.Gui -name '*.cs') $(wildcard sdk/Nekotia.Sdk/*.cs)
 USER_RT_SRCS  := runtime/user/src/user.cpp runtime/src/core/math.cpp runtime/src/freestanding/libc.cpp runtime/user/src/crt0.S \
                  runtime/src/common/exceptions.cpp runtime/src/common/jump.S
 USER_FLAGS := -std=c++20 $(OPT) -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable \
@@ -186,10 +187,11 @@ INITRD_FILES := $(shell find initrd -type f 2>/dev/null)
 
 initrd: $(BUILD)/initrd.tar
 
-$(BUILD)/initrd.tar: $(USER_BINS) $(INITRD_FILES)
+$(BUILD)/initrd.tar: $(USER_BINS) $(INITRD_FILES) $(FONT)
 	rm -rf $(BUILD)/initrd_root
 	mkdir -p $(BUILD)/initrd_root/bin
 	$(if $(INITRD_FILES),cp -r initrd/. $(BUILD)/initrd_root/)
+	mkdir -p $(BUILD)/initrd_root/usr/share/fonts && cp $(FONT) $(BUILD)/initrd_root/usr/share/fonts/
 	$(if $(USER_BINS),cp $(USER_BINS) $(BUILD)/initrd_root/bin/)
 	tar --format=ustar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf $@ -C $(BUILD)/initrd_root .
 	@echo "initrd: $@ ($$(du -h $@ | cut -f1), $$(tar -tf $@ | wc -l) entries)"
@@ -259,7 +261,9 @@ DISK_FLAGS  = -drive file=$(DISK),if=none,id=disk0,format=raw -device virtio-blk
 NET_FLAGS  ?= -netdev user,id=net0,hostfwd=tcp::8080-:80,hostfwd=udp::5555-:5555 -device virtio-net-pci,netdev=net0 $(USB_FLAGS)
 # USB: an xHCI controller with a keyboard — typing in the QEMU window goes through the USB driver.
 # (USB_FLAGS="… -device usb-mouse,bus=xhci.0" adds a mouse; QEMU then grabs the pointer on click.)
-USB_FLAGS  ?= -device qemu-xhci,id=xhci -device usb-kbd,bus=xhci.0
+USB_FLAGS  ?= -device qemu-xhci,id=xhci -device usb-kbd,bus=xhci.0 $(POINTER_FLAGS)
+# Pointer for the desktop (nekowm): a virtio tablet follows the host cursor without grabbing it.
+POINTER_FLAGS ?= -device virtio-tablet-pci
 TEST_DISK  := $(BUILD)/test-disk.img
 TEST_FAT   := $(BUILD)/test-fat.img
 TEST_SATA  := $(BUILD)/test-sata.img
@@ -295,6 +299,14 @@ test: $(BUILD)/nekotia-test.iso
 	@echo "test: all passed (BIOS$(if $(OVMF), + UEFI), FAT32 image checked)"
 
 run: $(BUILD)/nekotia.iso $(DISK)
+	$(QEMU) $(QEMU_FLAGS) $(DISK_FLAGS) -cdrom $<
+
+# Boots straight into the desktop (init=nekowm); leaving it ("Exit desktop") drops to the kernel shell.
+$(BUILD)/nekotia-desktop.iso: $(BUILD)/nekotia.elf $(BUILD)/limine.conf $(BUILD)/initrd.tar
+	sed 's/^\( *cmdline:\).*/\1 loglevel=info init=nekowm/' $(BUILD)/limine.conf > $(BUILD)/limine-desktop.conf
+	$(call make-iso,$(BUILD)/limine-desktop.conf,$@,$(BUILD)/iso_desktop)
+
+run-desktop: $(BUILD)/nekotia-desktop.iso $(DISK)
 	$(QEMU) $(QEMU_FLAGS) $(DISK_FLAGS) -cdrom $<
 
 run-uefi: $(BUILD)/nekotia.iso $(DISK)

@@ -27,6 +27,7 @@ constexpr uint64_t kPat4K = 1ull << 7;    // PTE: PAT index bit
 constexpr uint64_t kPat2M = 1ull << 12;   // PDE with kHuge: PAT index bit
 constexpr uint64_t kGlobal = 1ull << 8;     // kernel pages: kept in the TLB across CR3 switches (CR4.PGE)
 constexpr uint64_t kNoExecute = 1ull << 63;
+constexpr uint64_t kForeign = 1ull << 9;    // available bit: the frame is not the address space's (PageFlags::Shared)
 constexpr uint64_t kAddress = 0x000FFFFFFFFFF000ull;
 constexpr uint64_t kPage = 0x1000;
 constexpr uint64_t kLargePage = 0x200000;
@@ -87,6 +88,7 @@ uint64_t leaf_flags(PageFlags f, bool large) {
     if (!has(f, PageFlags::Execute) && g_nx) v |= kNoExecute;
     if (has(f, PageFlags::Uncached)) v |= kCacheDisable | kWriteThrough;
     else if (has(f, PageFlags::WriteCombining) && g_wc) v |= large ? kPat2M : kPat4K;
+    if (has(f, PageFlags::Shared) && !large) v |= kForeign;
     return v;
 }
 
@@ -338,7 +340,7 @@ void space_destroy(uint64_t* pml4) {
                 if (!(pd[k] & kPresent)) continue;
                 uint64_t* pt = table(pd[k]);
                 for (int l = 0; l < 512; ++l)
-                    if (pt[l] & kPresent) pmm::free_page(pmm::phys_to_virt(pt[l] & kAddress));
+                    if ((pt[l] & kPresent) && !(pt[l] & kForeign)) pmm::free_page(pmm::phys_to_virt(pt[l] & kAddress));
                 pmm::free_page(pt);
                 --g_table_pages;
             }
@@ -376,11 +378,46 @@ uint64_t space_unmap(uint64_t* pml4, uint64_t virt) {
     return phys;
 }
 
+uint64_t space_unmap_range(uint64_t* pml4, uint64_t virt, uint64_t pages, void (*each)(uint64_t, void*), void* ctx) {
+    if (virt >= 0x0000800000000000ull || pages == 0) return 0;
+    if (pages > (0x0000800000000000ull - virt) / kPage) pages = (0x0000800000000000ull - virt) / kPage;
+    // Clear the entries in chunks (the lock is held for a bounded time), remembering the frames.
+    constexpr uint64_t kChunk = 256;
+    uint64_t frames[kChunk];
+    uint64_t mapped = 0;
+    for (uint64_t done = 0; done < pages;) {
+        uint64_t n = pages - done < kChunk ? pages - done : kChunk;
+        {
+            sync::ScopedLock vm_guard(g_vm_lock);
+            for (uint64_t i = 0; i < n; ++i) {
+                uint64_t* pte = entry_in(pml4, virt + (done + i) * kPage, 0, false);
+                if (!pte || !(*pte & kPresent)) {
+                    frames[i] = ~0ull;
+                    continue;
+                }
+                frames[i] = (*pte & kAddress) | ((*pte & kForeign) ? 1 : 0);
+                *pte = 0;
+            }
+        }
+        uint64_t start = virt + done * kPage;
+        smp::tlb_flush_local(start, n);
+        smp::tlb_shootdown_range(start, n);  // before anyone may reuse the frames
+        for (uint64_t i = 0; i < n; ++i) {
+            if (frames[i] == ~0ull) continue;
+            ++mapped;
+            if (each) each(frames[i], ctx);
+        }
+        done += n;
+    }
+    return mapped;
+}
+
 bool space_protect(uint64_t* pml4, uint64_t virt, PageFlags flags) {
     {
         sync::ScopedLock vm_guard(g_vm_lock);
         uint64_t* pte = entry_in(pml4, virt & ~(kPage - 1), 0, false);
-        if (!pte || !(*pte & kPresent) || !(*pte & kUser)) return false;
+        // Shared pages keep the rights they were mapped with (a read-only mapping must not become writable).
+        if (!pte || !(*pte & kPresent) || !(*pte & kUser) || (*pte & kForeign)) return false;
         *pte = (*pte & kAddress) | leaf_flags(flags | PageFlags::User, false);
     }
     invalidate(virt);

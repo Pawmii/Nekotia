@@ -13,6 +13,7 @@
 //            on its way back to ring 3 (check_killed). Once the last one is off its CPU,
 //            thread_freed frees the address space, closes the files and wakes the parent in wait()
 //   wait   — the parent collects the exit code and the Process record is freed
+#include <neko/ipc.hpp>
 #include <neko/process.hpp>
 #include <neko/runtime.hpp>
 #include <neko/vfs.hpp>
@@ -247,6 +248,9 @@ void close_files(Process* p) {
     }
     vfs::node_release(p->cwd);
     p->cwd = nullptr;
+    // mmap()s: their frames are not ours (vmm leaves Shared pages alone), only the files go.
+    for (uint32_t i = 0; i < p->map_count; ++i) vfs::close(p->maps[i].file);
+    p->map_count = 0;
 }
 
 void release(Process* p) {
@@ -852,20 +856,25 @@ bool in_alloc_area(Process* p, uint64_t address, uint64_t length) {
            address + length <= p->alloc_next;
 }
 
+int64_t unmap_mapping(Process* p, uint64_t address);
+
 int64_t sys_unmap(uint64_t address, uint64_t length) {
     Process* p = current();
+    if (address >= kUserMapBase && address < kUserMapLimit) return unmap_mapping(p, address);
     length = mem::align_up(length, kPage);
     {
         sync::ScopedLock guard(p->lock);
         if (!in_alloc_area(p, address, length)) return kErrBadArgument;
     }
-    for (uint64_t v = address; v < address + length; v += kPage) {
-        uint64_t phys = vmm::space_unmap(p->pml4, v);
-        if (phys == ~0ull) continue;
-        pmm::free_page(pmm::phys_to_virt(phys));
-        sync::ScopedLock guard(p->lock);
-        --p->user_pages;
-    }
+    // Frames of the program's own pages go back to the kernel; shared ones belong to their object.
+    auto give_back = [](uint64_t frame, void* ctx) {
+        if (frame & 1) return;
+        pmm::free_page(pmm::phys_to_virt(frame));
+        auto* proc = static_cast<Process*>(ctx);
+        sync::ScopedLock guard(proc->lock);
+        --proc->user_pages;
+    };
+    vmm::space_unmap_range(p->pml4, address, length / kPage, give_back, p);
     sync::ScopedLock guard(p->lock);
     // Merge with a neighbouring hole, or remember it (when the table is full the range is simply not reused).
     for (uint32_t i = 0; i < p->hole_count; ++i) {
@@ -957,6 +966,173 @@ int64_t sys_futex_wake(uint64_t address, uint64_t count) {
 }
 
 int64_t mkdir_op(const char* p) { return vfs::mkdir(p); }
+
+// ---- mmap: objects (shared memory, framebuffers) in the mapping area
+
+int64_t unmap_mapping(Process* p, uint64_t address) {
+    uint64_t size = 0;
+    vfs::File* file = nullptr;
+    {
+        sync::ScopedLock guard(p->lock);
+        for (uint32_t i = 0; i < p->map_count; ++i) {
+            if (p->maps[i].start != address) continue;
+            size = p->maps[i].size;
+            file = p->maps[i].file;
+            for (uint32_t j = i + 1; j < p->map_count; ++j) p->maps[j - 1] = p->maps[j];
+            --p->map_count;
+            break;
+        }
+    }
+    if (!file) return kErrBadArgument;  // only whole mappings, by their start address
+    vmm::space_unmap_range(p->pml4, address, size / kPage, nullptr, nullptr);  // frames stay the object's
+    vfs::close(file);
+    return 0;
+}
+
+int64_t sys_mmap(uint64_t fd, uint64_t length, uint64_t flags) {
+    Process* p = current();
+    if (length == 0 || length > kUserMapLimit - kUserMapBase || (flags & ~1ull)) return kErrBadArgument;
+    bool write = flags & 1;
+    vfs::File* f = take(fd);
+    if (!f) return kErrBadFd;
+    if (write && !(vfs::flags(f) & vfs::kWrite)) {
+        vfs::close(f);
+        return kErrAccess;
+    }
+    uint64_t size = mem::align_up(length, kPage);
+    uint64_t at = 0;
+    {
+        // First gap that fits (the table is sorted by address); the entry reserves the range at once.
+        sync::ScopedLock guard(p->lock);
+        uint32_t slot = 0;
+        uint64_t cursor = kUserMapBase;
+        for (; slot < p->map_count; ++slot) {
+            if (p->maps[slot].start - cursor >= size) break;
+            cursor = p->maps[slot].start + p->maps[slot].size + kPage;  // a guard page between mappings
+        }
+        if (p->map_count == kMaxMappings || cursor + size > kUserMapLimit) {
+            vfs::close(f);
+            return p->map_count == kMaxMappings ? kErrLimit : kErrNoMemory;
+        }
+        for (uint32_t j = p->map_count; j > slot; --j) p->maps[j] = p->maps[j - 1];
+        p->maps[slot] = {cursor, size, f};
+        ++p->map_count;
+        at = cursor;
+    }
+    int64_t e = 0;
+    for (uint64_t off = 0; off < size && e == 0; off += kPage) {
+        uint64_t phys = 0;
+        bool wc = false;
+        e = vfs::map(f, off, phys, wc);
+        if (e < 0) break;
+        vmm::PageFlags pf = vmm::PageFlags::Shared | (write ? vmm::PageFlags::Write : vmm::PageFlags::None) |
+                            (wc ? vmm::PageFlags::WriteCombining : vmm::PageFlags::None);
+        if (!vmm::space_map(p->pml4, at + off, phys, pf)) e = kErrNoMemory;
+    }
+    if (e < 0) {
+        unmap_mapping(p, at);  // what got mapped, and the file
+        return e;
+    }
+    return int64_t(at);
+}
+
+// ---- poll, ioctl
+
+int64_t sys_poll(uint64_t user_fds, uint64_t count, uint64_t timeout_ms) {
+    if (count > kMaxPollFds) return kErrBadArgument;
+    PollFd fds[kMaxPollFds];
+    vfs::File* files[kMaxPollFds];
+    uint32_t wanted[kMaxPollFds], ready[kMaxPollFds];
+    if (count && !copy_from_user(fds, reinterpret_cast<void*>(user_fds), count * sizeof(PollFd))) return kErrBadAddress;
+    for (uint32_t i = 0; i < count; ++i) {
+        files[i] = fds[i].fd < 0 ? nullptr : take(uint64_t(fds[i].fd));
+        wanted[i] = fds[i].events & (vfs::kPollIn | vfs::kPollOut);
+    }
+    int64_t r = vfs::poll_wait(files, wanted, ready, uint32_t(count), timeout_ms);
+    for (uint32_t i = 0; i < count; ++i) {
+        fds[i].revents = uint16_t(ready[i]);
+        if (!files[i] && fds[i].fd >= 0) {
+            fds[i].revents = 0x8000;  // a bad fd is "ready" with an error, like POLLNVAL
+            if (r >= 0) ++r;
+        }
+        vfs::close(files[i]);
+    }
+    if (r >= 0 && count && !copy_to_user(reinterpret_cast<void*>(user_fds), fds, count * sizeof(PollFd))) return kErrBadAddress;
+    return r;
+}
+
+int64_t sys_ioctl(uint64_t fd, uint64_t request, uint64_t arg) {
+    vfs::File* f = take(fd);
+    if (!f) return kErrBadFd;
+    int64_t r = vfs::control(f, request, arg);
+    vfs::close(f);
+    return r;
+}
+
+// ---- shared memory and channels (neko/ipc.hpp)
+
+int64_t install_new(int64_t e, vfs::File* f) { return e < 0 ? e : install(f); }
+
+int64_t sys_shm_create(uint64_t bytes) {
+    vfs::File* f;
+    int64_t e = ipc::shm_create(bytes, f);
+    return install_new(e, f);
+}
+
+int64_t sys_ipc_name(uint64_t name, bool listen) {
+    char n[ipc::kMaxName + 2];
+    int64_t e = copy_string(reinterpret_cast<const void*>(name), n, sizeof(n));
+    if (e < 0) return e == kErrBadArgument ? kErrNameTooLong : e;
+    vfs::File* f;
+    e = listen ? ipc::listen(n, f) : ipc::connect(n, f);
+    return install_new(e, f);
+}
+
+int64_t sys_ipc_accept(uint64_t fd) {
+    vfs::File* l = take(fd);
+    if (!l) return kErrBadFd;
+    vfs::File* f;
+    int64_t e = ipc::accept(l, f);
+    vfs::close(l);
+    return install_new(e, f);
+}
+
+int64_t sys_ipc_send(uint64_t fd, uint64_t data, uint64_t length, uint64_t attach_fd) {
+    if (length > ipc::kMaxMessage) return kErrBadArgument;
+    uint8_t buffer[ipc::kMaxMessage];
+    if (length && !copy_from_user(buffer, reinterpret_cast<void*>(data), length)) return kErrBadAddress;
+    vfs::File* f = take(fd);
+    if (!f) return kErrBadFd;
+    vfs::File* attach = nullptr;
+    if (int64_t(attach_fd) >= 0 && !(attach = take(attach_fd))) {
+        vfs::close(f);
+        return kErrBadFd;
+    }
+    int64_t r = ipc::send(f, buffer, length, attach);
+    vfs::close(attach);  // the message holds its own reference
+    vfs::close(f);
+    return r;
+}
+
+int64_t sys_ipc_recv(uint64_t fd, uint64_t out, uint64_t capacity, uint64_t fd_out) {
+    if (capacity > ipc::kMaxMessage) capacity = ipc::kMaxMessage;
+    if (capacity && !check_write(reinterpret_cast<void*>(out), capacity)) return kErrBadAddress;
+    vfs::File* f = take(fd);
+    if (!f) return kErrBadFd;
+    uint8_t buffer[ipc::kMaxMessage];
+    vfs::File* attached = nullptr;
+    int64_t r = ipc::recv(f, buffer, capacity, attached);
+    vfs::close(f);
+    int32_t new_fd = -1;
+    if (attached) {
+        int64_t e = install(attached);  // closes it when the table is full
+        if (e < 0) return e;
+        new_fd = int32_t(e);
+    }
+    if (r > 0 && !copy_to_user(reinterpret_cast<void*>(out), buffer, uint64_t(r))) r = kErrBadAddress;
+    if (fd_out && !copy_to_user(reinterpret_cast<void*>(fd_out), &new_fd, sizeof(new_fd))) r = kErrBadAddress;
+    return r;
+}
 
 }  // namespace
 
@@ -1084,6 +1260,15 @@ extern "C" void neko_syscall_dispatch(neko::proc::SyscallFrame* f) {
         case Syscall::FutexWake: r = sys_futex_wake(f->rdi, f->rsi); break;
         case Syscall::Unmap: r = sys_unmap(f->rdi, f->rsi); break;
         case Syscall::Protect: r = sys_protect(f->rdi, f->rsi, f->rdx); break;
+        case Syscall::Poll: r = sys_poll(f->rdi, f->rsi, f->rdx); break;
+        case Syscall::Mmap: r = sys_mmap(f->rdi, f->rsi, f->rdx); break;
+        case Syscall::Ioctl: r = sys_ioctl(f->rdi, f->rsi, f->rdx); break;
+        case Syscall::ShmCreate: r = sys_shm_create(f->rdi); break;
+        case Syscall::IpcListen: r = sys_ipc_name(f->rdi, true); break;
+        case Syscall::IpcConnect: r = sys_ipc_name(f->rdi, false); break;
+        case Syscall::IpcAccept: r = sys_ipc_accept(f->rdi); break;
+        case Syscall::IpcSend: r = sys_ipc_send(f->rdi, f->rsi, f->rdx, f->r10); break;
+        case Syscall::IpcRecv: r = sys_ipc_recv(f->rdi, f->rsi, f->rdx, f->r10); break;
         case Syscall::SetTls:
             if (f->rdi >= kUserEnd) {
                 r = kErrBadAddress;

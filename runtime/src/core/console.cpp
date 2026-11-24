@@ -146,6 +146,7 @@ uint32_t g_x = 0, g_y = 0;
 uint32_t g_fg = kDefaultFg, g_bg = kDefaultBg;
 bool g_cursor_visible = true;
 bool g_cursor_drawn = false;
+bool g_paused = false;  // a display server owns the screen: keep the cells, touch no pixels
 
 // UTF-8 decoder
 uint32_t g_utf8_cp = 0;
@@ -160,6 +161,7 @@ uint32_t g_param_count = 0;
 uint32_t* pixel_row(uint32_t y) { return reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(g_fb.Address) + y * g_fb.Pitch); }
 
 void paint(uint32_t col, uint32_t row, const Cell& c) {
+    if (g_paused) return;
     const uint8_t* glyph = g_font.glyphs + size_t(glyph_for(c.cp)) * g_font.bytes_per_glyph;
     uint32_t px = col * g_font.width;
     for (uint32_t gy = 0; gy < g_font.height; ++gy) {
@@ -187,7 +189,7 @@ void hide_cursor() {
 }
 
 void show_cursor() {
-    if (!g_cursor_visible || g_x >= g_cols || g_y >= g_rows) return;
+    if (g_paused || !g_cursor_visible || g_x >= g_cols || g_y >= g_rows) return;
     const Cell& c = g_cells[g_y * g_cols + g_x];
     for (uint32_t gy = g_font.height - 2; gy < g_font.height; ++gy) {
         uint32_t* out = pixel_row(g_y * g_font.height + gy) + g_x * g_font.width;
@@ -398,7 +400,7 @@ void set_cursor_visible(bool visible) {
 }
 
 void draw_large(uint32_t column, uint32_t row, const char* text, uint32_t fg, uint32_t bg, uint32_t scale) {
-    if (!g_ready || !text) return;
+    if (!g_ready || !text || g_paused) return;
     uint32_t x0 = column * g_font.width;
     uint32_t y0 = row * g_font.height;
     for (const uint8_t* p = reinterpret_cast<const uint8_t*>(text); *p; ++p) {
@@ -420,8 +422,16 @@ void draw_large(uint32_t column, uint32_t row, const char* text, uint32_t fg, ui
     }
 }
 
+void set_paused(bool paused) {
+    bool was = g_paused;
+    g_paused = paused;
+    if (was && !paused) redraw();
+}
+
+bool paused() { return g_paused; }
+
 void redraw() {
-    if (!g_ready) return;
+    if (!g_ready || g_paused) return;
     for (uint32_t i = 0; i < g_cols * g_rows; ++i) g_drawn[i] = {0xFFFFFFFF, 0, 0};
     g_cursor_drawn = false;
     for (uint64_t y = uint64_t(g_rows) * g_font.height; y < g_fb.Height; ++y) {

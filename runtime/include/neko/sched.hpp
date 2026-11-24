@@ -5,6 +5,7 @@
 // stack with a guard page below it. The FPU/SSE state is saved on every switch.
 #pragma once
 
+#include <neko/smp.hpp>
 #include <neko/types.hpp>
 
 namespace neko::sync {
@@ -16,7 +17,10 @@ struct RawLock {
     volatile uint32_t value;
     void acquire() {
         while (__atomic_exchange_n(&value, 1u, __ATOMIC_ACQUIRE))
-            while (__atomic_load_n(&value, __ATOMIC_RELAXED)) __builtin_ia32_pause();
+            while (__atomic_load_n(&value, __ATOMIC_RELAXED)) {
+                smp::tlb_service();
+                __builtin_ia32_pause();
+            }
     }
     void release() { __atomic_store_n(&value, 0u, __ATOMIC_RELEASE); }
 };

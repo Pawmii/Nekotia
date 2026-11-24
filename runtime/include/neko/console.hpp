@@ -25,6 +25,10 @@ uint32_t cursor_row();
 void set_cursor(uint32_t column, uint32_t row);
 void set_cursor_visible(bool visible);
 void redraw();  // repaint everything (after something else drew on the framebuffer)
+// While paused (a display server owns the screen, neko/display.hpp) the console keeps its text but
+// draws nothing; un-pausing repaints the whole screen. The stop screen un-pauses it first.
+void set_paused(bool paused);
+bool paused();
 
 // Draws ASCII/UTF-8 text `scale` times larger, top-left at cell (column, row), straight to the framebuffer.
 // The cells underneath are not updated — meant for screens that are drawn once (the stop screen).
@@ -43,5 +47,6 @@ void write_dec(int64_t value);
 void write_udec(uint64_t value);
 void write_size(uint64_t bytes);
 void write_float(double value, int32_t decimals);  // fixed notation, e.g. 3.142
+void pause_console(bool paused);  // console::set_paused under the output lock
 
 }  // namespace neko::term

@@ -1,0 +1,18 @@
+{
+  // sysmon: a Nekotia desktop application (a window protocol client, sdk/Nekotia.Gui/App.cs).
+  "name": "sysmon",
+  "target": "user",
+  "sources": [
+    "../../sdk/Nekotia.Sdk/Attributes.cs",
+    "../../sdk/Nekotia.Sdk/Intrinsics.cs",
+    "../../sdk/Nekotia.Sdk/Debug.cs",
+    "../../sdk/Nekotia.Sdk/Maths.cs",
+    "../../sdk/Nekotia.Sdk/Text.cs",
+    "../../sdk/Nekotia.User",
+    "../../sdk/Nekotia.Gui",
+    "."
+  ],
+  "output": "../../build/user/sysmon/gen",
+  "lineDirectives": true,
+  "defines": ["NEKOTIA", "NEKOTIA_USER"]
+}

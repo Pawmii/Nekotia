@@ -1,0 +1,103 @@
+// CMOS real-time clock (ports 0x70/0x71): read once at boot, then the time of day is that plus the uptime.
+// The RTC keeps whatever the firmware / QEMU put there (`-rtc base=localtime` makes it local time), so
+// Nekotia treats it as local time without a time zone. Programs get it with system call 49.
+using Nekotia;
+using Nekotia.Hal;
+
+namespace Nekotia.OS.Drivers;
+
+public struct DateTime
+{
+    public int Year, Month, Day, Hour, Minute, Second;
+    public int WeekDay;   // 0 = Monday
+}
+
+public static unsafe class Rtc
+{
+    static long _bootSeconds;   // seconds since 1970-01-01 00:00 at uptime 0
+    static bool _valid;
+
+    public static bool Valid => _valid;
+
+    public static void Init()
+    {
+        DateTime a = default, b = default;
+        for int tries in 0..5 {
+            Read(out a);
+            Read(out b);
+            if (Same(a, b))
+                break;
+        }
+        if (b.Year < 2000 || b.Month < 1 || b.Month > 12 || b.Day < 1 || b.Day > 31)
+            return;
+        _bootSeconds = ToSeconds(b) - (long)(Time.UptimeMs() / 1000);
+        _valid = true;
+        Log.Info($"rtc: {b.Year}-{b.Month:D2}-{b.Day:D2} {b.Hour:D2}:{b.Minute:D2}:{b.Second:D2}");
+    }
+
+    /// Seconds since 1970-01-01 (local time), 0 when the clock could not be read.
+    public static long Now() => _valid ? _bootSeconds + (long)(Time.UptimeMs() / 1000) : 0;
+
+    @syscall(49)
+    static long ClockTime() => Now();
+
+    static bool Same(DateTime a, DateTime b) =>
+        a.Second == b.Second && a.Minute == b.Minute && a.Hour == b.Hour && a.Day == b.Day && a.Month == b.Month && a.Year == b.Year;
+
+    static byte Cmos(byte register)
+    {
+        Port.Out8(0x70, register);
+        return Port.In8(0x71);
+    }
+
+    static void Read(out DateTime t)
+    {
+        t = default;
+        for int i in 0..100000 {
+            if ((Cmos(0x0A) & 0x80) == 0)
+                break;   // no update in progress
+        }
+        int second = Cmos(0x00), minute = Cmos(0x02), hour = Cmos(0x04);
+        int day = Cmos(0x07), month = Cmos(0x08), year = Cmos(0x09), century = Cmos(0x32);
+        byte status = Cmos(0x0B);
+        bool pm = (hour & 0x80) != 0;
+        hour &= 0x7F;
+        if ((status & 0x04) == 0) {   // BCD
+            second = Bcd(second);
+            minute = Bcd(minute);
+            hour = Bcd(hour);
+            day = Bcd(day);
+            month = Bcd(month);
+            year = Bcd(year);
+            century = Bcd(century);
+        }
+        if ((status & 0x02) == 0) {   // 12-hour clock
+            if (hour == 12)
+                hour = 0;
+            if (pm)
+                hour += 12;
+        }
+        t.Second = second;
+        t.Minute = minute;
+        t.Hour = hour;
+        t.Day = day;
+        t.Month = month;
+        t.Year = (century >= 19 && century <= 21 ? century * 100 : 2000) + year;
+    }
+
+    static int Bcd(int v) => (v & 15) + (v >> 4) * 10;
+
+    /// Days since 1970-01-01 of a civil date (Howard Hinnant's algorithm).
+    public static long DaysFromCivil(int y, int m, int d)
+    {
+        y -= m <= 2 ? 1 : 0;
+        long era = (y >= 0 ? y : y - 399) / 400;
+        long yoe = y - era * 400;
+        long doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+        long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        return era * 146097 + doe - 719468;
+    }
+
+    static long ToSeconds(DateTime t) =>
+        DaysFromCivil(t.Year, t.Month, t.Day) * 86400 + t.Hour * 3600 + t.Minute * 60 + t.Second;
+}

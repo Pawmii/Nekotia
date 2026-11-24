@@ -1,0 +1,19 @@
+{
+  // nekowm: the first Nekotia desktop — window manager, compositor, panel and launcher in one program.
+  // It speaks the window protocol (sdk/Nekotia.Gui/Protocol.cs) through WindowServer; applications use App.
+  "name": "nekowm",
+  "target": "user",
+  "sources": [
+    "../../sdk/Nekotia.Sdk/Attributes.cs",
+    "../../sdk/Nekotia.Sdk/Intrinsics.cs",
+    "../../sdk/Nekotia.Sdk/Debug.cs",
+    "../../sdk/Nekotia.Sdk/Maths.cs",
+    "../../sdk/Nekotia.Sdk/Text.cs",
+    "../../sdk/Nekotia.User",
+    "../../sdk/Nekotia.Gui",
+    "."
+  ],
+  "output": "../../build/user/nekowm/gen",
+  "lineDirectives": true,
+  "defines": ["NEKOTIA", "NEKOTIA_USER"]
+}

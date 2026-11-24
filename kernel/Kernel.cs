@@ -30,7 +30,9 @@ public static unsafe class Kernel
         SelfTest.Run(false);
         MountDisk();
         Motd();
+        Rtc.Init();
         Keyboard.Init();
+        Mouse.Init();
         RunInit((byte*)info->CommandLine);
         Shell.Run();
     }

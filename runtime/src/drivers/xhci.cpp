@@ -13,6 +13,7 @@
 // The event ring is drained in the MSI-X handler: command and control-transfer completions wake the
 // thread waiting for them; HID reports are decoded there (keyboard → PS/2 scancodes for the C#
 // keyboard driver, which runs in interrupt context too) and the transfer is queued again.
+#include <neko/input.hpp>
 #include <neko/process.hpp>
 #include <neko/runtime.hpp>
 #include <neko/usb.hpp>
@@ -200,8 +201,14 @@ void mouse_report(const uint8_t* r, uint32_t length) {
     if (length >= 3) {
         g_mouse.x += int8_t(r[1]);
         g_mouse.y += int8_t(r[2]);
+        input::motion(int8_t(r[1]), int8_t(r[2]));
     }
-    if (length >= 4) g_mouse.wheel += int8_t(r[3]);
+    static uint8_t last = 0;  // all USB mice together count as one device
+    input::buttons(last, r[0] & 7);
+    if (length >= 4) {
+        g_mouse.wheel += int8_t(r[3]);
+        input::wheel(-int8_t(r[3]));  // HID: positive = away from the user; events: positive = scroll down
+    }
     ++g_mouse.reports;
 }
 

@@ -7,6 +7,9 @@
 #include <neko/usb.hpp>
 #include <neko/boot.hpp>
 #include <neko/console.hpp>
+#include <neko/display.hpp>
+#include <neko/input.hpp>
+#include <neko/ipc.hpp>
 #include <neko/crash.hpp>
 #include <neko/exception.hpp>
 #include <neko/fat.hpp>

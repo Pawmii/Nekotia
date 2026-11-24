@@ -61,11 +61,10 @@ public static unsafe class Keyboard
     static void Feed(byte scancode) => Handle(scancode);
 
     @irq(1)
-    static void OnInterrupt()
-    {
-        byte scancode = Port.In8(DataPort);
-        Handle(scancode);
-    }
+    static void OnInterrupt() => I8042.Drain();
+
+    /// A byte from the PS/2 keyboard port (I8042.Drain, interrupt context).
+    public static void Scancode(byte scancode) => Handle(scancode);
 
     public static bool TryReadKey(out uint key)
     {
@@ -117,6 +116,8 @@ public static unsafe class Keyboard
         _available.Signal();   // wakes ReadKey (allowed from an interrupt handler)
     }
 
+    /// One scancode. While a display server reads /dev/input every press and release goes there as an event
+    /// (with the character the layout gives); otherwise presses become console keys.
     static void Handle(byte scancode)
     {
         if (scancode == 0xE0) {
@@ -125,98 +126,132 @@ public static unsafe class Keyboard
         }
         bool released = (scancode & 0x80) != 0;
         byte code = (byte)(scancode & 0x7F);
+        bool extended = _extended;
+        _extended = false;
 
-        if (_extended) {
-            _extended = false;
-            HandleExtended(code, released);
+        uint key = extended ? DecodeExtended(code, released) : Decode(code, released);
+        if (Input.Grabbed()) {
+            if (!released && code == 0x0E && _ctrl && _alt) {
+                Input.Zap();   // Ctrl+Alt+Backspace: end the display server, the console comes back
+                return;
+            }
+            if (!released && code == 0x58 && _ctrl && _alt) {
+                DumpThreads();   // Ctrl+Alt+F12: what every thread is doing, on the serial port (debugging)
+                return;
+            }
+            Input.Key((ushort)(extended ? 0x100 | code : code), !released, Mods(), released ? 0 : key);
             return;
         }
+        if (released || key == 0)
+            return;
+        // Ctrl+C while a program owns the console ends it (exit code 130) instead of reaching anyone.
+        if (key == 3 && _ctrl && Process.InterruptForeground()) {
+            Terminal.WriteLine(AnsiColor.BrightRed, "^C");
+            return;
+        }
+        Push(key);
+    }
 
+    static void DumpThreads()
+    {
+        Serial.WriteLine("threads (Ctrl+Alt+F12):");
+        ThreadInfo info = default;
+        for (uint i = 0; Thread.GetInfo(i, out info); i++) {
+            Serial.Write($"  {info.Id} pid {info.Pid} ");
+            Serial.Write(info.Name);
+            Serial.Write($" state {(int)info.State} cpu_ms {info.CpuMs} switches {info.Switches} ");
+            Serial.Write(info.BlockedOn);
+            Serial.WriteLine("");
+        }
+    }
+
+    static byte Mods()
+    {
+        byte m = 0;
+        if (_leftShift || _rightShift) m |= Input.ModShift;
+        if (_ctrl) m |= Input.ModCtrl;
+        if (_alt) m |= Input.ModAlt;
+        if (_capsLock) m |= Input.ModCaps;
+        return m;
+    }
+
+    /// Updates the modifiers; returns the key a press stands for (a codepoint, a control code or a Key), 0 for none.
+    static uint Decode(byte code, bool released)
+    {
         switch (code)
         {
             case 0x2A:
                 SetShift(ref _leftShift, released);
-                return;
+                return 0;
             case 0x36:
                 SetShift(ref _rightShift, released);
-                return;
+                return 0;
             case 0x1D:
                 _ctrl = !released;
-                return;
+                return 0;
             case 0x38:
                 SetAlt(released);
-                return;
+                return 0;
         }
         if (released)
-            return;
+            return 0;   // releases carry no character (events still report them)
 
         if (code == 0x3A) {
             _capsLock = !_capsLock;
-            return;
+            return 0;
         }
-        if (code >= 0x3B && code <= 0x44) {
-            Push((uint)Key.F1 + (uint)(code - 0x3B));
-            return;
-        }
-        if (code == 0x57 || code == 0x58) {
-            Push(code == 0x57 ? (uint)Key.F11 : (uint)Key.F12);
-            return;
-        }
+        if (code >= 0x3B && code <= 0x44)
+            return (uint)Key.F1 + (uint)(code - 0x3B);
+        if (code == 0x57 || code == 0x58)
+            return code == 0x57 ? (uint)Key.F11 : (uint)Key.F12;
         if (code >= EnNormal.Length)
-            return;
+            return 0;
 
         uint plain = _russian ? RuNormal[code] : EnNormal[code];
         if (plain == 0)
-            return;
+            return 0;
 
         if (_ctrl) {
             unless (IsLatinKey(code))
-                return;
-            uint control = (uint)(EnNormal[code] - 'a' + 1);   // Ctrl+letter → control code, in any layout
-            // Ctrl+C while a program owns the console ends it (exit code 130) instead of reaching anyone.
-            if (control == 3 && Process.InterruptForeground()) {
-                Terminal.WriteLine(AnsiColor.BrightRed, "^C");
-                return;
-            }
-            Push(control);
-            return;
+                return 0;
+            return (uint)(EnNormal[code] - 'a' + 1);   // Ctrl+letter → control code, in any layout
         }
 
         bool shift = _leftShift || _rightShift;
         if (_capsLock && IsLetter(plain))
             shift = !shift;
-        uint ch = shift ? (_russian ? RuShifted[code] : EnShifted[code]) : plain;
-        Push(ch);
+        return shift ? (_russian ? RuShifted[code] : EnShifted[code]) : plain;
     }
 
-    static void HandleExtended(byte code, bool released)
+    static uint DecodeExtended(byte code, bool released)
     {
         switch (code)
         {
             case 0x1D:
                 _ctrl = !released;
-                return;
+                return 0;
             case 0x38:
                 SetAlt(released);
-                return;
+                return 0;
         }
         if (released)
-            return;
-        switch (code)
+            return 0;
+        return code switch
         {
-            case 0x48: Push((uint)Key.Up); break;
-            case 0x50: Push((uint)Key.Down); break;
-            case 0x4B: Push((uint)Key.Left); break;
-            case 0x4D: Push((uint)Key.Right); break;
-            case 0x47: Push((uint)Key.Home); break;
-            case 0x4F: Push((uint)Key.End); break;
-            case 0x49: Push((uint)Key.PageUp); break;
-            case 0x51: Push((uint)Key.PageDown); break;
-            case 0x52: Push((uint)Key.Insert); break;
-            case 0x53: Push((uint)Key.Delete); break;
-            case 0x1C: Push('\n'); break;   // keypad Enter
-            case 0x35: Push('/'); break;    // keypad /
-        }
+            0x48 => (uint)Key.Up,
+            0x50 => (uint)Key.Down,
+            0x4B => (uint)Key.Left,
+            0x4D => (uint)Key.Right,
+            0x47 => (uint)Key.Home,
+            0x4F => (uint)Key.End,
+            0x49 => (uint)Key.PageUp,
+            0x51 => (uint)Key.PageDown,
+            0x52 => (uint)Key.Insert,
+            0x53 => (uint)Key.Delete,
+            0x1C => '\n',   // keypad Enter
+            0x35 => '/',    // keypad /
+            _ => 0,
+        };
     }
 
     static void SetShift(ref bool shift, bool released)

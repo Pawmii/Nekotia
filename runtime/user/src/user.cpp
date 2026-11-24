@@ -203,6 +203,23 @@ void* map_pages(uint64_t bytes) {
 int64_t unmap_pages(void* address, uint64_t bytes) { return sys::call(34, ptr(address), bytes); }
 int64_t protect_pages(void* address, uint64_t bytes, uint32_t flags) { return sys::call(35, ptr(address), bytes, flags); }
 
+int64_t poll(PollFd* fds, uint32_t count, int64_t timeout_ms) { return sys::call(36, ptr(fds), count, uint64_t(timeout_ms)); }
+int64_t mmap(int32_t fd, uint64_t length, uint32_t flags) { return sys::call(37, uint64_t(fd), length, flags); }
+int64_t munmap(void* address) { return sys::call(34, ptr(address), 0); }
+int64_t ioctl(int32_t fd, uint64_t request, void* arg) { return sys::call(38, uint64_t(fd), request, ptr(arg)); }
+int64_t shm_create(uint64_t bytes) { return sys::call(39, bytes); }
+int64_t ipc_listen(const uint8_t* name) { return sys::call(64, ptr(name)); }
+int64_t ipc_listen(const char* name) { return sys::call(64, ptr(name)); }
+int64_t ipc_connect(const uint8_t* name) { return sys::call(65, ptr(name)); }
+int64_t ipc_connect(const char* name) { return sys::call(65, ptr(name)); }
+int64_t ipc_accept(int32_t fd) { return sys::call(66, uint64_t(fd)); }
+int64_t ipc_send(int32_t fd, const void* data, uint64_t length, int32_t attach_fd) {
+    return sys::call(67, uint64_t(fd), ptr(data), length, uint64_t(int64_t(attach_fd)));
+}
+int64_t ipc_recv(int32_t fd, void* buffer, uint64_t capacity, int32_t* fd_out) {
+    return sys::call(68, uint64_t(fd), ptr(buffer), capacity, ptr(fd_out));
+}
+
 int64_t pipe(int32_t& read_fd, int32_t& write_fd) {
     int32_t fds[2] = {-1, -1};
     int64_t r = sys::call(kPipe, ptr(fds));

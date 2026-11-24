@@ -37,11 +37,16 @@ C++20, а clang собирает из него обычное freestanding-яд�
 - **Сеть** — virtio-net и стек TCP/IP на C#: DHCP, DNS, ping, UDP, TCP. Внутри есть веб-сервер, который открывается в
   браузере хоста, и `fetch`, который качает страницы из интернета.
 - **USB** — контроллер xHCI, клавиатура и мышь.
+- **Графика** — рабочий стол `nekowm` с CPU-композитором: окна-процессы, тени, панель задач, меню запуска, терминал,
+  монитор системы, часы, Paint. Под ним — база для своих DE/WM: `/dev/fb0` и `/dev/input`, общая память, каналы с
+  передачей файлов, `poll`, оконный протокол и SDK `Nekotia.Gui` ([docs/GRAPHICS.md](docs/GRAPHICS.md)).
 - **Отладка** — экран смерти со стеком вызовов в терминах C# (методы, файлы, строки), отладка по строкам C# в gdb и
   VS Code, 190+ самотестов, которые CI прогоняет в QEMU на BIOS и UEFI.
 
 <div align="center">
 <img src="docs/images/shell.png" alt="Shell в ring 3: конвейеры, потоки, DNS, HTTP, файлы, /proc" width="820">
+<br><br>
+<img src="docs/images/desktop.png" alt="Рабочий стол nekowm: терминал, системный монитор и часы — каждое окно отдельный процесс" width="820">
 </div>
 
 ## Быстрый старт
@@ -64,6 +69,7 @@ make run                   # собрать C# → C++ → ядро → ISO и �
 | `cd /mnt`, `write note.txt hi`, `cat note.txt` | `/mnt` — это диск `build/disk.img`, он переживает перезапуск |
 | `sh` | shell в ring 3: `ls /bin \| grep s \| wc`, `primes 3000000 4`, `host example.com`, `fetch example.com \| head -n 5` |
 | `httpd &` в `sh` | затем откройте **http://localhost:8080/** в браузере хоста |
+| `nekowm` | рабочий стол (или сразу `make run-desktop`); Ctrl+Alt+T — терминал, Super — меню |
 | `neko` | котик |
 | `crash null` | посмотреть на экран смерти |
 
@@ -124,7 +130,8 @@ static long TcpConnect(ulong ip, ulong port)
 
 Граница проходит так: всё, что работает с железом и памятью напрямую, написано на C++ в `runtime/` — загрузка,
 таблицы страниц, планировщик, драйверы virtio/AHCI/NVMe/xHCI, VFS и FAT32. Логика поверх этого — на C# в `kernel/`:
-shell, сетевой стек, `/proc`, драйвер клавиатуры, системные вызовы. Программы пользуются SDK `sdk/Nekotia.User`.
+shell, сетевой стек, `/proc`, драйверы клавиатуры и мыши, системные вызовы. Программы пользуются SDK `sdk/Nekotia.User`,
+графические — ещё и `sdk/Nekotia.Gui`.
 Подробное описание всех подсистем — [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Отладка
@@ -148,7 +155,8 @@ shell, сетевой стек, `/proc`, драйвер клавиатуры, с
 
 | Команда | Что делает |
 |---|---|
-| `make run` / `make run-uefi` | собрать и запустить в QEMU (BIOS / UEFI) с диском, сетью и USB-клавиатурой |
+| `make run` / `make run-uefi` | собрать и запустить в QEMU (BIOS / UEFI) с диском, сетью, USB-клавиатурой и планшетом |
+| `make run-desktop` | то же, но сразу в рабочий стол `nekowm` |
 | `make test` | самотесты в QEMU на BIOS и UEFI + проверка FAT32-образа (то же делает CI) |
 | `make test-nekoc` | тесты транслятора |
 | `make run-host` | ядро как Linux-процесс с санитайзерами |
@@ -165,14 +173,14 @@ shell, сетевой стек, `/proc`, драйвер клавиатуры, с
 | Каталог | Что там |
 |---|---|
 | `kernel/` | ядро на C#: shell, сетевой стек (`Net/`), `/proc`, драйвер клавиатуры, системные вызовы, самотесты |
-| `user/` | программы для ring 3: `sh`, `ls`, `cat`, `grep`, `wc`, `httpd`, `fetch`, `nc`, `primes`… |
-| `sdk/` | C# API: `Nekotia.Sdk` для ядра, `Nekotia.User` для программ |
+| `user/` | программы для ring 3: `sh`, `ls`, `cat`, `grep`, `wc`, `httpd`, `fetch`, `nc`, `primes`…; рабочий стол `nekowm` и его приложения `term`, `sysmon`, `clock`, `paint`, `about` |
+| `sdk/` | C# API: `Nekotia.Sdk` для ядра, `Nekotia.User` для программ, `Nekotia.Gui` — рендер, шрифты, оконный протокол |
 | `runtime/` | C++: загрузка, память, планировщик, процессы, драйверы, VFS, FAT32, рантайм программ |
 | `tools/nekoc/` | транслятор C# → C++ |
 | `tests/nekoc/` | тесты транслятора |
 | `editor/vscode-nekotia/` | расширение VS Code |
 | `initrd/` | файлы, которые попадают в `/etc` и `/home` системы |
-| `docs/` | [архитектура](docs/ARCHITECTURE.md), [язык](docs/LANGUAGE.md) |
+| `docs/` | [архитектура](docs/ARCHITECTURE.md), [язык](docs/LANGUAGE.md), [графика](docs/GRAPHICS.md) |
 
 ## Статус
 
@@ -185,7 +193,7 @@ shell, сетевой стек, `/proc`, драйвер клавиатуры, с
 | 5. Пользовательский режим | ✅ процессы, ELF, системные вызовы на C#, SMEP/SMAP, futex, TLS |
 | 6. Драйверы и файловые системы | ✅ PCI, virtio, AHCI, NVMe, xHCI, VFS, FAT32, `/proc`, каналы, TCP/IP |
 | 7. Инструменты разработчика | 🚧 language server ✅, отладка в один клик ✅; дальше — шаблоны, документация SDK |
-| 8. Графика | ⏳ композитор окон, шрифты, GUI-программы |
+| 8. Графика | 🚧 база для DE/WM ✅, рабочий стол `nekowm` на CPU ✅; дальше — драйверы GPU, TrueType, звук |
 
 Подробный план и то, что осталось в каждой фазе, — в [ROADMAP.md](ROADMAP.md).
 

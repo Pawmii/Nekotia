@@ -4,7 +4,8 @@
     IDE-only project (IntelliSense) for every user program in user/*/. The programs themselves are built by
     `make` (each user/NAME/nekotia.json → nekoc → clang → /bin/NAME in the initrd), never by MSBuild.
     Only the API a program really has is visible: sdk/Nekotia.User plus the parts of Nekotia.Sdk that are
-    shared with the kernel (attributes, Asm, Debug/Str, Maths) — kernel APIs such as Terminal are not.
+    shared with the kernel (attributes, Asm, Debug/Str, Maths) and the GUI SDK (sdk/Nekotia.Gui) — kernel APIs
+    such as Terminal are not.
   -->
   <Import Project="../Nekotia.Common.props" />
 
@@ -17,6 +18,7 @@
   <ItemGroup>
     <Compile Include="../sdk/Nekotia.Sdk/Attributes.cs;../sdk/Nekotia.Sdk/Intrinsics.cs;../sdk/Nekotia.Sdk/Debug.cs;../sdk/Nekotia.Sdk/Maths.cs;../sdk/Nekotia.Sdk/Text.cs" />
     <Compile Include="../sdk/Nekotia.User/**/*.cs" />
+    <Compile Include="../sdk/Nekotia.Gui/**/*.cs" />
   </ItemGroup>
 
 </Project>

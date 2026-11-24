@@ -9,6 +9,7 @@ void probe_virtio_net(uint32_t pci);
 void probe_ahci(uint32_t pci);
 void probe_nvme(uint32_t pci);
 void probe_xhci(uint32_t pci);
+void probe_virtio_input(uint32_t pci);
 
 void init() {
     for (uint32_t i = 0; i < pci::count(); ++i) {
@@ -29,6 +30,7 @@ void init() {
         // Transitional ids 0x1000 (net) / 0x1001 (block); modern ones are 0x1040 + device type.
         if (d->device_id == 0x1001 || d->device_id == 0x1042) probe_virtio_blk(i);
         else if (d->device_id == 0x1000 || d->device_id == 0x1041) probe_virtio_net(i);
+        else if (d->device_id == 0x1052) probe_virtio_input(i);
     }
 }
 

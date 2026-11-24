@@ -55,13 +55,30 @@ struct DirEntry {
 // With `size`, the device is seekable (a disk): reads and writes move the file offset.
 // `close` runs when an open file of the device goes away (with its open flags), `release` when the
 // node itself does; both are optional and must not block.
+//
+// The rest is optional too, for devices that are more than a byte stream:
+//   open     may refuse an open (kErrBusy for an exclusive device), runs before the file exists
+//   poll     readiness for poll(): kPollIn / kPollOut / kPollHup; a device without it is always ready.
+//            Whoever makes a device ready calls vfs::notify() so pollers look again.
+//   map      the frame behind byte `offset` (page aligned) for mmap(); `write_combining` for framebuffers
+//   control  ioctl(fd, request, arg): device-specific requests, `arg` is usually a user pointer
+//            (copy it with proc::copy_from_user / copy_to_user); `flags` are the file's open flags
 struct DeviceOps {
     int64_t (*read)(void* context, uint64_t offset, void* buffer, uint64_t length);
     int64_t (*write)(void* context, uint64_t offset, const void* buffer, uint64_t length);
     uint64_t (*size)(void* context);
     void (*close)(void* context, uint32_t flags);
     void (*release)(void* context);
+    int64_t (*open)(void* context, uint32_t flags);
+    uint32_t (*poll)(void* context, uint32_t flags);
+    int64_t (*map)(void* context, uint64_t offset, uint64_t& phys, bool& write_combining);
+    int64_t (*control)(void* context, uint32_t flags, uint64_t request, uint64_t arg);
 };
+
+// poll() readiness bits (the same values as in neko/user.hpp).
+constexpr uint32_t kPollIn = 1;   // read would not block (data, a connection, or the end)
+constexpr uint32_t kPollOut = 2;  // write would not block
+constexpr uint32_t kPollHup = 4;  // the other side is gone
 
 void init();  // the root, /dev, /tmp, /bin, /etc; needs the heap
 
@@ -96,6 +113,20 @@ File* open_socket(void* context);   // read + write; nullptr when out of memory
 void* socket_context(File* f);      // the context of a socket file, nullptr for anything else
 void close(File* f);
 uint32_t flags(File* f);
+
+// ---- devices without a name (IPC channels, shared memory…): an open file straight onto `ops`.
+// nullptr when out of memory — the context is then still the caller's (ops->release does not run).
+File* open_object(const char* name, const DeviceOps* ops, void* context, uint32_t flags);
+void* object_context(File* f, const DeviceOps* ops);  // its context when f is such an object, else nullptr
+
+// ---- readiness
+uint32_t poll(File* f, uint32_t wanted);  // kPollIn | kPollOut | kPollHup now ready on f (wanted ∪ kPollHup)
+// Waits until any of `count` files is ready for what `wanted[i]` asks; ready[i] gets the bits. Returns how
+// many are ready, 0 after `timeout_ms` (~0 = wait for ever, 0 = just look) or kErrInterrupted.
+int64_t poll_wait(File* const* files, const uint32_t* wanted, uint32_t* ready, uint32_t count, uint64_t timeout_ms);
+void notify();  // something may have become ready: wake every poll_wait (callable from IRQ handlers)
+int64_t map(File* f, uint64_t offset, uint64_t& phys, bool& write_combining);  // for mmap
+int64_t control(File* f, uint64_t request, uint64_t arg);                       // for ioctl
 
 // ---- names
 int64_t stat(const char* path, Stat& out);

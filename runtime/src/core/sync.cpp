@@ -107,7 +107,10 @@ void SpinLock::lock() {
         return;
     }
     while (__atomic_exchange_n(&locked, 1u, __ATOMIC_ACQUIRE))
-        while (__atomic_load_n(&locked, __ATOMIC_RELAXED)) cpu::pause();
+        while (__atomic_load_n(&locked, __ATOMIC_RELAXED)) {
+            smp::tlb_service();  // answer a shootdown from the CPU we wait for (see neko/smp.hpp)
+            cpu::pause();
+        }
     owner = me;
     depth = 1;
     saved_flags = flags;

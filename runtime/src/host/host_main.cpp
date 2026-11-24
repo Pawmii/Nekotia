@@ -131,6 +131,7 @@ bool space_map(uint64_t*, uint64_t, uint64_t, PageFlags) { return false; }
 void space_add_flags(uint64_t*, uint64_t, PageFlags) {}
 uint64_t space_translate(uint64_t*, uint64_t) { return ~0ull; }
 uint64_t space_unmap(uint64_t*, uint64_t) { return ~0ull; }
+uint64_t space_unmap_range(uint64_t*, uint64_t, uint64_t, void (*)(uint64_t, void*), void*) { return 0; }
 bool space_protect(uint64_t*, uint64_t, PageFlags) { return false; }
 bool space_check(uint64_t*, uint64_t, uint64_t, bool) { return false; }
 }  // namespace neko::vmm
@@ -217,6 +218,10 @@ bool g_percpu_ready = true;
 uint32_t online_count() { return 1; }
 uint32_t cpu_count() { return 1; }
 void tlb_shootdown(uint64_t) {}
+void tlb_shootdown_range(uint64_t, uint64_t) {}
+void tlb_flush_local(uint64_t, uint64_t) {}
+volatile uint64_t g_tlb_seq = 0;
+void tlb_service_slow() {}
 void halt_others() {}
 void kick(uint32_t) {}
 }  // namespace neko::smp
@@ -257,6 +262,7 @@ int main(int argc, char** argv) {
     neko::sched::init(0, 0);
     neko::console::init(g_info.Screen);
     neko::vfs::init();
+    neko::input::init();
     neko::term::write("[neko-host] running the kernel as a Linux process\n");
     neko_kernel_init();
     neko_kernel_main(&g_info);

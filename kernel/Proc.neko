@@ -9,6 +9,7 @@ using Nekotia.Hal;
 using Nekotia.IO;
 using Nekotia.Mem;
 using Nekotia.Net;
+using Nekotia.OS.Drivers;
 using Nekotia.OS.Net;
 using Nekotia.Processes;
 using Nekotia.Threading;
@@ -36,6 +37,35 @@ public static unsafe class Proc
         Add("/proc/net/tcp", &NetTcp);
         Add("/proc/net/udp", &NetUdp);
         Add("/proc/log", &KernelLog);
+        Add("/proc/stat", &Stat);
+        Add("/proc/display", &DisplayState);
+    }
+
+    /// Counters for monitors: `idle_ms` summed over every CPU (busy % = 1 - Δidle / (Δuptime × cpus)).
+    static long Stat(byte* buffer, ulong capacity)
+    {
+        Text t = new Text(buffer, capacity);
+        t.WriteLine($"cpus {SysInfo.CpuCount()}");
+        t.WriteLine($"uptime_ms {Time.UptimeMs()}");
+        t.WriteLine($"idle_ms {Thread.IdleMs()}");
+        t.WriteLine($"context_switches {Thread.ContextSwitches()}");
+        t.WriteLine($"threads {Thread.Count()}");
+        t.WriteLine($"processes {Process.Count()}");
+        return t.Length;
+    }
+
+    /// Displays and who draws on them; the input grab.
+    static long DisplayState(byte* buffer, ulong capacity)
+    {
+        Text t = new Text(buffer, capacity);
+        DisplayInfo d = default;
+        for (uint i = 0; Displays.GetInfo(i, out d); i++) {
+            t.WriteLine($"fb{i} {d.Width}x{d.Height} {d.Bpp}bpp pitch {d.Pitch} driver {d.Driver} owner {d.Owner}");
+        }
+        InputStats s = Input.Stats();
+        t.WriteLine($"input events {s.Events} dropped {s.Dropped} grabbed_by {s.GrabbedBy}");
+        t.WriteLine($"ps2 interrupts {I8042.Interrupts} rescued {I8042.Rescued} mouse bytes {Mouse.Bytes} packets {Mouse.Packets}");
+        return t.Length;
     }
 
     static void Add(string path, delegate*<byte*, ulong, long> generate) => Vfs.CreateGenerated(path, generate);

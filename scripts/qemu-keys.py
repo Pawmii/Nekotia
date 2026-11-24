@@ -9,6 +9,10 @@ session.txt, one command per line:
     type help\\n           text (\\n = Enter; ASCII letters, digits, space and common punctuation)
     key alt-shift         a QEMU sendkey combo
     shot out.ppm          screendump (PPM)
+    mouse 640 400         move the pointer to a screen position (absolute: needs a tablet, e.g. virtio-tablet-pci)
+    move 10 -5            move it relatively (PS/2 or USB mouse)
+    click                 left button down and up (`click right`, `down`, `up` for dragging)
+    hmp info …            any other monitor command
     quit                  stop QEMU (also done at the end)
 """
 import socket
@@ -61,6 +65,21 @@ def main():
         elif op == 'shot':
             cmd(f'screendump {arg}')
             time.sleep(0.5)
+        elif op == 'mouse':
+            # With an absolute device (tablet) the monitor's mouse_move takes screen pixels.
+            cmd(f'mouse_move {arg}')
+        elif op == 'move':
+            cmd(f'mouse_move {arg}')
+        elif op in ('click', 'down', 'up'):
+            mask = {'left': 1, 'right': 2, 'middle': 4}[arg or 'left']
+            if op in ('click', 'down'):
+                cmd(f'mouse_button {mask}')
+            if op == 'click':
+                time.sleep(0.08)
+            if op in ('click', 'up'):
+                cmd('mouse_button 0')
+        elif op == 'hmp':
+            cmd(arg)
         elif op == 'quit':
             break
     cmd('quit')
